@@ -1,0 +1,315 @@
+# Schema
+
+Full data model reference for Sparky. Referenced from `ARCHITECTURE.md` and
+`PLANNING.md`. Update this file whenever the schema changes - it should always
+reflect what the migrations in `migrations/` actually produce.
+
+Database: PostgreSQL. `JSONB` columns are native, no extension required.
+
+---
+
+## Users
+
+Keyed by an internal UUID rather than an AD-specific identifier, so the LDAP-to-Entra
+ID migration and any future username change never breaks a foreign key elsewhere in
+the schema.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | Internal identity, stable across AD changes |
+| `ad_sid` | text, unique, indexed | AD SID - external identity reference for LDAP lookup |
+| `entra_object_id` | text, nullable | Reserved for the future Entra ID / OIDC migration |
+| `display_name` | text | Cached from AD at login - avoids an LDAP round-trip for every render |
+| `tier` | enum | `read_only` / `developer` / `power_dev` / `admin` |
+| `created_at` | timestamptz | First login |
+| `last_login_at` | timestamptz | |
+| `elevated_by` | uuid, nullable, FK -> Users.id | Who last changed this user's tier |
+| `elevated_at` | timestamptz, nullable | |
+
+`tier` is a plain enum column, not a normalized roles table - four fixed values with
+no per-tier metadata does not justify the extra join.
+
+Elevation rules (enforced in the RBAC component, not the database): SuperAdmin can
+set any user to any tier. Admins can promote Read-only -> Developer and Developer ->
+PowerDev, and may demote within that same range. Only the SuperAdmin can promote to
+Admin. The SuperAdmin is not a row in this table - see Break-glass credential below.
+
+---
+
+## Nodes
+
+One row per compute host - a Spark or a generic Docker/Podman GPU machine.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `name` | text | Human label, e.g. `spark-1` |
+| `hostname` / `ip_address` | text | Where the agent's WebSocket connection originates from |
+| `node_type` | enum | `spark` / `docker-gpu` - selects the agent's runtime backend |
+| `container_runtime` | enum, nullable | `docker` / `podman` - only meaningful when `node_type = docker-gpu` |
+| `gpu_memory_gb` | numeric | VRAM. Equal to `cpu_memory_gb` for a Spark's unified memory - a Spark is the degenerate case of this same model, not a special case |
+| `cpu_memory_gb` | numeric | System RAM |
+| `fabric_group_id` | uuid, nullable, FK -> Fabric groups.id | Physical cluster linkage, if any. Null for any node incapable of clustering |
+| `agent_status` | enum | `online` / `offline` / `unreachable`, derived from the persistent WebSocket connection state |
+| `last_heartbeat_at` | timestamptz | |
+| `registered_by` | uuid, FK -> Users.id | |
+| `registered_at` | timestamptz | |
+
+---
+
+## Fabric groups
+
+A set of nodes currently physically cabled together over the high-speed
+interconnect. The app does not verify layer-1 cabling itself - an Admin declares a
+fabric group after confirming the physical link exists, and the app trusts that
+declaration for validation purposes (see Model transfers / clustered launch logic in
+`ARCHITECTURE.md`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `name` | text | e.g. `spark-cluster-1` |
+| `created_by` | uuid, FK -> Users.id | |
+| `created_at` | timestamptz | |
+
+A node belongs to at most one fabric group at a time - modeled as the nullable FK on
+Nodes above, not a many-to-many join table.
+
+---
+
+## Model profiles
+
+A saved, named configuration for running a model.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `name` | text | |
+| `model_ref` | text | Hugging Face repo path, ideally with a pinned revision |
+| `engine_type` | enum | `vllm` / `aphrodite` / `llamacpp` - selects the engine adapter |
+| `engine_params` | jsonb | Engine-specific launch parameters. Deliberately opaque to the database - validated by the engine adapter, not a fixed column per possible flag |
+| `requires_full_gpu_residency` | boolean | Capability of the selected engine type - `true` for vLLM/Aphrodite, `false` for llama.cpp-style partial-offload engines. Gates whether the memory-capacity check below applies |
+| `required_memory_gb` | numeric, nullable | Optional. When set and `requires_full_gpu_residency` is true, checked against aggregate `gpu_memory_gb` of the target node(s) before launch. When null, the app attempts the launch and reports failure if it doesn't fit - no estimate is computed on the app's behalf |
+| `topology` | enum | `single_node` / `clustered` |
+| `target_node_id` | uuid, nullable, FK -> Nodes.id | Single-node profiles only |
+| `fabric_group_id` | uuid, nullable, FK -> Fabric groups.id | Clustered profiles only |
+| `port` | integer | |
+| `created_by` / `created_at` | uuid, timestamptz | PowerDev+ |
+| `updated_by` / `updated_at` | uuid, timestamptz | |
+
+---
+
+## Profile cluster nodes
+
+Only populated for clustered profiles. Defines the intended full topology - which
+nodes participate and in what role. Explicit, not automatically assigned: head-node
+selection by convention was considered and rejected, since fabric group membership
+can change after a profile is created, and an implicit rule would silently change
+which physical node acts as head. See `PLANNING.md` Decisions Log.
+
+| Field | Type | Notes |
+|---|---|---|
+| `profile_id` | uuid, FK -> Model profiles.id | |
+| `node_id` | uuid, FK -> Nodes.id | Must belong to the profile's `fabric_group_id` |
+| `role` | enum | `head` / `worker` |
+| `rank` | integer | NCCL/MPI rank; head is always 0 |
+
+---
+
+## Running instances
+
+Live lifecycle state of what is actually loaded right now. Separate from Model
+profiles for the same reason Running instances is separate from a plain "is it on"
+flag: a profile is intent, this is observed reality, and the two can diverge (a
+reduced-capacity launch uses fewer nodes than the profile defines).
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `profile_id` | uuid, FK -> Model profiles.id | |
+| `status` | enum | `starting` / `running` / `stopping` / `stopped` / `failed` |
+| `primary_node_id` | uuid, FK -> Nodes.id | Entry point - head node for clustered, the single node otherwise |
+| `actual_port` | integer | Observed, may differ from the profile's declared port |
+| `started_by` | uuid, FK -> Users.id | |
+| `started_at` / `stopped_at` | timestamptz | |
+| `health_status` | enum | `healthy` / `unhealthy` / `unknown` |
+| `last_health_check_at` | timestamptz | |
+| `error_message` | text, nullable | Populated on failure - this is the only feedback mechanism when `required_memory_gb` was left unset and the launch didn't fit |
+
+---
+
+## Running instance nodes
+
+The *actual* node topology for a specific running instance - may be a subset of
+Profile cluster nodes when a reduced-capacity launch was used.
+
+| Field | Type | Notes |
+|---|---|---|
+| `running_instance_id` | uuid, FK -> Running instances.id | |
+| `node_id` | uuid, FK -> Nodes.id | |
+| `role` | enum | `head` / `worker` |
+| `rank` | integer | |
+
+A reduced-capacity launch requires the head node specifically to be eligible -
+dropping a worker is coherent, dropping the head leaves no coordinator. "Relaunch at
+full capacity" is a stop-and-restart, not a hot topology change - no multi-node
+inference framework supports adding a node to an already-running distributed job.
+
+---
+
+## Metrics
+
+Append-only telemetry history. High write volume by design - kept in the same
+Postgres instance as everything else rather than a dedicated time-series database,
+since the scale here (a handful of nodes, a few-second poll interval) doesn't justify
+that infrastructure.
+
+| Field | Type | Notes |
+|---|---|---|
+| `recorded_at` | timestamptz | |
+| `node_id` | uuid, FK -> Nodes.id | |
+| `running_instance_id` | uuid, nullable, FK -> Running instances.id | Which model was loaded at the time, for correlation |
+| `gpu_utilization_pct` | numeric | |
+| `gpu_memory_used_mb` / `gpu_memory_total_mb` | numeric | |
+| `cpu_utilization_pct` | numeric | |
+| `system_memory_used_mb` / `system_memory_total_mb` | numeric | |
+
+Retention: 6 months at raw resolution, then downsampled to aggregates for a
+configurable additional retention period (default not yet decided - see
+`PLANNING.md` Open Questions).
+
+---
+
+## Metrics export config
+
+Singleton settings row, editable via the UI (Admin only). Backend-specific
+connection details live in a flexible JSON blob for the same reason
+`engine_params` does - NFS and S3 need genuinely different fields.
+
+| Field | Type | Notes |
+|---|---|---|
+| `backend_type` | enum | `none` / `nfs` / `s3` |
+| `config` | jsonb | Non-secret connection details only - bucket, endpoint, region, export path. Credentials are never stored here; see Security Considerations in `ARCHITECTURE.md` |
+| `updated_by` / `updated_at` | uuid, timestamptz | |
+
+---
+
+## Audit log
+
+Append-only. Every state-changing action, by anyone, with no exceptions - including
+the SuperAdmin, whose actions bypass authorization checks but are still recorded.
+Read/view actions (dashboard polling, viewing a list) are explicitly not recorded -
+see `ARCHITECTURE.md` Audit Log section for the full policy.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `actor_id` | uuid, nullable, FK -> Users.id | Null actor with an `is_superadmin` flag set represents the break-glass account |
+| `is_superadmin_action` | boolean | |
+| `action` | text | Past-tense verb, e.g. `loaded_model`, `elevated_user`, `deleted_model_copy` |
+| `object_type` / `object_id` | text, uuid | What was affected |
+| `detail` | jsonb, nullable | Action-specific context |
+| `created_at` | timestamptz | |
+
+Retention and forwarding are governed by Audit settings below, not hardcoded.
+
+---
+
+## Audit settings
+
+Singleton settings row, editable via the UI (Admin only). Only governs the optional
+active network-push path - the stdout JSON stream that Filebeat (or any shipper)
+picks up automatically is always on and needs no row here.
+
+| Field | Type | Notes |
+|---|---|---|
+| `retention_months` | integer | Configurable, up to 24. Governs local Postgres retention only - has no effect on what a shipper has already exported |
+| `forwarding_enabled` | boolean | Enables the optional active push, on top of the always-on stdout stream |
+| `forwarding_protocol` | enum | `syslog` (default) / `gelf` |
+| `forwarding_host` / `forwarding_port` | text / integer | |
+| `forwarding_tls_enabled` | boolean | |
+| `updated_by` / `updated_at` | uuid, timestamptz | |
+
+Works with Graylog's syslog input, or any other syslog/GELF-compatible aggregator -
+see `ARCHITECTURE.md` Audit Log for the reasoning behind the protocol-neutral
+approach.
+
+---
+
+## Permission overrides
+
+Per-user capability grants that sit outside the tier ladder. Currently a single
+capability - the ability to download and delete models is tied together as one grant
+(see `PLANNING.md` Decisions Log) - modeled as a table rather than a boolean column so
+the next one-off exception is a new row, not a schema change.
+
+| Field | Type | Notes |
+|---|---|---|
+| `user_id` | uuid, FK -> Users.id | |
+| `capability` | enum | Currently only `manage_model_store` (download + delete) |
+| `granted_by` | uuid, FK -> Users.id | |
+| `granted_at` | timestamptz | |
+
+Admins and SuperAdmin always have this capability implicitly and do not need a row
+here; this table only grants it to PowerDev-tier users.
+
+---
+
+## Break-glass credential
+
+Not a row in Users. A single, isolated secret that only the application process can
+read or validate - not other roles, not other tiers, nobody but the app itself.
+
+| Field | Type | Notes |
+|---|---|---|
+| `password_hash` | text | Argon2id or bcrypt |
+| `updated_at` | timestamptz | |
+
+Set via an interactive CLI subcommand (`sparky set-superadmin-password`), never
+through the web UI. See `ARCHITECTURE.md` Security Considerations for storage
+mechanics across bare metal, Podman, and Kubernetes.
+
+---
+
+## Model transfers
+
+Operation log for both an internet download and a peer-to-peer rsync replication -
+unified into one table since both are the same shape of thing: a long-running,
+progress-tracked transfer that lands model bytes on a specific node, differing only
+in source.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `dest_node_id` | uuid, FK -> Nodes.id | |
+| `model_ref` | text | |
+| `source_type` | enum | `internet` / `peer_node` |
+| `source_node_id` | uuid, nullable, FK -> Nodes.id | Populated only when `source_type = peer_node` |
+| `status` | enum | `queued` / `transferring` / `completed` / `failed` / `cancelled` |
+| `bytes_transferred` / `bytes_total` | bigint | |
+| `requested_by` | uuid, FK -> Users.id | |
+| `requested_at` / `completed_at` | timestamptz | |
+| `error_message` | text, nullable | |
+
+---
+
+## Node model inventory
+
+Current-state answer to "does this node have this model right now" - distinct from
+Model transfers (history) the same way Running instances is distinct from Model
+profiles (intent). This is what the launch-eligibility UI actually queries.
+
+| Field | Type | Notes |
+|---|---|---|
+| `node_id` | uuid, FK -> Nodes.id | |
+| `model_ref` | text | |
+| `status` | enum | `present` / `stale` / `removed` |
+| `size_bytes` | bigint | |
+| `placed_at` | timestamptz | |
+| `placed_via` | uuid, FK -> Model transfers.id | |
+
+Clustered profiles require every participating node to have a full local copy of the
+model - most multi-node inference frameworks expect each rank to read the complete
+checkpoint from local disk. Launch-time node eligibility (Green / Blue / Red) is
+computed from this table plus live free-space telemetry plus current Fabric group
+membership - see `ARCHITECTURE.md` for the full evaluation logic.
