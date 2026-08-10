@@ -26,7 +26,7 @@ connections itself - see `ARCHITECTURE.md` Protocol for why.
 | Language        | Go                                             | Shared with the server; single toolchain |
 | Config format   | Environment variables                          | Consistent with the server, not the generic Service-type default of `~/.app_name/config.yaml` - see Configuration below |
 | Transport       | Agent-initiated persistent WebSocket, JSON     | See `ARCHITECTURE.md` Protocol             |
-| Container mgmt  | `docker/docker/client` (Docker Engine API)     | Targets Docker and Podman identically      |
+| Container mgmt  | `github.com/moby/moby/client` (Docker Engine API) | Targets Docker and Podman identically - see CLAUDE.md Tech Stack for the import-path rename note |
 | GPU passthrough | CDI (`nvidia.com/gpu=all`)                     | Standardized across both container runtimes |
 
 ---
