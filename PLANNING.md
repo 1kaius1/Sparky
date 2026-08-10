@@ -50,7 +50,7 @@ below are otherwise not yet built.
 ## Milestones
 
 - [ ] **v0.1.0** - Core foundation (non-Spark first: laptop RTX 4090 / Dell Precision RTX 3080Ti as primary dev and test hardware)
-  - [ ] AD/LDAP bind auth (login-gate group), session handling
+  - [x] AD/LDAP bind auth (login-gate group), session handling
     - [x] Phase 1: Users repository (`internal/db`) - create, find-by-AD-SID,
           update last login, update tier (elevation), matching SCHEMA.md's
           `users` table. Complete when covered by integration tests against a
@@ -252,11 +252,20 @@ below are otherwise not yet built.
           fake client; the CDI request shape itself was confirmed correct
           against `moby/moby`'s own `daemon/cdi.go` source before being
           written, not guessed.
-    - [ ] Phase 2: `internal/agentproto` - shared WebSocket/JSON protocol
+    - [x] Phase 2: `internal/agentproto` - shared WebSocket/JSON protocol
           message types (envelope with request ID per ARCHITECTURE.md
           Protocol, hello/auth handshake, heartbeat, error), used by both
           binaries. Pure types, no networking - testable via marshal/
           unmarshal round-trips alone.
+          Done - `Envelope{Type, RequestID, Payload}` plus `Hello`/
+          `HelloAck`/`Heartbeat`/`ErrorPayload` payload types and
+          `NewEnvelope`/`DecodePayload` helpers. `DecodePayload` rejects
+          unknown fields (`json.Decoder.DisallowUnknownFields`) so decoding
+          a payload as the wrong type fails loudly instead of silently
+          zero-filling non-overlapping fields - a real footgun for a
+          multiplexed channel where `Type` and the Go type used to decode
+          `Payload` can drift apart. No networking, bearer-token
+          enforcement, or connection lifecycle yet - that's Phases 3-5.
     - [ ] Phase 3: Node bearer token issuance and storage - extends the
           `nodes` schema with a hashed token column (same pattern as the
           break-glass credential: only the hash is stored). `RegisterNode`

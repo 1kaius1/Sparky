@@ -157,6 +157,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Podman's own CLI resolves CDI names correctly - see PLANNING.md's
   2026-08-10 Decisions Log entry and Known Issues table. Retry/CDI-request
   construction logic unit-tested against a fake client.
+- `internal/agentproto`: the shared WebSocket/JSON protocol message types
+  used by both binaries - Phase 2 of the agent runtime/WebSocket work.
+  `Envelope{Type, RequestID, Payload}` per ARCHITECTURE.md Protocol's
+  request-ID correlation field, plus `Hello`/`HelloAck`/`Heartbeat`/
+  `ErrorPayload` payload types and `NewEnvelope`/`DecodePayload` helpers.
+  `DecodePayload` rejects unknown JSON fields, so decoding a payload with
+  the wrong Go type for its `Envelope.Type` fails loudly rather than
+  silently zero-filling fields that don't overlap. Pure types - no
+  networking, bearer-token enforcement, or connection lifecycle yet;
+  covered entirely by marshal/unmarshal round-trip tests.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
