@@ -50,12 +50,12 @@ off-topic, abusive, or not aligned with the project goals.
 ### Prerequisites
 
 ```bash
-# List what must be installed before development can begin
-# Example:
-# Go 1.22 or later:   https://go.dev/dl/
-# Python 3.11 or later: https://www.python.org/downloads/
-# make
+# Go 1.26 or later:       https://go.dev/dl/
+# PostgreSQL 14 or later: https://www.postgresql.org/download/
 # git
+
+# golang-migrate CLI, built with the postgres driver tag
+go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 ```
 
 ### Setup
