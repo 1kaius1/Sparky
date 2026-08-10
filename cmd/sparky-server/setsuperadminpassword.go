@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -32,36 +33,46 @@ func runSetSuperAdminPassword(ctx context.Context, cfg *config.Config, logger *l
 	}
 	defer pool.Close()
 
+	breakGlass := db.NewBreakGlassRepository(pool)
+	if err := promptAndSetSuperAdminPassword(ctx, breakGlass, logger); err != nil {
+		logger.Fatalf("%v", err)
+	}
+}
+
+// promptAndSetSuperAdminPassword prompts for a new password (with
+// confirmation, no terminal echo), hashes it, and stores it - the shared
+// core of both `set-superadmin-password` and `setup`.
+func promptAndSetSuperAdminPassword(ctx context.Context, breakGlass *db.BreakGlassRepository, logger *log.Logger) error {
 	fmt.Print("New SuperAdmin password: ")
 	password, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {
-		logger.Fatalf("read password: %v", err)
+		return fmt.Errorf("read password: %w", err)
 	}
 
 	fmt.Print("Confirm password: ")
 	confirm, err := term.ReadPassword(int(os.Stdin.Fd()))
 	fmt.Println()
 	if err != nil {
-		logger.Fatalf("read password: %v", err)
+		return fmt.Errorf("read password: %w", err)
 	}
 
 	if string(password) != string(confirm) {
-		logger.Fatal("passwords do not match")
+		return errors.New("passwords do not match")
 	}
 	if len(password) < minSuperAdminPasswordLength {
-		logger.Fatalf("password must be at least %d characters", minSuperAdminPasswordLength)
+		return fmt.Errorf("password must be at least %d characters", minSuperAdminPasswordLength)
 	}
 
 	hash, err := auth.HashPassword(string(password))
 	if err != nil {
-		logger.Fatalf("hash password: %v", err)
+		return fmt.Errorf("hash password: %w", err)
 	}
 
-	breakGlass := db.NewBreakGlassRepository(pool)
 	if err := breakGlass.Set(ctx, hash); err != nil {
-		logger.Fatalf("set break-glass credential: %v", err)
+		return fmt.Errorf("set break-glass credential: %w", err)
 	}
 
 	logger.Println("SuperAdmin password set")
+	return nil
 }

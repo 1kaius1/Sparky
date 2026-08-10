@@ -28,6 +28,14 @@ func newFakeBreakGlassStore() *fakeBreakGlassStore {
 	return &fakeBreakGlassStore{}
 }
 
+// newConfiguredFakeBreakGlassStore reports setup as already complete -
+// used as the setupGate's store in tests that aren't specifically about
+// the gate, so it never blocks them. See setup_gate_test.go for tests of
+// the gate's own not-configured/blocking behavior.
+func newConfiguredFakeBreakGlassStore() *fakeBreakGlassStore {
+	return &fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: "unused-in-gate-tests"}}
+}
+
 func (f *fakeBreakGlassStore) Get(_ context.Context) (*db.BreakGlassCredential, error) {
 	if f.err != nil {
 		return nil, f.err
@@ -106,7 +114,7 @@ func TestHandleBreakGlassLogin_FullRoundTrip(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api := New(loginSvc, breakGlassSvc, testSessionSecret)
+	api := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret)
 	srv := httptest.NewServer(api.Router())
 	defer srv.Close()
 	client := newBrowserClient(t)
@@ -146,7 +154,7 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api := New(loginSvc, breakGlassSvc, testSessionSecret)
+	api := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret)
 	srv := httptest.NewServer(api.Router())
 	defer srv.Close()
 	client := newBrowserClient(t)
@@ -169,7 +177,7 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 func TestHandleBreakGlassLogin_MissingPassword(t *testing.T) {
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api := New(loginSvc, breakGlassSvc, testSessionSecret)
+	api := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret)
 	srv := httptest.NewServer(api.Router())
 	defer srv.Close()
 	client := newBrowserClient(t)

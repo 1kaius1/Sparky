@@ -270,6 +270,7 @@ Service Layer -> Agent-Communication Layer -> WebSocket message (JSON, request I
 | Not found                               | 404         |
 | Conflict (duplicate, constraint)        | 409         |
 | Internal server error                   | 500         |
+| First-run setup not complete            | 503         |
 
 ---
 

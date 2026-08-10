@@ -16,32 +16,36 @@ import (
 type API struct {
 	loginService           *LoginService
 	breakGlassLoginService *BreakGlassLoginService
+	setupGate              *setupGate
 	sessionSecret          string
 }
 
 // New constructs an API. sessionSecret is used to verify session cookies
 // on protected routes via RequireSession - login/logout themselves go
 // through LoginService/BreakGlassLoginService, which hold their own copies
-// for signing.
-func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, sessionSecret string) *API {
+// for signing. breakGlassStore gates every route via setupGate until
+// first-run setup has completed - see setup_gate.go.
+func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string) *API {
 	return &API{
 		loginService:           loginService,
 		breakGlassLoginService: breakGlassLoginService,
+		setupGate:              newSetupGate(breakGlassStore),
 		sessionSecret:          sessionSecret,
 	}
 }
 
 // Router builds the full route tree. Per ARCHITECTURE.md Application
-// Lifecycle, request ID, logging, recovery, auth, and audit middleware are
-// registered here; only request ID and recovery exist yet - logging and
-// audit middleware, and every route beyond login/logout, are later v0.1.0
-// work (RBAC, Dashboard UI).
+// Lifecycle, request ID, logging, recovery, the Setup Check, auth, and
+// audit middleware are registered here; logging and audit middleware, and
+// every route beyond login/logout, are later v0.1.0 work (RBAC, Dashboard
+// UI).
 func (a *API) Router() http.Handler {
 	r := chi.NewRouter()
 
 	r.Use(middleware.RequestID)
 	r.Use(setRequestIDHeader)
 	r.Use(middleware.Recoverer)
+	r.Use(a.setupGate.middleware)
 
 	r.Post("/login", a.handleLogin)
 	r.Post("/login/break-glass", a.handleBreakGlassLogin)

@@ -1,9 +1,7 @@
 // SPDX-License-Identifier: AGPL-3.0-or-later
 
 // Command sparky-server is the central Sparky application. See
-// ARCHITECTURE.md Application Lifecycle for the full startup sequence this
-// will grow into. The Setup Check step (refusing to serve normal routes
-// until `sparky setup` has run) is not implemented yet.
+// ARCHITECTURE.md Application Lifecycle for the full startup sequence.
 package main
 
 import (
@@ -46,9 +44,15 @@ func main() {
 
 	ctx := context.Background()
 
-	if len(os.Args) > 1 && os.Args[1] == "set-superadmin-password" {
-		runSetSuperAdminPassword(ctx, cfg, logger)
-		return
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "setup":
+			runSetup(ctx, cfg, logger)
+			return
+		case "set-superadmin-password":
+			runSetSuperAdminPassword(ctx, cfg, logger)
+			return
+		}
 	}
 
 	pool, err := db.New(ctx, cfg.DatabaseURL)
@@ -65,7 +69,9 @@ func main() {
 	breakGlass := db.NewBreakGlassRepository(pool)
 	breakGlassLoginService := httpapi.NewBreakGlassLoginService(breakGlass, cfg.SessionSecret)
 
-	api := httpapi.New(loginService, breakGlassLoginService, cfg.SessionSecret)
+	// breakGlass is also the Setup Check's completeness signal - see
+	// setup.go and internal/httpapi's setupGate.
+	api := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.ListenPort,

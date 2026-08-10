@@ -17,7 +17,7 @@ import (
 func newTestServer(idp auth.IdentityProvider, store *fakeUserStore) (*httptest.Server, *API) {
 	svc := NewLoginService(idp, store, testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api := New(svc, breakGlassSvc, testSessionSecret)
+	api := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret)
 	srv := httptest.NewServer(api.Router())
 	return srv, api
 }
@@ -211,7 +211,7 @@ func TestRequireSession(t *testing.T) {
 	}}
 	svc := NewLoginService(idp, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api := New(svc, breakGlassSvc, testSessionSecret)
+	api := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret)
 
 	var gotIdentity Identity
 	protected := api.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

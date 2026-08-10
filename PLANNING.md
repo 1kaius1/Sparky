@@ -139,7 +139,26 @@ below are otherwise not yet built.
           started the real compiled server and logged in against that
           exact stored credential over HTTP - correct password, wrong
           password, and missing password all behaved correctly.
-  - [ ] `sparky setup` CLI first-run wizard
+  - [x] `sparky setup` CLI first-run wizard
+        Done - completion is inferred from whether the break-glass password
+        has been set (`internal/db.BreakGlassRepository`), not a dedicated
+        setup-state table - it was already exactly this codebase's one
+        piece of database-resident, first-run-relevant state, and every
+        other setting is already an env var validated on every boot.
+        `internal/httpapi`'s `setupGate` middleware blocks every route with
+        503 `SETUP_REQUIRED` until then; it checks the database only until
+        it first observes setup complete, then caches that forever, so a
+        `sparky-server setup` run in another terminal takes effect on the
+        very next request with no restart needed - verified live, not just
+        asserted: started the server unset-up (confirmed 503 on every
+        route), ran `setup` interactively over a real pty against the
+        still-running server, and confirmed the very next request passed
+        the gate without a restart. `setup` and `set-superadmin-password`
+        share the same prompt/hash/store logic; `setup` adds onboarding
+        messaging and a database-readiness check (fails with a clear
+        `migrate ... up` hint if the schema isn't there) and is safely
+        re-runnable (resets the password, with a message noting it was
+        already configured, rather than refusing).
   - [ ] Audit log covering all state-changing actions, including SuperAdmin
   - [ ] Node registry with `node_type` and the `gpu_memory_gb` / `cpu_memory_gb` split from the start
   - [ ] Agent: Docker/Podman runtime backend (Docker-Engine-API-compatible), agent-initiated WebSocket, bearer token, CDI GPU passthrough
