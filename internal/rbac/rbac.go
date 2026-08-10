@@ -61,6 +61,18 @@ func CanElevate(actor Actor, fromTier, toTier db.Tier) bool {
 	return step == 1 || step == -1
 }
 
+// CanManageNodes reports whether actor may register or edit Nodes - see
+// CLAUDE.md Frontend Conventions, Nodes' sidebar tier ("Admin edit"). No
+// permission-override path exists for this one, unlike
+// CanManageModelStore: node registration is infrastructure-level, not a
+// per-user grantable exception.
+func CanManageNodes(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanManageModelStore reports whether actor has the manage_model_store
 // capability (download and delete models) - see SCHEMA.md Permission
 // overrides. Admin and SuperAdmin always have it implicitly. PowerDev has

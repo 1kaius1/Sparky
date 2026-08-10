@@ -126,6 +126,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against a real Postgres instance (including that the migration's `down`
   reverses cleanly), same pattern as the Users and Permission overrides
   repositories.
+- Node registry: migration `000005_create_nodes` creates the `nodes`
+  table per SCHEMA.md - `node_type`, `container_runtime`, and
+  `agent_status` as Postgres enums, `gpu_memory_gb`/`cpu_memory_gb` split
+  from the start, and a `CHECK` constraint enforcing that
+  `container_runtime` is set if and only if `node_type = docker-gpu`.
+  `fabric_group_id` is not part of this migration - it references
+  `fabric_groups`, which doesn't exist until v0.3.0 - and `registered_by`
+  is nullable, since the break-glass SuperAdmin can register a node too
+  and is not a `Users` row. `internal/db.NodeRepository` covers Create,
+  FindByID, and List. `rbac.CanManageNodes` (Admin or SuperAdmin only, no
+  permission-override path) and `internal/nodes.Service.RegisterNode` are
+  the single sanctioned path to a new node - RBAC check, parameter
+  validation, persist, then audit (`registered_node`, the audit log's
+  second real caller after `elevated_user`). No HTTP handler yet, same
+  precedent as RBAC Phase B and the audit log itself. Covered by
+  integration tests against a real Postgres instance, including that the
+  `CHECK` constraint rejects a mismatched `node_type`/`container_runtime`
+  pair and that the migration's `down` reverses cleanly.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

@@ -191,7 +191,39 @@ below are otherwise not yet built.
         state-changing HTTP handler exists to wrap - `internal/audit.
         Recorder` is the writer such a middleware (or any direct service
         call, as `rbac.Service` does today) would use once one exists.
-  - [ ] Node registry with `node_type` and the `gpu_memory_gb` / `cpu_memory_gb` split from the start
+  - [x] Node registry with `node_type` and the `gpu_memory_gb` / `cpu_memory_gb` split from the start
+        Done - migration `000005_create_nodes` creates the `nodes` table
+        per SCHEMA.md, with `node_type`/`container_runtime`/`agent_status`
+        as Postgres enums and a `CHECK` constraint
+        (`nodes_container_runtime_matches_type`) enforcing that
+        `container_runtime` is set if and only if `node_type = docker-gpu`
+        - database-level, not just application-level, matching the
+        `break_glass_credential` singleton `CHECK` precedent.
+        `fabric_group_id` is deliberately not part of this migration -
+        Fabric groups doesn't exist until v0.3.0, so there is nothing yet
+        for it to reference; it lands via an `ALTER TABLE` alongside that
+        table. `registered_by` was made nullable from the start (unlike
+        `elevated_by`, which needed a follow-up fix - see the Phase B
+        entry above) since the same SuperAdmin-is-not-a-`Users`-row gap
+        was obvious going in this time.
+
+        `internal/db.NodeRepository` covers Create, FindByID, and List -
+        List because a "registry" that cannot be enumerated isn't really
+        one, unlike the audit log's Write-only scope. `rbac.CanManageNodes`
+        (Admin or SuperAdmin, no permission-override path - node
+        registration is infrastructure-level, not a per-user grantable
+        exception) and `internal/nodes.Service.RegisterNode` are the
+        single sanctioned path to a new node: RBAC check, then parameter
+        validation (duplicating the database's `CHECK` constraint in Go
+        for a specific error message instead of an opaque constraint
+        violation), then persist, then audit (`registered_node` - the
+        audit log's second real caller, after RBAC's `elevated_user`).
+        No HTTP handler yet - same "logic layer ahead of HTTP wiring"
+        precedent as RBAC Phase B and the audit log itself. Verified with
+        integration tests against real Postgres, including that the
+        `CHECK` constraint actually rejects a mismatched
+        `node_type`/`container_runtime` pair and that the migration's
+        `down` reverses cleanly.
   - [ ] Agent: Docker/Podman runtime backend (Docker-Engine-API-compatible), agent-initiated WebSocket, bearer token, CDI GPU passthrough
   - [ ] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
   - [ ] Model transfers: Hugging Face download only (no peer replication yet)
@@ -296,6 +328,7 @@ below are otherwise not yet built.
 | 2026-08-10 | Argon2id chosen for the break-glass credential hash, over bcrypt (SCHEMA.md left this open) | Current OWASP-recommended default for password hashing. `golang.org/x/crypto/argon2` is already an indirect dependency via `go-ldap`, so this promotes it to direct rather than adding anything new; its API is only the raw key-derivation function, so the salt/encode/verify wrapper is hand-rolled, matching the same reasoning already used for `internal/session` | bcrypt (rejected: `golang.org/x/crypto/bcrypt` has a more complete ready-made API, but is the older/second-choice algorithm per current guidance, and the credential this protects - unrestricted, AD-independent break-glass access - is exactly the case worth the extra code for the stronger default) |
 | 2026-08-06 | Audit records always emitted as structured JSON to stdout (picked up by Filebeat or any shipper); optional active syslog/GELF push available on top for environments without a shipper. Local retention configurable up to 24 months | Day-to-day logging backend is Elasticsearch/OpenSearch via Filebeat; the stdout stream needs zero new code and works identically across bare metal (journald), Podman, and Kubernetes, letting any shipper (Filebeat, Fluentd, Vector) forward to Elasticsearch, OpenSearch, Graylog, or anywhere else | A syslog-push-only design (superseded - required active network client code for a problem a shipper already solves); native GELF-only integration (kept as an optional alternate protocol, not the default) |
 | 2026-08-10 | `internal/audit.Recorder` built as a service other components call directly (`rbac.Service.ElevateTier` today), not as generic chi HTTP middleware, and `audit_settings` (retention, syslog/GELF forwarding) deferred rather than built alongside `audit_log` | No state-changing HTTP handler exists yet for a generic "wrap every handler" middleware to attach to - the only real state-changing action in the codebase so far (`ElevateTier`) is a service-layer call, same situation RBAC Phase B was built into ahead of any HTTP wiring. `audit_settings` has no consumer either: no retention-pruning job and no forwarding push exist to read it, and the always-on stdout stream (the actually load-bearing path per ARCHITECTURE.md) needs no settings row at all | Building the settings table and a stub forwarding path now regardless (rejected: speculative infrastructure with nothing to configure yet, same reasoning already on record against Vault sidecar/CSI integration below) |
+| 2026-08-10 | Nodes' `fabric_group_id` left out of the v0.1.0 `nodes` migration entirely, to be added later by an `ALTER TABLE` alongside v0.3.0's `fabric_groups` table; `registered_by` made nullable from the start; `container_runtime`/`node_type` consistency enforced by a database `CHECK` constraint in addition to `internal/nodes` validation | A `REFERENCES fabric_groups (id)` FK cannot be created before `fabric_groups` exists, and clustering is explicitly out of v0.1.0 scope - no migration in this codebase has ever forward-referenced a not-yet-existing table. `registered_by` follows the exact shape of the `elevated_by` gap already fixed once (2026-08-09 RBAC Phase B entry above) - no reason to reintroduce the same bug knowingly. The `CHECK` constraint mirrors `break_glass_credential`'s singleton constraint: an invariant worth enforcing at the database level, not just trusting every future caller of `NodeRepository.Create` to get right | Adding an unconstrained nullable `fabric_group_id` column now (rejected: an unenforced FK is dead weight with no consumer until v0.3.0); leaving `registered_by` `NOT NULL` and simply disallowing SuperAdmin node registration (rejected: inconsistent with the project's "SuperAdmin is unrestricted, like root" stance already applied to `CanElevate` and `CanManageModelStore`) |
 
 ---
 

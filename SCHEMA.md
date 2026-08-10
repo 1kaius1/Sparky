@@ -49,11 +49,15 @@ One row per compute host - a Spark or a generic Docker/Podman GPU machine.
 | `container_runtime` | enum, nullable | `docker` / `podman` - only meaningful when `node_type = docker-gpu` |
 | `gpu_memory_gb` | numeric | VRAM. Equal to `cpu_memory_gb` for a Spark's unified memory - a Spark is the degenerate case of this same model, not a special case |
 | `cpu_memory_gb` | numeric | System RAM |
-| `fabric_group_id` | uuid, nullable, FK -> Fabric groups.id | Physical cluster linkage, if any. Null for any node incapable of clustering |
+| `fabric_group_id` | uuid, nullable, FK -> Fabric groups.id | Physical cluster linkage, if any. Null for any node incapable of clustering. Not present until the v0.3.0 migration that introduces Fabric groups - there is nothing for it to reference before then |
 | `agent_status` | enum | `online` / `offline` / `unreachable`, derived from the persistent WebSocket connection state |
 | `last_heartbeat_at` | timestamptz | |
-| `registered_by` | uuid, FK -> Users.id | |
+| `registered_by` | uuid, nullable, FK -> Users.id | Null when the break-glass SuperAdmin registered the node - same reasoning as Users' `elevated_by`, since the SuperAdmin is not a `Users` row |
 | `registered_at` | timestamptz | |
+
+`container_runtime` must be set when `node_type = docker-gpu` and unset when
+`node_type = spark`; enforced by a `CHECK` constraint, not just application-level
+validation.
 
 ---
 
