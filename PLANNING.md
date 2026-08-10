@@ -89,7 +89,7 @@ below are otherwise not yet built.
           `sparky-server` binary end-to-end (real Postgres, unreachable
           LDAP, graceful SIGTERM shutdown) - login against a real AD/LDAP
           server itself is still unverified, same caveat as Phase 2.
-  - [ ] Users, RBAC tiers (Read-only/Developer/PowerDev/Admin), SuperAdmin break-glass
+  - [x] Users, RBAC tiers (Read-only/Developer/PowerDev/Admin), SuperAdmin break-glass
     - [ ] Phase A: Permission overrides + break-glass storage (`internal/db`) -
           migration and repository for the `manage_model_store` capability
           grant (SCHEMA.md Permission overrides), and for the isolated
@@ -116,13 +116,29 @@ below are otherwise not yet built.
           SuperAdmin is not a `Users` row, so `elevated_by` must be able to
           store `NULL`) - changed to `*string`, verified the `NULL` actually
           persists against real Postgres.
-    - [ ] Phase C: SuperAdmin break-glass login - the
+    - [x] Phase C: SuperAdmin break-glass login - the
           `sparky set-superadmin-password` CLI subcommand, and a distinct
           login path in `internal/httpapi` for the SuperAdmin identity,
           which is not an LDAP/AD user and cannot go through the existing
           `LoginService.Login`. Complete when the manual test checklist
           item "Break-glass SuperAdmin login and first-Admin bootstrap flow"
           (ARCHITECTURE.md Testing Strategy) can actually be exercised.
+          Done - `POST /login/break-glass` is a separate endpoint, not a
+          special case inside the regular login handler, per the user's
+          confirmed choice. Password hashing is a hand-rolled Argon2id
+          wrapper (PHC-string-like encoding) around `golang.org/x/crypto/argon2`
+          (already indirect via `go-ldap`); the CLI subcommand reads the
+          password with no terminal echo via the newly-added
+          `golang.org/x/term`. `internal/session` and `internal/httpapi`'s
+          `RequireSession` now carry an `IsSuperAdmin` flag alongside
+          `UserID`, matching `internal/rbac.Actor`'s existing shape.
+          Verified as a genuine end-to-end flow, not just unit tests: ran
+          the interactive CLI subcommand through a real pseudo-terminal
+          (`golang.org/x/term`'s no-echo behavior needs a real tty, not a
+          pipe), confirmed the hash actually persisted in Postgres, then
+          started the real compiled server and logged in against that
+          exact stored credential over HTTP - correct password, wrong
+          password, and missing password all behaved correctly.
   - [ ] `sparky setup` CLI first-run wizard
   - [ ] Audit log covering all state-changing actions, including SuperAdmin
   - [ ] Node registry with `node_type` and the `gpu_memory_gb` / `cpu_memory_gb` split from the start

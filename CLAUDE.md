@@ -170,6 +170,18 @@ podman stop sparky-postgres-test
 go run ./cmd/sparky-server setup
 # Interactive CLI wizard - required before the server will serve normal routes.
 # See ARCHITECTURE.md Security Considerations for why this is CLI-only, not a web wizard.
+# Not yet implemented.
+```
+
+### SuperAdmin Break-Glass Credential
+
+```bash
+go run ./cmd/sparky-server set-superadmin-password
+# Interactive - prompts for a new password (with confirmation), no echo.
+# Always overwrites unconditionally: shell access to run this already implies
+# enough trust to reset it, which is the point of a break-glass credential.
+# Never available through the web UI - see SCHEMA.md Break-glass credential
+# and ARCHITECTURE.md Security Considerations.
 ```
 
 ### Backend

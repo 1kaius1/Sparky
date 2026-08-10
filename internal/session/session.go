@@ -25,10 +25,13 @@ import (
 // this package's errors to probe for why verification failed.
 var ErrInvalid = errors.New("invalid session")
 
-// Session is the payload signed into the cookie.
+// Session is the payload signed into the cookie. UserID is empty when
+// IsSuperAdmin is true - the SuperAdmin is not a Users row, see SCHEMA.md
+// Break-glass credential.
 type Session struct {
-	UserID    string    `json:"uid"`
-	ExpiresAt time.Time `json:"exp"`
+	UserID       string    `json:"uid"`
+	IsSuperAdmin bool      `json:"sa,omitempty"`
+	ExpiresAt    time.Time `json:"exp"`
 }
 
 // New creates a session for userID, valid for the given duration from now.
@@ -36,6 +39,15 @@ func New(userID string, duration time.Duration) Session {
 	return Session{
 		UserID:    userID,
 		ExpiresAt: time.Now().UTC().Add(duration),
+	}
+}
+
+// NewSuperAdmin creates a break-glass SuperAdmin session, valid for the
+// given duration from now.
+func NewSuperAdmin(duration time.Duration) Session {
+	return Session{
+		IsSuperAdmin: true,
+		ExpiresAt:    time.Now().UTC().Add(duration),
 	}
 }
 

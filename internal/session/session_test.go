@@ -30,6 +30,26 @@ func TestSignVerify_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestSignVerify_SuperAdmin_RoundTrip(t *testing.T) {
+	s := NewSuperAdmin(time.Hour)
+
+	cookieValue, err := Sign(testSecret, s)
+	if err != nil {
+		t.Fatalf("Sign() error: %v", err)
+	}
+
+	got, err := Verify(testSecret, cookieValue)
+	if err != nil {
+		t.Fatalf("Verify() error: %v", err)
+	}
+	if !got.IsSuperAdmin {
+		t.Error("IsSuperAdmin = false, want true")
+	}
+	if got.UserID != "" {
+		t.Errorf("UserID = %q, want empty for a SuperAdmin session", got.UserID)
+	}
+}
+
 func TestVerify_Expired(t *testing.T) {
 	s := New("user-123", -time.Hour) // already expired
 
