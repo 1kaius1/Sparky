@@ -90,6 +90,26 @@ below are otherwise not yet built.
           LDAP, graceful SIGTERM shutdown) - login against a real AD/LDAP
           server itself is still unverified, same caveat as Phase 2.
   - [ ] Users, RBAC tiers (Read-only/Developer/PowerDev/Admin), SuperAdmin break-glass
+    - [ ] Phase A: Permission overrides + break-glass storage (`internal/db`) -
+          migration and repository for the `manage_model_store` capability
+          grant (SCHEMA.md Permission overrides), and for the isolated
+          break-glass credential row (SCHEMA.md Break-glass credential -
+          password hash only, never a `Users` row). Complete when both are
+          migrated and covered by integration tests, matching the Users
+          repository's pattern from the auth work's Phase 1.
+    - [ ] Phase B: `internal/rbac` - elevation-rule enforcement (who can
+          promote whom, per SCHEMA.md Users Elevation rules), permission-
+          override checks, and the SuperAdmin bypass short-circuit. Pure
+          logic, testable without a database. Complete when tier changes go
+          through rule checks instead of calling `UserRepository.UpdateTier`
+          directly.
+    - [ ] Phase C: SuperAdmin break-glass login - the
+          `sparky set-superadmin-password` CLI subcommand, and a distinct
+          login path in `internal/httpapi` for the SuperAdmin identity,
+          which is not an LDAP/AD user and cannot go through the existing
+          `LoginService.Login`. Complete when the manual test checklist
+          item "Break-glass SuperAdmin login and first-Admin bootstrap flow"
+          (ARCHITECTURE.md Testing Strategy) can actually be exercised.
   - [ ] `sparky setup` CLI first-run wizard
   - [ ] Audit log covering all state-changing actions, including SuperAdmin
   - [ ] Node registry with `node_type` and the `gpu_memory_gb` / `cpu_memory_gb` split from the start
@@ -194,6 +214,7 @@ below are otherwise not yet built.
 | 2026-08-09 | `chi` confirmed as the HTTP router, ahead of the AD/LDAP auth work's login handlers needing one | No new information changed the reasoning already recorded in CLAUDE.md's tech stack table (thin stdlib-based router, not a heavy framework) | None raised at confirmation time |
 | 2026-08-09 | Signed cookie session confirmed as the session mechanism, ahead of the AD/LDAP auth work's session handling | No new information changed the reasoning already recorded in CLAUDE.md's tech stack table (fits the htmx server-rendered approach, no browser-side JWT handling) | None raised at confirmation time |
 | 2026-08-09 | `github.com/go-ldap/ldap/v3` chosen as the LDAP client library for the identity-provider's on-prem AD implementation | Standard library has no LDAP support; go-ldap is the widely-used, actively maintained Go LDAP client and supports the `LDAP_MATCHING_RULE_IN_CHAIN` extended match this design already depends on for nested group resolution | None seriously considered - it is the de facto standard for Go |
+| 2026-08-10 | Argon2id chosen for the break-glass credential hash, over bcrypt (SCHEMA.md left this open) | Current OWASP-recommended default for password hashing. `golang.org/x/crypto/argon2` is already an indirect dependency via `go-ldap`, so this promotes it to direct rather than adding anything new; its API is only the raw key-derivation function, so the salt/encode/verify wrapper is hand-rolled, matching the same reasoning already used for `internal/session` | bcrypt (rejected: `golang.org/x/crypto/bcrypt` has a more complete ready-made API, but is the older/second-choice algorithm per current guidance, and the credential this protects - unrestricted, AD-independent break-glass access - is exactly the case worth the extra code for the stronger default) |
 | 2026-08-06 | Audit records always emitted as structured JSON to stdout (picked up by Filebeat or any shipper); optional active syslog/GELF push available on top for environments without a shipper. Local retention configurable up to 24 months | Day-to-day logging backend is Elasticsearch/OpenSearch via Filebeat; the stdout stream needs zero new code and works identically across bare metal (journald), Podman, and Kubernetes, letting any shipper (Filebeat, Fluentd, Vector) forward to Elasticsearch, OpenSearch, Graylog, or anywhere else | A syslog-push-only design (superseded - required active network client code for a problem a shipper already solves); native GELF-only integration (kept as an optional alternate protocol, not the default) |
 
 ---
