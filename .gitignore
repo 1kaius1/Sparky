@@ -1,6 +1,10 @@
 # Local environment
 .env
 
+# Claude Code - personal local overrides only; a shared .claude/settings.json
+# or custom agents/commands/skills are legitimate to commit
+.claude/settings.local.json
+
 # Build artifacts
 /bin/
 *.exe

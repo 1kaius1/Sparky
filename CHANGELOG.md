@@ -72,6 +72,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   or SuperAdmin login yet, just the storage layer. Covered by integration
   tests against a real Postgres instance, same pattern as the Users
   repository.
+- `.gitignore`: `.claude/settings.local.json`, so contributors without a
+  personal global git ignore for it (Claude Code's own local-override
+  settings file) can't accidentally commit it.
 
 ### Changed
 
