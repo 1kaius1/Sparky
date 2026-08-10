@@ -97,12 +97,25 @@ below are otherwise not yet built.
           password hash only, never a `Users` row). Complete when both are
           migrated and covered by integration tests, matching the Users
           repository's pattern from the auth work's Phase 1.
-    - [ ] Phase B: `internal/rbac` - elevation-rule enforcement (who can
+    - [x] Phase B: `internal/rbac` - elevation-rule enforcement (who can
           promote whom, per SCHEMA.md Users Elevation rules), permission-
           override checks, and the SuperAdmin bypass short-circuit. Pure
           logic, testable without a database. Complete when tier changes go
           through rule checks instead of calling `UserRepository.UpdateTier`
           directly.
+          Done - `CanElevate` and `CanManageModelStore` are pure functions
+          (exhaustively table-tested across all tier pairs); `Service.
+          ElevateTier` is the only sanctioned path to a tier change, since
+          it looks up the target's current tier fresh, checks the rule,
+          and only then persists. Resolved one real ambiguity in the
+          Elevation rules text (demotion range) with the user: Admin
+          demotion is single-step, symmetric with promotion. Also
+          discovered and fixed a gap from the auth work's Phase 1:
+          `UserRepository.UpdateTier`'s `elevatedBy` was a required
+          `string`, which can't represent a SuperAdmin-made change (the
+          SuperAdmin is not a `Users` row, so `elevated_by` must be able to
+          store `NULL`) - changed to `*string`, verified the `NULL` actually
+          persists against real Postgres.
     - [ ] Phase C: SuperAdmin break-glass login - the
           `sparky set-superadmin-password` CLI subcommand, and a distinct
           login path in `internal/httpapi` for the SuperAdmin identity,
