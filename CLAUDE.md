@@ -117,6 +117,14 @@ sparky/
 go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 ```
 
+`go install` places the binary in `$(go env GOPATH)/bin` (commonly `~/go/bin`) -
+make sure that directory is on `PATH`, or invoke it by full path.
+
+Do not run `apt install python3-migrate` if your shell suggests it after a
+`command not found` on `migrate` - that is an unrelated Python package with a
+same-named but incompatible command. Only the `go install` command above
+provides the real `golang-migrate` CLI these docs assume.
+
 ### Environment Setup
 
 ```bash
@@ -133,6 +141,25 @@ actually delivered on bare metal, Podman, and Kubernetes.
 ```bash
 createdb sparky_dev
 migrate -path migrations/ -database "${DATABASE_URL}" up
+```
+
+For a quick, disposable database instead of a persistent local install - useful for
+testing a migration or a one-off run without touching a real dev database:
+
+```bash
+podman run --rm -d \
+  --name sparky-postgres-test \
+  -e POSTGRES_USER=sparky \
+  -e POSTGRES_PASSWORD=sparky \
+  -e POSTGRES_DB=sparky_dev \
+  -p 5432:5432 \
+  docker.io/library/postgres:16
+
+# matches .env.example's DATABASE_URL exactly - no config changes needed
+migrate -path migrations/ -database "postgres://sparky:sparky@localhost:5432/sparky_dev?sslmode=disable" up
+
+# tear down when done - no volume is mounted, so nothing persists
+podman stop sparky-postgres-test
 ```
 
 ### First Run

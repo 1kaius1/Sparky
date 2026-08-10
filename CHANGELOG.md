@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Documented the `golang-migrate` CLI install step (CLAUDE.md, CONTRIBUTING.md)
   now that `migrations/` actually exists and Database Setup/Migrations depend
   on it.
+- `sparky-server` now actually loads `.env` on startup (`godotenv`), so
+  CLAUDE.md's documented `cp .env.example .env` workflow works as written. A
+  missing `.env` is treated as expected (production never has one); a
+  present-but-malformed one logs a non-fatal warning. `sparky-agent` is
+  unaffected - its local dev convention is a secrets file, not `.env`.
+- CLAUDE.md: a disposable-Postgres-via-podman recipe in Database Setup, and a
+  warning against `apt install python3-migrate` - an unrelated package Debian/
+  Ubuntu's command-not-found hook suggests for the same `migrate` command
+  name.
 
 ### Changed
 
