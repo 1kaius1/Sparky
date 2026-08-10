@@ -159,7 +159,38 @@ below are otherwise not yet built.
         `migrate ... up` hint if the schema isn't there) and is safely
         re-runnable (resets the password, with a message noting it was
         already configured, rather than refusing).
-  - [ ] Audit log covering all state-changing actions, including SuperAdmin
+  - [x] Audit log covering all state-changing actions, including SuperAdmin
+        Done - migration `000004_create_audit_log` creates the `audit_log`
+        table per SCHEMA.md; `internal/db.AuditRepository` is its
+        append-only writer (no Update or Delete). `internal/audit.Recorder`
+        is the single sanctioned path to it - writes the authoritative
+        Postgres record, then additionally emits a structured JSON line
+        (marked `"type":"audit"`) to a configured stream (stdout in
+        production), matching ARCHITECTURE.md's always-on shipper-friendly
+        stream. Wired into `internal/rbac.Service.ElevateTier` - the one
+        state-changing action that already existed in the codebase and
+        that SCHEMA.md itself uses as the audit log's own example
+        (`elevated_user`) - covering both a regular Admin actor and the
+        SuperAdmin (nil `actor_id`, `is_superadmin_action` true) in the
+        same code path, so there is no separate SuperAdmin-only branch to
+        accidentally exempt. Verified with real integration tests against
+        Postgres (`internal/db`), including that the `000004` migration's
+        `down` reverses cleanly, not just `up`.
+
+        Deliberately out of scope for this pass, to keep it to what
+        currently has a real caller rather than speculative plumbing: the
+        `audit_settings` table (retention/forwarding config) and the
+        active syslog/GELF push - see Decisions Log 2026-08-10. Also not
+        audited: authentication events themselves (login, first-login
+        user provisioning) - SCHEMA.md's own examples
+        (`loaded_model`/`elevated_user`/`deleted_model_copy`) are all
+        administrative actions on domain objects, not session/auth
+        bookkeeping, and `last_login_at` already covers "did this user
+        authenticate." The generic HTTP "Audit Middleware" ARCHITECTURE.md
+        describes has no concrete shape yet either, since no
+        state-changing HTTP handler exists to wrap - `internal/audit.
+        Recorder` is the writer such a middleware (or any direct service
+        call, as `rbac.Service` does today) would use once one exists.
   - [ ] Node registry with `node_type` and the `gpu_memory_gb` / `cpu_memory_gb` split from the start
   - [ ] Agent: Docker/Podman runtime backend (Docker-Engine-API-compatible), agent-initiated WebSocket, bearer token, CDI GPU passthrough
   - [ ] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
@@ -264,6 +295,7 @@ below are otherwise not yet built.
 | 2026-08-09 | `github.com/go-ldap/ldap/v3` chosen as the LDAP client library for the identity-provider's on-prem AD implementation | Standard library has no LDAP support; go-ldap is the widely-used, actively maintained Go LDAP client and supports the `LDAP_MATCHING_RULE_IN_CHAIN` extended match this design already depends on for nested group resolution | None seriously considered - it is the de facto standard for Go |
 | 2026-08-10 | Argon2id chosen for the break-glass credential hash, over bcrypt (SCHEMA.md left this open) | Current OWASP-recommended default for password hashing. `golang.org/x/crypto/argon2` is already an indirect dependency via `go-ldap`, so this promotes it to direct rather than adding anything new; its API is only the raw key-derivation function, so the salt/encode/verify wrapper is hand-rolled, matching the same reasoning already used for `internal/session` | bcrypt (rejected: `golang.org/x/crypto/bcrypt` has a more complete ready-made API, but is the older/second-choice algorithm per current guidance, and the credential this protects - unrestricted, AD-independent break-glass access - is exactly the case worth the extra code for the stronger default) |
 | 2026-08-06 | Audit records always emitted as structured JSON to stdout (picked up by Filebeat or any shipper); optional active syslog/GELF push available on top for environments without a shipper. Local retention configurable up to 24 months | Day-to-day logging backend is Elasticsearch/OpenSearch via Filebeat; the stdout stream needs zero new code and works identically across bare metal (journald), Podman, and Kubernetes, letting any shipper (Filebeat, Fluentd, Vector) forward to Elasticsearch, OpenSearch, Graylog, or anywhere else | A syslog-push-only design (superseded - required active network client code for a problem a shipper already solves); native GELF-only integration (kept as an optional alternate protocol, not the default) |
+| 2026-08-10 | `internal/audit.Recorder` built as a service other components call directly (`rbac.Service.ElevateTier` today), not as generic chi HTTP middleware, and `audit_settings` (retention, syslog/GELF forwarding) deferred rather than built alongside `audit_log` | No state-changing HTTP handler exists yet for a generic "wrap every handler" middleware to attach to - the only real state-changing action in the codebase so far (`ElevateTier`) is a service-layer call, same situation RBAC Phase B was built into ahead of any HTTP wiring. `audit_settings` has no consumer either: no retention-pruning job and no forwarding push exist to read it, and the always-on stdout stream (the actually load-bearing path per ARCHITECTURE.md) needs no settings row at all | Building the settings table and a stub forwarding path now regardless (rejected: speculative infrastructure with nothing to configure yet, same reasoning already on record against Vault sidecar/CSI integration below) |
 
 ---
 
@@ -274,6 +306,7 @@ below are otherwise not yet built.
 | Mid-session behavior when a user loses AD access-group membership is undefined | Low | Not a stated priority during auth design; existing session likely persists until natural expiry |
 | CDI GPU-passthrough hook behavior on Podman not yet verified on target hardware | Medium | Requires the actual Spark and Dell Precision hardware to test; noted as a known Podman-specific gotcha in research |
 | `agent/config`'s `SPARKY_MODEL_STORAGE_PATH` has no default - docs/AGENT.md documents `/home/serviceloop/models` as the Spark default, but that depends on `SPARKY_NODE_TYPE` at runtime and isn't implemented yet | Low | No bare-metal runtime backend exists yet to consume this default; implement alongside the v0.2.0 backend and `sparky-agent setup` work |
+| `rbac.Service.ElevateTier`'s tier update and its audit-log write are two separate calls, not one database transaction - a tier change can persist while its audit record fails to write (surfaced to the caller as an error after the fact, but not rolled back) | Low | No cross-repository transaction pattern exists anywhere else in the codebase yet to extend; the failure mode requires the audit Postgres write itself to fail immediately after a successful update, which is rare enough not to block this pass |
 
 ---
 
