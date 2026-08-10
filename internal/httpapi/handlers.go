@@ -102,3 +102,36 @@ func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 	setSessionCookie(w, r, "", -1)
 	w.WriteHeader(http.StatusNoContent)
 }
+
+type breakGlassLoginRequest struct {
+	Password string `json:"password"`
+}
+
+// handleBreakGlassLogin is a distinct endpoint from handleLogin, not a
+// special case within it - see PLANNING.md Decisions Log: the SuperAdmin
+// is not an AD/LDAP identity, and a separate path avoids any risk of
+// colliding with a real AD username.
+func (a *API) handleBreakGlassLogin(w http.ResponseWriter, r *http.Request) {
+	var req breakGlassLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "request body must be valid JSON")
+		return
+	}
+	if req.Password == "" {
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "password is required")
+		return
+	}
+
+	cookieValue, err := a.breakGlassLoginService.Login(r.Context(), req.Password)
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		writeError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid password")
+		return
+	case err != nil:
+		writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "login failed")
+		return
+	}
+
+	setSessionCookie(w, r, cookieValue, int(sessionDuration.Seconds()))
+	w.WriteHeader(http.StatusNoContent)
+}

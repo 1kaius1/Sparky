@@ -83,6 +83,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `UserRepository.UpdateTier`. This is Phase B of the "Users, RBAC tiers,
   SuperAdmin break-glass" work; no SuperAdmin login yet. `CanElevate` is
   exhaustively table-tested across all 16 tier-pair combinations.
+- SuperAdmin break-glass login - Phase C, and the last phase, of "Users,
+  RBAC tiers, SuperAdmin break-glass". `sparky-server set-superadmin-password`
+  is a new interactive CLI subcommand (no terminal echo, via
+  `golang.org/x/term`) that hashes the password with a hand-rolled Argon2id
+  wrapper (`internal/auth`) and stores it via `BreakGlassRepository`.
+  `POST /login/break-glass` is a separate endpoint from the regular AD
+  login, not a special case inside it, since the SuperAdmin is not an
+  LDAP/AD identity. `internal/session` and `internal/httpapi`'s
+  `RequireSession` now carry `IsSuperAdmin` alongside `UserID`, matching
+  `internal/rbac.Actor`'s existing shape. Verified as a genuine end-to-end
+  flow: the interactive CLI ran through a real pseudo-terminal (required,
+  since `x/term`'s no-echo behavior doesn't work over a plain pipe), the
+  resulting hash was confirmed in Postgres, and the compiled server was
+  then started for real and logged into against that exact stored
+  credential over HTTP.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
@@ -90,6 +105,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SuperAdmin-made change has no `Users` row to reference and
   `elevated_by` must be able to store `NULL`. Added `FindByID` for
   `internal/rbac`'s use. No other callers existed yet to migrate.
+- `internal/httpapi.New` now also takes a `*BreakGlassLoginService`
+  parameter. `UserIDFromContext` is replaced by `IdentityFromContext`,
+  returning an `Identity{UserID, IsSuperAdmin}` instead of a bare string -
+  no other callers existed yet to migrate.
 
 ### Deprecated
 

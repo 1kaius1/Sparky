@@ -16,7 +16,8 @@ import (
 
 func newTestServer(idp auth.IdentityProvider, store *fakeUserStore) (*httptest.Server, *API) {
 	svc := NewLoginService(idp, store, testSessionSecret)
-	api := New(svc, testSessionSecret)
+	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
+	api := New(svc, breakGlassSvc, testSessionSecret)
 	srv := httptest.NewServer(api.Router())
 	return srv, api
 }
@@ -209,11 +210,12 @@ func TestRequireSession(t *testing.T) {
 		ADSID: "S-1-5-21-1", DisplayName: "Jane Smith", InAccessGroup: true,
 	}}
 	svc := NewLoginService(idp, newFakeUserStore(), testSessionSecret)
-	api := New(svc, testSessionSecret)
+	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
+	api := New(svc, breakGlassSvc, testSessionSecret)
 
-	var gotUserID string
+	var gotIdentity Identity
 	protected := api.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotUserID, _ = UserIDFromContext(r.Context())
+		gotIdentity, _ = IdentityFromContext(r.Context())
 		w.WriteHeader(http.StatusOK)
 	}))
 	srv := httptest.NewServer(protected)
@@ -258,8 +260,34 @@ func TestRequireSession(t *testing.T) {
 		if resp.StatusCode != http.StatusOK {
 			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
 		}
-		if gotUserID != "user-42" {
-			t.Errorf("UserIDFromContext = %q, want %q", gotUserID, "user-42")
+		if gotIdentity.UserID != "user-42" {
+			t.Errorf("Identity.UserID = %q, want %q", gotIdentity.UserID, "user-42")
+		}
+		if gotIdentity.IsSuperAdmin {
+			t.Error("Identity.IsSuperAdmin = true, want false for a regular user session")
+		}
+	})
+
+	t.Run("valid SuperAdmin cookie", func(t *testing.T) {
+		cookieValue, err := session.Sign(testSessionSecret, session.NewSuperAdmin(sessionDuration))
+		if err != nil {
+			t.Fatalf("session.Sign() error: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET error: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if !gotIdentity.IsSuperAdmin {
+			t.Error("Identity.IsSuperAdmin = false, want true")
+		}
+		if gotIdentity.UserID != "" {
+			t.Errorf("Identity.UserID = %q, want empty for a SuperAdmin session", gotIdentity.UserID)
 		}
 	})
 }

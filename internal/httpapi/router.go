@@ -14,15 +14,21 @@ import (
 
 // API holds the dependencies HTTP handlers need.
 type API struct {
-	loginService  *LoginService
-	sessionSecret string
+	loginService           *LoginService
+	breakGlassLoginService *BreakGlassLoginService
+	sessionSecret          string
 }
 
 // New constructs an API. sessionSecret is used to verify session cookies
 // on protected routes via RequireSession - login/logout themselves go
-// through LoginService, which holds its own copy for signing.
-func New(loginService *LoginService, sessionSecret string) *API {
-	return &API{loginService: loginService, sessionSecret: sessionSecret}
+// through LoginService/BreakGlassLoginService, which hold their own copies
+// for signing.
+func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, sessionSecret string) *API {
+	return &API{
+		loginService:           loginService,
+		breakGlassLoginService: breakGlassLoginService,
+		sessionSecret:          sessionSecret,
+	}
 }
 
 // Router builds the full route tree. Per ARCHITECTURE.md Application
@@ -38,6 +44,7 @@ func (a *API) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 
 	r.Post("/login", a.handleLogin)
+	r.Post("/login/break-glass", a.handleBreakGlassLogin)
 	r.Post("/logout", a.handleLogout)
 
 	return r
@@ -55,10 +62,18 @@ func setRequestIDHeader(next http.Handler) http.Handler {
 
 type contextKey string
 
-const userIDContextKey contextKey = "sparky_user_id"
+const identityContextKey contextKey = "sparky_identity"
+
+// Identity is what RequireSession stores in the request context. UserID
+// is empty when IsSuperAdmin is true, mirroring internal/session.Session
+// and internal/rbac.Actor.
+type Identity struct {
+	UserID       string
+	IsSuperAdmin bool
+}
 
 // RequireSession verifies the session cookie and stores the authenticated
-// user's ID in the request context, responding 401 if it is missing or
+// Identity in the request context, responding 401 if it is missing or
 // invalid. Not yet used by any route in this package - future protected
 // routes (RBAC-gated actions, the Dashboard UI) will register through it.
 func (a *API) RequireSession(next http.Handler) http.Handler {
@@ -75,14 +90,15 @@ func (a *API) RequireSession(next http.Handler) http.Handler {
 			return
 		}
 
-		ctx := context.WithValue(r.Context(), userIDContextKey, sess.UserID)
+		identity := Identity{UserID: sess.UserID, IsSuperAdmin: sess.IsSuperAdmin}
+		ctx := context.WithValue(r.Context(), identityContextKey, identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
-// UserIDFromContext returns the authenticated user's ID stored by
-// RequireSession, if any.
-func UserIDFromContext(ctx context.Context) (string, bool) {
-	id, ok := ctx.Value(userIDContextKey).(string)
+// IdentityFromContext returns the Identity stored by RequireSession, if
+// any.
+func IdentityFromContext(ctx context.Context) (Identity, bool) {
+	id, ok := ctx.Value(identityContextKey).(Identity)
 	return id, ok
 }

@@ -46,6 +46,11 @@ func main() {
 
 	ctx := context.Background()
 
+	if len(os.Args) > 1 && os.Args[1] == "set-superadmin-password" {
+		runSetSuperAdminPassword(ctx, cfg, logger)
+		return
+	}
+
 	pool, err := db.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		logger.Fatalf("database: %v", err)
@@ -56,7 +61,11 @@ func main() {
 	identityProvider := auth.NewLDAPProvider(cfg.LDAPServerAddr, cfg.LDAPBindDN, cfg.LDAPBindPassword, cfg.LDAPBaseDN, cfg.LDAPAccessGroupDN)
 	users := db.NewUserRepository(pool)
 	loginService := httpapi.NewLoginService(identityProvider, users, cfg.SessionSecret)
-	api := httpapi.New(loginService, cfg.SessionSecret)
+
+	breakGlass := db.NewBreakGlassRepository(pool)
+	breakGlassLoginService := httpapi.NewBreakGlassLoginService(breakGlass, cfg.SessionSecret)
+
+	api := httpapi.New(loginService, breakGlassLoginService, cfg.SessionSecret)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.ListenPort,
