@@ -170,7 +170,12 @@ podman stop sparky-postgres-test
 go run ./cmd/sparky-server setup
 # Interactive CLI wizard - required before the server will serve normal routes.
 # See ARCHITECTURE.md Security Considerations for why this is CLI-only, not a web wizard.
-# Not yet implemented.
+# Whether setup has run is inferred from whether the SuperAdmin break-glass
+# password has been set (internal/httpapi's setupGate) - there is no separate
+# setup-state flag. Until it has, every route responds 503 SETUP_REQUIRED;
+# the running server picks up completion on the next request, no restart
+# needed. Currently this wizard only sets that password - see "SuperAdmin
+# Break-Glass Credential" below, whose prompt/hash/store logic it shares.
 ```
 
 ### SuperAdmin Break-Glass Credential

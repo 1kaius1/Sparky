@@ -98,6 +98,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resulting hash was confirmed in Postgres, and the compiled server was
   then started for real and logged into against that exact stored
   credential over HTTP.
+- `sparky setup` CLI first-run wizard (`cmd/sparky-server/setup.go`), and
+  `internal/httpapi`'s `setupGate` middleware that enforces it: every
+  route responds 503 `SETUP_REQUIRED` until the break-glass password has
+  been set. The gate checks the database only until it first observes
+  setup complete, then caches that forever - a `sparky-server setup` run
+  in another terminal takes effect on the running server's very next
+  request, no restart needed, which was verified live against a real
+  running server, not just asserted. `setup` shares its prompt/hash/store
+  logic with `set-superadmin-password`, adds a database-readiness check
+  (a clear `migrate ... up` hint if the schema isn't there), and is safely
+  re-runnable.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
@@ -109,6 +120,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   parameter. `UserIDFromContext` is replaced by `IdentityFromContext`,
   returning an `Identity{UserID, IsSuperAdmin}` instead of a bare string -
   no other callers existed yet to migrate.
+- `internal/httpapi.New` takes a fourth parameter, the break-glass store
+  the setup gate checks - no other callers existed yet to migrate.
 
 ### Deprecated
 
