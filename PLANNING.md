@@ -71,11 +71,24 @@ below are otherwise not yet built.
           DN and an empty password succeeds without checking the password).
           Unit-tested against a fake LDAP connection, since standing up a
           real AD-compatible server isn't practical to do disposably.
-    - [ ] Phase 3: Session handling and HTTP wiring - `chi` router, login/logout
+    - [x] Phase 3: Session handling and HTTP wiring - `chi` router, login/logout
           handlers, signed-cookie session middleware, wiring Phase 1 and Phase 2
           together. Complete when a browser can complete a full login
           round-trip against a real (or fake) LDAP server and receive a valid
           session cookie.
+          Done - `internal/session` is a hand-rolled HMAC-SHA256 signed
+          cookie (no server-side store), matching the "own it, don't add
+          dependencies you don't need" reasoning already on record for
+          `chi`. `internal/httpapi` holds the router, `RequireSession`
+          middleware (unused by any route yet - nothing to protect until
+          RBAC/Dashboard UI land), and `LoginService`, which enforces the
+          login-gate group check and provisions first-time users at
+          `TierReadOnly`. Verified with a real `httptest` browser round
+          trip (cookiejar, real Set-Cookie parsing) against a fake
+          `IdentityProvider`, and separately smoke-tested the actual
+          `sparky-server` binary end-to-end (real Postgres, unreachable
+          LDAP, graceful SIGTERM shutdown) - login against a real AD/LDAP
+          server itself is still unverified, same caveat as Phase 2.
   - [ ] Users, RBAC tiers (Read-only/Developer/PowerDev/Admin), SuperAdmin break-glass
   - [ ] `sparky setup` CLI first-run wizard
   - [ ] Audit log covering all state-changing actions, including SuperAdmin
