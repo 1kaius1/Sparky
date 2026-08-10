@@ -5,9 +5,6 @@ inference engines across a small fleet of GPU compute nodes - NVIDIA DGX Spark
 hardware and other Docker/Podman GPU hosts alike - authenticated against Active
 Directory, with tiered permissions and full audit visibility.
 
-Named for two reasons: an homage to Clippy, and because "Sparky" is what electricians
-who work with Sparks get called.
-
 ---
 
 ## Status
