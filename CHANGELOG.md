@@ -60,6 +60,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (cookiejar, actual `Set-Cookie` parsing) against a fake identity
   provider, and the compiled binary was smoke-tested end-to-end against a
   real Postgres instance.
+- Migrations `000002_create_permission_overrides` and
+  `000003_create_break_glass_credential`, with `internal/db`'s
+  `PermissionOverrideRepository` (grant/get/revoke the `manage_model_store`
+  capability) and `BreakGlassRepository` (get/set the isolated break-glass
+  credential row). The break-glass table can hold at most one row by
+  construction - a boolean primary key fixed to `true` plus a matching
+  CHECK constraint, verified empirically by attempting a second insert and
+  confirming Postgres rejects it. This is Phase A of the "Users, RBAC
+  tiers, SuperAdmin break-glass" work (PLANNING.md v0.1.0); no RBAC logic
+  or SuperAdmin login yet, just the storage layer. Covered by integration
+  tests against a real Postgres instance, same pattern as the Users
+  repository.
 
 ### Changed
 
