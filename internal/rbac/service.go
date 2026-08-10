@@ -23,22 +23,41 @@ type userStore interface {
 	UpdateTier(ctx context.Context, id string, tier db.Tier, elevatedBy *string, elevatedAt time.Time) error
 }
 
+// auditRecorder is the subset of *audit.Recorder this package needs,
+// narrow enough to fake in tests without a real Postgres instance - same
+// pattern as userStore. Defined here rather than importing internal/audit
+// directly, matching how the rest of this codebase keeps dependency
+// interfaces local to the consuming package.
+type auditRecorder interface {
+	Record(ctx context.Context, actorID *string, isSuperAdminAction bool, action, objectType, objectID string, detail map[string]any) error
+}
+
 // Service is the RBAC orchestration layer: check a rule, then persist the
 // decision. See CLAUDE.md's Handler -> Service Layer -> Repository
 // pattern - callers should never call UserRepository.UpdateTier directly;
 // this is the only path a tier change should take.
 type Service struct {
 	users userStore
+	audit auditRecorder
 }
 
 // NewService constructs a Service.
-func NewService(users userStore) *Service {
-	return &Service{users: users}
+func NewService(users userStore, audit auditRecorder) *Service {
+	return &Service{users: users, audit: audit}
 }
 
 // ElevateTier changes targetUserID's tier to toTier, if actor is permitted
 // to. The target's current tier is looked up fresh rather than trusted
 // from the caller, so the rule check is always against real state.
+//
+// A permitted elevation is always audited ("elevated_user" - see
+// SCHEMA.md Audit log) after it persists, including when actor is the
+// SuperAdmin - see ARCHITECTURE.md's "no exceptions" audit guarantee. An
+// audit write failure is returned like any other error: the tier change
+// has already been persisted at that point (this package does not use a
+// database transaction spanning both writes - see PLANNING.md Known
+// Issues and Technical Debt), but the caller still needs to know
+// something went wrong.
 func (s *Service) ElevateTier(ctx context.Context, actor Actor, targetUserID string, toTier db.Tier) error {
 	target, err := s.users.FindByID(ctx, targetUserID)
 	if err != nil {
@@ -49,6 +68,11 @@ func (s *Service) ElevateTier(ctx context.Context, actor Actor, targetUserID str
 		return ErrNotPermitted
 	}
 
+	// Captured before UpdateTier runs, not read back off target
+	// afterward - target may be the same backing value UpdateTier just
+	// changed, depending on the userStore implementation.
+	fromTier := target.Tier
+
 	var elevatedBy *string
 	if !actor.IsSuperAdmin {
 		elevatedBy = &actor.UserID
@@ -56,6 +80,14 @@ func (s *Service) ElevateTier(ctx context.Context, actor Actor, targetUserID str
 
 	if err := s.users.UpdateTier(ctx, targetUserID, toTier, elevatedBy, time.Now().UTC()); err != nil {
 		return fmt.Errorf("update tier: %w", err)
+	}
+
+	detail := map[string]any{
+		"from_tier": string(fromTier),
+		"to_tier":   string(toTier),
+	}
+	if err := s.audit.Record(ctx, elevatedBy, actor.IsSuperAdmin, "elevated_user", "user", targetUserID, detail); err != nil {
+		return fmt.Errorf("record audit: %w", err)
 	}
 	return nil
 }

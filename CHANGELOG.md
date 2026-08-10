@@ -109,6 +109,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   logic with `set-superadmin-password`, adds a database-readiness check
   (a clear `migrate ... up` hint if the schema isn't there), and is safely
   re-runnable.
+- Audit log: migration `000004_create_audit_log` creates the `audit_log`
+  table per SCHEMA.md, `internal/db.AuditRepository` is its append-only
+  writer, and `internal/audit.Recorder` is the single sanctioned path to
+  it - it writes the authoritative Postgres record, then additionally
+  emits a structured JSON line to a configured stream (stdout in
+  production), per ARCHITECTURE.md Audit Log's always-on, shipper-friendly
+  stream. Wired into `internal/rbac.Service.ElevateTier` (`elevated_user`),
+  covering both a regular Admin actor and the SuperAdmin -
+  `is_superadmin_action` and a nil `actor_id` for the latter, since the
+  SuperAdmin is not a `Users` row - in the same code path, so there is no
+  separate branch that could accidentally skip the audit write.
+  `audit_settings` (retention, syslog/GELF forwarding) and the generic
+  HTTP audit middleware ARCHITECTURE.md describes are deferred - see
+  PLANNING.md Decisions Log 2026-08-10. Covered by integration tests
+  against a real Postgres instance (including that the migration's `down`
+  reverses cleanly), same pattern as the Users and Permission overrides
+  repositories.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
