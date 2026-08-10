@@ -108,7 +108,7 @@ sparky/
 ### Prerequisites
 
 ```bash
-# Go 1.22+
+# Go 1.26+
 # PostgreSQL 14+
 # No Node.js required - there is no frontend build step
 ```

@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Go module and repository skeleton: `cmd/sparky-server` and `cmd/sparky-agent`
+  entry points that load and validate their environment configuration and fail
+  fast on startup, per ARCHITECTURE.md Application Lifecycle. No routes,
+  database connection, or agent protocol handling yet.
+- `.gitignore`
 
 ### Changed
 
@@ -26,5 +31,5 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 - Initial release
 
-[Unreleased]: https://github.com/OWNER/REPO/compare/v0.1.0...HEAD
-[0.1.0]: https://github.com/OWNER/REPO/releases/tag/v0.1.0
+[Unreleased]: https://github.com/1kaius1/Sparky/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/1kaius1/Sparky/releases/tag/v0.1.0

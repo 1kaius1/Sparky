@@ -37,11 +37,13 @@ and its GPU/CPU/memory usage, and an admin can see exactly who did what, when.
 
 ## Current Status
 
-**Status:** Planning
+**Status:** Implementation started (v0.1.0)
 
 Architecture and design are complete (auth/permissions, full data model, component
 boundaries, protocol design, tech stack, deployment tooling for bare metal, Podman,
-and Kubernetes). Implementation has not yet started.
+and Kubernetes). The Go module and repository skeleton (both binaries' entry points
+and environment configuration validation) is in place; the v0.1.0 milestone items
+below are otherwise not yet built.
 
 ---
 

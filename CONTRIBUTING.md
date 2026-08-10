@@ -62,8 +62,8 @@ off-topic, abusive, or not aligned with the project goals.
 
 ```bash
 # Clone the repository
-git clone https://github.com/OWNER/REPO.git
-cd REPO
+git clone https://github.com/1kaius1/Sparky.git
+cd Sparky
 
 # Go - download dependencies
 go mod download
