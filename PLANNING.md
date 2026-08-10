@@ -230,6 +230,49 @@ below are otherwise not yet built.
         `node_type`/`container_runtime` pair and that the migration's
         `down` reverses cleanly.
   - [ ] Agent: Docker/Podman runtime backend (Docker-Engine-API-compatible), agent-initiated WebSocket, bearer token, CDI GPU passthrough
+    - [ ] Phase 1: Docker/Podman runtime backend (`agent/runtime/containers`) -
+          `docker/docker/client` integration targeting either runtime's
+          Docker-Engine-API-compatible socket, CDI GPU passthrough
+          (`--device nvidia.com/gpu=all`), a start/stop container primitive.
+          Self-contained - no protocol dependency on later phases, testable
+          against a real local Docker/Podman daemon. Complete when a
+          container can actually be started and stopped with GPU access
+          via CDI, verified against real Podman, not just mocked.
+    - [ ] Phase 2: `internal/agentproto` - shared WebSocket/JSON protocol
+          message types (envelope with request ID per ARCHITECTURE.md
+          Protocol, hello/auth handshake, heartbeat, error), used by both
+          binaries. Pure types, no networking - testable via marshal/
+          unmarshal round-trips alone.
+    - [ ] Phase 3: Node bearer token issuance and storage - extends the
+          `nodes` schema with a hashed token column (same pattern as the
+          break-glass credential: only the hash is stored). `RegisterNode`
+          generates a random token at registration time and returns the
+          plaintext once, for the Admin to put into that node's
+          `SPARKY_BEARER_TOKEN` - standard API-token UX, confirmed with the
+          user 2026-08-10 since nothing in the docs specified this before.
+    - [ ] Phase 4: Server-side Agent-Communication Layer - the WebSocket
+          endpoint ARCHITECTURE.md's Component Breakdown describes as "the
+          only component that speaks the agent protocol." Accepts inbound
+          connections, validates the bearer token against Phase 3's stored
+          hash, associates the connection with its node, tracks
+          `agent_status` (`online`/`offline`/`unreachable`) against
+          connection lifecycle. Uses `github.com/coder/websocket`
+          (formerly `nhooyr.io/websocket`) - confirmed with the user
+          2026-08-10 over `gorilla/websocket`, since it's actively
+          maintained and minimal, matching the "own it, don't add
+          dependencies you don't need" pattern already on record for
+          `chi`/`internal/session`.
+    - [ ] Phase 5: Agent-side connection goroutine - dial
+          `SPARKY_CENTRAL_URL`, present `SPARKY_BEARER_TOKEN`, reconnect
+          with backoff on disconnect, per docs/AGENT.md Service
+          Architecture Notes. Wires Phase 1's runtime backend to commands
+          received over Phase 2's protocol. No real command payloads exist
+          yet beyond a stub - Model profiles and Running instances (later,
+          separate v0.1.0 items) are what will actually generate
+          container-start commands; this phase makes the connection itself
+          real, the same "logic layer ahead of its eventual caller"
+          precedent already used for RBAC Phase B, the audit log, and the
+          node registry.
   - [ ] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
   - [ ] Model transfers: Hugging Face download only (no peer replication yet)
   - [ ] Running instances: single-node load/unload
@@ -334,6 +377,8 @@ below are otherwise not yet built.
 | 2026-08-06 | Audit records always emitted as structured JSON to stdout (picked up by Filebeat or any shipper); optional active syslog/GELF push available on top for environments without a shipper. Local retention configurable up to 24 months | Day-to-day logging backend is Elasticsearch/OpenSearch via Filebeat; the stdout stream needs zero new code and works identically across bare metal (journald), Podman, and Kubernetes, letting any shipper (Filebeat, Fluentd, Vector) forward to Elasticsearch, OpenSearch, Graylog, or anywhere else | A syslog-push-only design (superseded - required active network client code for a problem a shipper already solves); native GELF-only integration (kept as an optional alternate protocol, not the default) |
 | 2026-08-10 | `internal/audit.Recorder` built as a service other components call directly (`rbac.Service.ElevateTier` today), not as generic chi HTTP middleware, and `audit_settings` (retention, syslog/GELF forwarding) deferred rather than built alongside `audit_log` | No state-changing HTTP handler exists yet for a generic "wrap every handler" middleware to attach to - the only real state-changing action in the codebase so far (`ElevateTier`) is a service-layer call, same situation RBAC Phase B was built into ahead of any HTTP wiring. `audit_settings` has no consumer either: no retention-pruning job and no forwarding push exist to read it, and the always-on stdout stream (the actually load-bearing path per ARCHITECTURE.md) needs no settings row at all | Building the settings table and a stub forwarding path now regardless (rejected: speculative infrastructure with nothing to configure yet, same reasoning already on record against Vault sidecar/CSI integration below) |
 | 2026-08-10 | Nodes' `fabric_group_id` left out of the v0.1.0 `nodes` migration entirely, to be added later by an `ALTER TABLE` alongside v0.3.0's `fabric_groups` table; `registered_by` made nullable from the start; `container_runtime`/`node_type` consistency enforced by a database `CHECK` constraint in addition to `internal/nodes` validation | A `REFERENCES fabric_groups (id)` FK cannot be created before `fabric_groups` exists, and clustering is explicitly out of v0.1.0 scope - no migration in this codebase has ever forward-referenced a not-yet-existing table. `registered_by` follows the exact shape of the `elevated_by` gap already fixed once (2026-08-09 RBAC Phase B entry above) - no reason to reintroduce the same bug knowingly. The `CHECK` constraint mirrors `break_glass_credential`'s singleton constraint: an invariant worth enforcing at the database level, not just trusting every future caller of `NodeRepository.Create` to get right | Adding an unconstrained nullable `fabric_group_id` column now (rejected: an unenforced FK is dead weight with no consumer until v0.3.0); leaving `registered_by` `NOT NULL` and simply disallowing SuperAdmin node registration (rejected: inconsistent with the project's "SuperAdmin is unrestricted, like root" stance already applied to `CanElevate` and `CanManageModelStore`) |
+| 2026-08-10 | Node bearer tokens are generated by `RegisterNode` at registration time and returned to the caller once, plaintext; only a hash is stored | Nothing in the original design specified how a node gets its token at all. Generate-once-show-once is standard API-token UX (GitHub PATs, etc.) and mirrors the break-glass credential's already-established hash-only storage pattern, rather than inventing a new one | A separate "issue token" action distinct from registration (rejected: two steps for one concern, and registration without a usable token is a node that can't ever connect); storing the plaintext token, relying on `SPARKY_BEARER_TOKEN` file permissions alone (rejected: same reasoning that already put the break-glass credential behind a hash, not plaintext) |
+| 2026-08-10 | `github.com/coder/websocket` (formerly `nhooyr.io/websocket`) chosen for `internal/agentproto`'s transport, over `gorilla/websocket` | Actively maintained and minimal API surface, matching the "own it, don't add dependencies you don't need" reasoning already on record for `chi` and `internal/session`'s hand-rolled cookie signing | `gorilla/websocket` (rejected: the long-time standard choice and still very widely used, but its maintenance status has been in flux - archived, then revived under a new org - a less certain footing for a protocol boundary this central to the whole system) |
 
 ---
 
