@@ -111,6 +111,10 @@ sparky/
 # Go 1.26+
 # PostgreSQL 14+
 # No Node.js required - there is no frontend build step
+
+# golang-migrate CLI, built with the postgres driver tag - required for
+# Database Setup and Database Migrations below
+go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
 ```
 
 ### Environment Setup
