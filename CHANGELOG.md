@@ -75,8 +75,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `.gitignore`: `.claude/settings.local.json`, so contributors without a
   personal global git ignore for it (Claude Code's own local-override
   settings file) can't accidentally commit it.
+- `internal/rbac`: `CanElevate` and `CanManageModelStore`, pure functions
+  implementing SCHEMA.md Users' Elevation rules and the
+  `manage_model_store` permission override, plus `Service.ElevateTier` as
+  the single sanctioned path to a tier change - it fetches the target's
+  current tier fresh, checks the rule, and only then persists via
+  `UserRepository.UpdateTier`. This is Phase B of the "Users, RBAC tiers,
+  SuperAdmin break-glass" work; no SuperAdmin login yet. `CanElevate` is
+  exhaustively table-tested across all 16 tier-pair combinations.
 
 ### Changed
+- `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
+  `elevatedBy *string` instead of a required `string`, since a
+  SuperAdmin-made change has no `Users` row to reference and
+  `elevated_by` must be able to store `NULL`. Added `FindByID` for
+  `internal/rbac`'s use. No other callers existed yet to migrate.
 
 ### Deprecated
 

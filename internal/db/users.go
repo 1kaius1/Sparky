@@ -76,6 +76,14 @@ func (r *UserRepository) FindByADSID(ctx context.Context, adSID string) (*User, 
 	return scanUser(row)
 }
 
+// FindByID looks up a user by their internal ID - used by internal/rbac to
+// fetch a target user's current tier before an elevation decision.
+// Returns ErrUserNotFound if no row matches.
+func (r *UserRepository) FindByID(ctx context.Context, id string) (*User, error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE id = $1`, id)
+	return scanUser(row)
+}
+
 // Create inserts a new user on first login. tier is the baseline assigned
 // at creation - see SCHEMA.md Users, Elevation rules for who can change it
 // afterward.
@@ -105,8 +113,10 @@ func (r *UserRepository) UpdateLastLogin(ctx context.Context, id string, at time
 }
 
 // UpdateTier changes a user's tier and records who made the change and
-// when - see SCHEMA.md Users, Elevation rules.
-func (r *UserRepository) UpdateTier(ctx context.Context, id string, tier Tier, elevatedBy string, elevatedAt time.Time) error {
+// when - see SCHEMA.md Users, Elevation rules. elevatedBy is nil when the
+// SuperAdmin made the change, since the SuperAdmin is not a Users row and
+// elevated_by cannot reference one - see SCHEMA.md Break-glass credential.
+func (r *UserRepository) UpdateTier(ctx context.Context, id string, tier Tier, elevatedBy *string, elevatedAt time.Time) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE users SET tier = $1, elevated_by = $2, elevated_at = $3 WHERE id = $4`,
 		tier, elevatedBy, elevatedAt, id)

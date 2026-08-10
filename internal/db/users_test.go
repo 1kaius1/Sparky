@@ -79,6 +79,23 @@ func TestUserRepository_CreateAndFindByADSID(t *testing.T) {
 	if found.DisplayName != "Test User" {
 		t.Errorf("FindByADSID() DisplayName = %q, want %q", found.DisplayName, "Test User")
 	}
+
+	foundByID, err := repo.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if foundByID.ADSID != adSID {
+		t.Errorf("FindByID() ADSID = %q, want %q", foundByID.ADSID, adSID)
+	}
+}
+
+func TestUserRepository_FindByID_NotFound(t *testing.T) {
+	repo := newTestUserRepo(t)
+
+	_, err := repo.FindByID(context.Background(), "00000000-0000-0000-0000-000000000000")
+	if err != ErrUserNotFound {
+		t.Errorf("FindByID() error = %v, want ErrUserNotFound", err)
+	}
 }
 
 func TestUserRepository_FindByADSID_NotFound(t *testing.T) {
@@ -146,7 +163,7 @@ func TestUserRepository_UpdateTier(t *testing.T) {
 	}
 
 	elevatedAt := time.Now().UTC().Truncate(time.Microsecond)
-	if err := repo.UpdateTier(ctx, target.ID, TierPowerDev, admin.ID, elevatedAt); err != nil {
+	if err := repo.UpdateTier(ctx, target.ID, TierPowerDev, &admin.ID, elevatedAt); err != nil {
 		t.Fatalf("UpdateTier() error: %v", err)
 	}
 
@@ -165,10 +182,41 @@ func TestUserRepository_UpdateTier(t *testing.T) {
 	}
 }
 
+func TestUserRepository_UpdateTier_NilElevatedBy(t *testing.T) {
+	// elevatedBy is nil when the SuperAdmin makes the change - the
+	// SuperAdmin is not a Users row, so elevated_by (a nullable FK) must
+	// support NULL rather than requiring a value that can't exist.
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+
+	targetADSID := uniqueADSID(t)
+	cleanupUser(t, repo, targetADSID)
+	target, err := repo.Create(ctx, targetADSID, "Target User", TierReadOnly)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	if err := repo.UpdateTier(ctx, target.ID, TierAdmin, nil, time.Now().UTC()); err != nil {
+		t.Fatalf("UpdateTier() error: %v", err)
+	}
+
+	found, err := repo.FindByADSID(ctx, targetADSID)
+	if err != nil {
+		t.Fatalf("FindByADSID() error: %v", err)
+	}
+	if found.ElevatedBy != nil {
+		t.Errorf("ElevatedBy = %v, want nil", *found.ElevatedBy)
+	}
+	if found.Tier != TierAdmin {
+		t.Errorf("Tier = %q, want %q", found.Tier, TierAdmin)
+	}
+}
+
 func TestUserRepository_UpdateTier_NotFound(t *testing.T) {
 	repo := newTestUserRepo(t)
 
-	err := repo.UpdateTier(context.Background(), "00000000-0000-0000-0000-000000000000", TierAdmin, "00000000-0000-0000-0000-000000000000", time.Now())
+	elevatedBy := "00000000-0000-0000-0000-000000000000"
+	err := repo.UpdateTier(context.Background(), "00000000-0000-0000-0000-000000000000", TierAdmin, &elevatedBy, time.Now())
 	if err != ErrUserNotFound {
 		t.Errorf("UpdateTier() error = %v, want ErrUserNotFound", err)
 	}
