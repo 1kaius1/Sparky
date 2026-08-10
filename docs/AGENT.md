@@ -68,6 +68,12 @@ GOOS=linux GOARCH=amd64 go build -o bin/sparky-agent-amd64 ./cmd/sparky-agent
 The one-script installer (`scripts/install.sh`) automates all of this; documented
 here for what it actually does:
 
+<!-- Steps 1-2 (serviceloop account creation and group membership) are planned to
+move into a `sparky-agent setup` subcommand alongside the v0.2.0 bare-metal runtime
+backend, with install.sh delegating to it instead of calling useradd/usermod
+directly - see PLANNING.md Decisions Log, 2026-08-07. Not yet implemented; the steps
+below still reflect what install.sh actually does today. -->
+
 ```bash
 # 1. Create the dedicated service account (Spark targets specifically use `serviceloop`)
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin serviceloop

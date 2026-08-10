@@ -63,6 +63,11 @@ and Kubernetes). Implementation has not yet started.
 
 - [ ] **v0.2.0** - Spark bare-metal support
   - [ ] Agent: bare-metal runtime backend for Spark (`serviceloop`, direct process exec)
+  - [ ] `sparky-agent setup` subcommand - creates/verifies the `serviceloop` system
+        account and its GPU/container-access group memberships, idempotent, supports
+        both environment-variable-driven and interactive invocation; `scripts/install.sh`
+        is trimmed to placing the binary and systemd unit and delegates account
+        provisioning to this subcommand rather than running `useradd`/`usermod` itself
   - [ ] Validate the full stack against real Spark hardware
 
 - [ ] **v0.3.0** - Multi-Spark clustering
@@ -144,6 +149,7 @@ and Kubernetes). Implementation has not yet started.
 | 2026-08-06 | Monorepo to start; shared protocol code isolated in `internal/agentproto` | Protocol is still actively evolving; avoids premature multi-repo coordination and version-matrix overhead | Three repos (server, agent, common) from day one (deferred, not rejected - plan is to split once the protocol stabilizes) |
 | 2026-08-06 | v0.1.0 targets non-Spark hardware first (Docker/Podman runtime backend, `node_type`, memory split, both engine adapters); Spark bare-metal support moved to v0.2.0 | Actual dev/test hardware in hand is a laptop (RTX 4090, 32GB RAM) and a Dell Precision (RTX 3080Ti); building and validating the core against accessible hardware before Spark-specific work is faster to iterate on | Spark-first sequencing as originally planned (superseded - non-Spark hardware is the more practical initial dev loop) |
 | 2026-08-06 | Tests categorized as automated (CI-gated, hard pass/fail) versus manual (explicit checklist, operator-confirmed before release tagging) | Several critical paths (multi-node NCCL launches, CDI GPU passthrough) require real hardware and can't be safely faked in CI | Treating everything as CI-gated (rejected: would either block CI on hardware it doesn't have, or give false confidence by skipping these paths silently) |
+| 2026-08-07 | `sparky-agent setup` is a subcommand of the agent binary itself, not bash-only logic in `scripts/install.sh` - it creates/verifies the `serviceloop` system account and its GPU/container-access group memberships | Mirrors the existing `sparky setup` precedent (CLI logic lives in the binary, not a web wizard or an external script); the provisioning logic gets real `go test` coverage and stays idempotent/re-runnable independent of the install script's version, versus duplicating `useradd`/`usermod` handling across bash's apt/dnf branches. Still requires root and still shells out to `useradd`/`usermod` under the hood - this centralizes that logic, it does not remove the privilege requirement | A standalone bash routine in `scripts/install.sh` handling account/group creation directly (rejected: no test coverage, logic duplicated per distro branch, can drift from what the binary itself expects at runtime) |
 | 2026-08-06 | Audit records always emitted as structured JSON to stdout (picked up by Filebeat or any shipper); optional active syslog/GELF push available on top for environments without a shipper. Local retention configurable up to 24 months | Day-to-day logging backend is Elasticsearch/OpenSearch via Filebeat; the stdout stream needs zero new code and works identically across bare metal (journald), Podman, and Kubernetes, letting any shipper (Filebeat, Fluentd, Vector) forward to Elasticsearch, OpenSearch, Graylog, or anywhere else | A syslog-push-only design (superseded - required active network client code for a problem a shipper already solves); native GELF-only integration (kept as an optional alternate protocol, not the default) |
 
 ---
