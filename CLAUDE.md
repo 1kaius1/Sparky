@@ -33,12 +33,12 @@ internal team managing a handful of nodes, not a multi-tenant or hyperscale prod
 | Component       | Choice                                    | Reason                    |
 |------------------|--------------------------------------------|----------------------------|
 | Language        | Go                                        | Consistent with the agent, the install tooling, and the project's minimal-infrastructure approach throughout |
-| Framework       | `chi` **[default - confirm or override]** | Lightweight router built on stdlib `net/http`, not a heavy framework - fits the "own it, don't add dependencies you don't need" pattern used everywhere else in this design |
+| Framework       | `chi` | Lightweight router built on stdlib `net/http`, not a heavy framework - fits the "own it, don't add dependencies you don't need" pattern used everywhere else in this design |
 | Database        | PostgreSQL                                 | `JSONB` native for `engine_params` and settings blobs - see `SCHEMA.md` |
 | ORM / query     | `pgx` (native interface, not `database/sql`) | Proper native JSONB scanning, better than `lib/pq` for this |
 | Migrations      | `golang-migrate`                           | SQL-only, widely used, matches the boilerplate's own convention |
 | Auth            | LDAP bind, behind an identity-provider interface | OIDC/Entra ID migration path built in from the start - see `ARCHITECTURE.md` |
-| Session         | Signed cookie session **[default - confirm or override]** | Natural fit for the htmx server-rendered approach - no JWT management needed in the browser |
+| Session         | Signed cookie session | Natural fit for the htmx server-rendered approach - no JWT management needed in the browser |
 | Container mgmt  | `docker/docker/client` (Docker Engine API) | Targets Docker and Podman identically - Podman exposes a Docker-Engine-API-compatible socket |
 
 ### Frontend
