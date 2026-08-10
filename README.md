@@ -12,9 +12,8 @@ who work with Sparks get called.
 
 ## Status
 
-**Planning complete, implementation not yet started.** See `PLANNING.md` for the full
-milestone breakdown and current status. This README will be updated as v0.1.0 takes
-shape.
+**v0.1.0 implementation in progress.** See `PLANNING.md` for the full milestone
+breakdown and current status. This README will be updated as v0.1.0 takes shape.
 
 ---
 
@@ -44,7 +43,7 @@ model.
 ### Bare metal (Debian/Ubuntu or RHEL/Fedora)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/<OWNER>/sparky/main/scripts/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/1kaius1/Sparky/main/scripts/install.sh | sudo bash
 sparky-server setup
 ```
 

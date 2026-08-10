@@ -1,0 +1,14 @@
+# Local environment
+.env
+
+# Build artifacts
+/bin/
+*.exe
+*.test
+
+# Go
+*.out
+coverage.out
+
+# Editor/OS
+.DS_Store
