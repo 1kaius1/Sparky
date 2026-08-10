@@ -44,6 +44,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   unauthenticated-bind pitfall (a bind with a valid DN and an empty password
   otherwise succeeds without checking the password). No HTTP or session
   wiring yet. Unit-tested against a fake LDAP connection.
+- `internal/session`: hand-rolled HMAC-SHA256 signed cookie sessions (no
+  server-side store), matching the "own it, don't add dependencies you
+  don't need" reasoning already on record for `chi`.
+- `internal/httpapi`: the `chi` router, `POST /login` and `POST /logout`
+  handlers, and `RequireSession` middleware for future protected routes.
+  `LoginService` wires `internal/auth`'s identity provider and
+  `internal/db`'s Users repository together - it enforces the login-gate
+  group check (`AuthenticatedUser.InAccessGroup`), provisions first-time
+  users at `TierReadOnly`, and updates `last_login_at` on repeat logins.
+  `sparky-server` now runs a real HTTP listener with graceful shutdown on
+  SIGTERM/SIGINT, completing ARCHITECTURE.md's Application Lifecycle up
+  through routes and the listener (the Setup Check step is still not
+  implemented). Verified with a real `httptest` browser round trip
+  (cookiejar, actual `Set-Cookie` parsing) against a fake identity
+  provider, and the compiled binary was smoke-tested end-to-end against a
+  real Postgres instance.
 
 ### Changed
 

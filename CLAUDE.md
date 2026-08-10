@@ -72,6 +72,8 @@ sparky/
   - engines/               # Pluggable adapters: vllm, aphrodite, llamacpp
   - agentproto/            # Shared WebSocket/JSON protocol types (used by both binaries)
   - db/                    # Repository layer (pgx), query code
+  - session/               # Signed cookie session encode/verify (HMAC, no server-side store)
+  - httpapi/                # chi router, middleware, handlers; login/logout wire auth + db + session together
 - agent/                   # Agent-only internals - see docs/AGENT.md
   - runtime/
     - baremetal/
