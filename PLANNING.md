@@ -51,6 +51,22 @@ below are otherwise not yet built.
 
 - [ ] **v0.1.0** - Core foundation (non-Spark first: laptop RTX 4090 / Dell Precision RTX 3080Ti as primary dev and test hardware)
   - [ ] AD/LDAP bind auth (login-gate group), session handling
+    - [x] Phase 1: Users repository (`internal/db`) - create, find-by-AD-SID,
+          update last login, update tier (elevation), matching SCHEMA.md's
+          `users` table. Complete when covered by integration tests against a
+          real Postgres instance. Done - PR #5.
+    - [ ] Phase 2: LDAP identity provider (`internal/auth`) - service-account
+          bind, user search within `LDAP_BASE_DN`, `LDAP_ACCESS_GROUP_DN`
+          membership check via `LDAP_MATCHING_RULE_IN_CHAIN`, behind the
+          identity-provider interface ARCHITECTURE.md describes, using
+          `go-ldap/v3` per PLANNING.md's 2026-08-09 decision. Complete when a
+          user's credentials can be verified and their login-gate group
+          membership resolved, independent of any HTTP or session code.
+    - [ ] Phase 3: Session handling and HTTP wiring - `chi` router, login/logout
+          handlers, signed-cookie session middleware, wiring Phase 1 and Phase 2
+          together. Complete when a browser can complete a full login
+          round-trip against a real (or fake) LDAP server and receive a valid
+          session cookie.
   - [ ] Users, RBAC tiers (Read-only/Developer/PowerDev/Admin), SuperAdmin break-glass
   - [ ] `sparky setup` CLI first-run wizard
   - [ ] Audit log covering all state-changing actions, including SuperAdmin
