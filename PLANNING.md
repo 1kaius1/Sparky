@@ -90,13 +90,18 @@ below are otherwise not yet built.
           LDAP, graceful SIGTERM shutdown) - login against a real AD/LDAP
           server itself is still unverified, same caveat as Phase 2.
   - [x] Users, RBAC tiers (Read-only/Developer/PowerDev/Admin), SuperAdmin break-glass
-    - [ ] Phase A: Permission overrides + break-glass storage (`internal/db`) -
+    - [x] Phase A: Permission overrides + break-glass storage (`internal/db`) -
           migration and repository for the `manage_model_store` capability
           grant (SCHEMA.md Permission overrides), and for the isolated
           break-glass credential row (SCHEMA.md Break-glass credential -
           password hash only, never a `Users` row). Complete when both are
           migrated and covered by integration tests, matching the Users
           repository's pattern from the auth work's Phase 1.
+          Done - PR #10. This checkbox was left unchecked when that PR
+          merged (its branch predated PR #9's Phase A/B/C text, so it
+          couldn't touch this line, and the follow-up noted in the PR
+          description never happened) - caught and fixed while syncing
+          state against work done on another workstation.
     - [x] Phase B: `internal/rbac` - elevation-rule enforcement (who can
           promote whom, per SCHEMA.md Users Elevation rules), permission-
           override checks, and the SuperAdmin bypass short-circuit. Pure
