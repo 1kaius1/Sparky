@@ -55,13 +55,22 @@ below are otherwise not yet built.
           update last login, update tier (elevation), matching SCHEMA.md's
           `users` table. Complete when covered by integration tests against a
           real Postgres instance. Done - PR #5.
-    - [ ] Phase 2: LDAP identity provider (`internal/auth`) - service-account
+    - [x] Phase 2: LDAP identity provider (`internal/auth`) - service-account
           bind, user search within `LDAP_BASE_DN`, `LDAP_ACCESS_GROUP_DN`
           membership check via `LDAP_MATCHING_RULE_IN_CHAIN`, behind the
           identity-provider interface ARCHITECTURE.md describes, using
           `go-ldap/v3` per PLANNING.md's 2026-08-09 decision. Complete when a
           user's credentials can be verified and their login-gate group
           membership resolved, independent of any HTTP or session code.
+          Done - login matches on `sAMAccountName`. Password verification
+          uses a dedicated connection, separate from the service-account
+          search connection, so a user's own (potentially more limited)
+          directory permissions never replace the service account's for the
+          group-membership lookup. Guards explicitly against LDAP's
+          unauthenticated-bind pitfall (RFC 4513 SS5.1.2: a bind with a valid
+          DN and an empty password succeeds without checking the password).
+          Unit-tested against a fake LDAP connection, since standing up a
+          real AD-compatible server isn't practical to do disposably.
     - [ ] Phase 3: Session handling and HTTP wiring - `chi` router, login/logout
           handlers, signed-cookie session middleware, wiring Phase 1 and Phase 2
           together. Complete when a browser can complete a full login
@@ -171,7 +180,7 @@ below are otherwise not yet built.
 | 2026-08-07 | `sparky-agent setup` is a subcommand of the agent binary itself, not bash-only logic in `scripts/install.sh` - it creates/verifies the `serviceloop` system account and its GPU-passthrough group membership | Mirrors the existing `sparky setup` precedent (CLI logic lives in the binary, not a web wizard or an external script); the provisioning logic gets real `go test` coverage and stays idempotent/re-runnable independent of the install script's version, versus duplicating `useradd`/`usermod` handling across bash's apt/dnf branches. Still requires root and still shells out to `useradd`/`usermod` under the hood - this centralizes that logic, it does not remove the privilege requirement | A standalone bash routine in `scripts/install.sh` handling account/group creation directly (rejected: no test coverage, logic duplicated per distro branch, can drift from what the binary itself expects at runtime) |
 | 2026-08-09 | `chi` confirmed as the HTTP router, ahead of the AD/LDAP auth work's login handlers needing one | No new information changed the reasoning already recorded in CLAUDE.md's tech stack table (thin stdlib-based router, not a heavy framework) | None raised at confirmation time |
 | 2026-08-09 | Signed cookie session confirmed as the session mechanism, ahead of the AD/LDAP auth work's session handling | No new information changed the reasoning already recorded in CLAUDE.md's tech stack table (fits the htmx server-rendered approach, no browser-side JWT handling) | None raised at confirmation time |
-| 2026-08-09 | `github.com/go-ldap/go-ldap/v3` chosen as the LDAP client library for the identity-provider's on-prem AD implementation | Standard library has no LDAP support; go-ldap is the widely-used, actively maintained Go LDAP client and supports the `LDAP_MATCHING_RULE_IN_CHAIN` extended match this design already depends on for nested group resolution | None seriously considered - it is the de facto standard for Go |
+| 2026-08-09 | `github.com/go-ldap/ldap/v3` chosen as the LDAP client library for the identity-provider's on-prem AD implementation | Standard library has no LDAP support; go-ldap is the widely-used, actively maintained Go LDAP client and supports the `LDAP_MATCHING_RULE_IN_CHAIN` extended match this design already depends on for nested group resolution | None seriously considered - it is the de facto standard for Go |
 | 2026-08-06 | Audit records always emitted as structured JSON to stdout (picked up by Filebeat or any shipper); optional active syslog/GELF push available on top for environments without a shipper. Local retention configurable up to 24 months | Day-to-day logging backend is Elasticsearch/OpenSearch via Filebeat; the stdout stream needs zero new code and works identically across bare metal (journald), Podman, and Kubernetes, letting any shipper (Filebeat, Fluentd, Vector) forward to Elasticsearch, OpenSearch, Graylog, or anywhere else | A syslog-push-only design (superseded - required active network client code for a problem a shipper already solves); native GELF-only integration (kept as an optional alternate protocol, not the default) |
 
 ---
