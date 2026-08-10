@@ -34,6 +34,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   SCHEMA.md. Covered by integration tests against a real Postgres instance,
   per ARCHITECTURE.md Testing Strategy - they skip cleanly if `DATABASE_URL`
   is unset rather than failing.
+- `internal/auth`: the `IdentityProvider` interface and its on-prem AD
+  implementation (`LDAPProvider`, `go-ldap/v3`) - service-account bind, user
+  search by `sAMAccountName`, and login-gate group membership resolution via
+  `LDAP_MATCHING_RULE_IN_CHAIN`, per ARCHITECTURE.md Auth & Identity
+  Provider. Password verification uses a dedicated connection so a user's
+  own directory permissions never replace the service account's for the
+  group-membership lookup, and explicitly guards against LDAP's
+  unauthenticated-bind pitfall (a bind with a valid DN and an empty password
+  otherwise succeeds without checking the password). No HTTP or session
+  wiring yet. Unit-tested against a fake LDAP connection.
 
 ### Changed
 
