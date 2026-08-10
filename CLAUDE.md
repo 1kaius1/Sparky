@@ -39,7 +39,7 @@ internal team managing a handful of nodes, not a multi-tenant or hyperscale prod
 | Migrations      | `golang-migrate`                           | SQL-only, widely used, matches the boilerplate's own convention |
 | Auth            | LDAP bind, behind an identity-provider interface | OIDC/Entra ID migration path built in from the start - see `ARCHITECTURE.md` |
 | Session         | Signed cookie session | Natural fit for the htmx server-rendered approach - no JWT management needed in the browser |
-| Container mgmt  | `docker/docker/client` (Docker Engine API) | Targets Docker and Podman identically - Podman exposes a Docker-Engine-API-compatible socket |
+| Container mgmt  | `github.com/moby/moby/client` (Docker Engine API) | Targets Docker and Podman identically - Podman exposes a Docker-Engine-API-compatible socket. Import path is `moby/moby`, not `docker/docker` - the upstream project renamed; confirmed at implementation time (2026-08-10), see PLANNING.md Decisions Log |
 
 ### Frontend
 

@@ -144,6 +144,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integration tests against a real Postgres instance, including that the
   `CHECK` constraint rejects a mismatched `node_type`/`container_runtime`
   pair and that the migration's `down` reverses cleanly.
+- `agent/runtime/containers`: the Docker/Podman runtime backend - Phase 1
+  of the agent runtime/WebSocket work. `Backend.StartContainer`/
+  `StopContainer`/`IsRunning` via `github.com/moby/moby/client` (the
+  upstream project renamed from `docker/docker`), including pull-if-missing
+  (the raw Engine API does not auto-pull like the `docker run` CLI does)
+  and CDI GPU device requests. Non-GPU container lifecycle fully verified
+  against a real local Podman daemon - create, pull, start, inspect, stop,
+  remove. CDI GPU passthrough itself has a documented open gap: neither
+  Docker API mechanism for requesting a CDI device triggered CDI
+  resolution through Podman 4.9.3's compat socket in testing, even though
+  Podman's own CLI resolves CDI names correctly - see PLANNING.md's
+  2026-08-10 Decisions Log entry and Known Issues table. Retry/CDI-request
+  construction logic unit-tested against a fake client.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
