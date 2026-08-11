@@ -96,12 +96,16 @@ func scanNode(row pgx.Row) (*Node, error) {
 // credential. containerRuntime must be nil for NodeTypeSpark and non-nil
 // for NodeTypeDockerGPU - the database enforces this via
 // nodes_container_runtime_matches_type regardless of caller discipline.
-func (r *NodeRepository) Create(ctx context.Context, name, hostname, ipAddress string, nodeType NodeType, containerRuntime *ContainerRuntime, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string) (*Node, error) {
+// bearerTokenHash must already be hashed (internal/auth.HashNodeToken) -
+// this package never sees the plaintext token, same as it never sees a
+// plaintext password. It is deliberately excluded from nodeColumns/Node,
+// so it never flows out through FindByID or List.
+func (r *NodeRepository) Create(ctx context.Context, name, hostname, ipAddress string, nodeType NodeType, containerRuntime *ContainerRuntime, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string, bearerTokenHash string) (*Node, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO nodes (name, hostname, ip_address, node_type, container_runtime, gpu_memory_gb, cpu_memory_gb, registered_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		`INSERT INTO nodes (name, hostname, ip_address, node_type, container_runtime, gpu_memory_gb, cpu_memory_gb, registered_by, bearer_token_hash)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		 RETURNING `+nodeColumns,
-		name, hostname, ipAddress, nodeType, containerRuntime, gpuMemoryGB, cpuMemoryGB, registeredBy)
+		name, hostname, ipAddress, nodeType, containerRuntime, gpuMemoryGB, cpuMemoryGB, registeredBy, bearerTokenHash)
 
 	n, err := scanNode(row)
 	if err != nil {
