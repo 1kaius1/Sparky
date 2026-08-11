@@ -174,3 +174,86 @@ func TestNodeRepository_List(t *testing.T) {
 		t.Errorf("List() = %d nodes, missing one or both of the two just created", len(got))
 	}
 }
+
+func TestNodeRepository_FindCredentialByName(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	ctx := context.Background()
+
+	name := fmt.Sprintf("node-%s", t.Name())
+	created, err := nodes.Create(ctx, name, "spark-4.local", "10.0.0.10", NodeTypeSpark, nil, 128, 128, nil, "cred-test-hash")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, created.ID)
+	})
+
+	cred, err := nodes.FindCredentialByName(ctx, name)
+	if err != nil {
+		t.Fatalf("FindCredentialByName() error: %v", err)
+	}
+	if cred.Node.ID != created.ID {
+		t.Errorf("Node.ID = %q, want %q", cred.Node.ID, created.ID)
+	}
+	if cred.BearerTokenHash != "cred-test-hash" {
+		t.Errorf("BearerTokenHash = %q, want %q", cred.BearerTokenHash, "cred-test-hash")
+	}
+}
+
+func TestNodeRepository_FindCredentialByName_NotFound(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+
+	_, err := nodes.FindCredentialByName(context.Background(), "no-such-node")
+	if err != ErrNodeNotFound {
+		t.Errorf("FindCredentialByName() error = %v, want ErrNodeNotFound", err)
+	}
+}
+
+func TestNodeRepository_SetAgentStatus(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	ctx := context.Background()
+
+	created, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-5.local", "10.0.0.11",
+		NodeTypeSpark, nil, 128, 128, nil, "test-bearer-token-hash")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, created.ID)
+	})
+	if created.LastHeartbeatAt != nil {
+		t.Fatalf("LastHeartbeatAt = %v, want nil before any SetAgentStatus call", created.LastHeartbeatAt)
+	}
+
+	if err := nodes.SetAgentStatus(ctx, created.ID, AgentStatusOnline, true); err != nil {
+		t.Fatalf("SetAgentStatus(online, bumpHeartbeat=true) error: %v", err)
+	}
+	online, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if online.AgentStatus != AgentStatusOnline {
+		t.Errorf("AgentStatus = %q, want %q", online.AgentStatus, AgentStatusOnline)
+	}
+	if online.LastHeartbeatAt == nil {
+		t.Error("LastHeartbeatAt is nil, want it set when bumpHeartbeat=true")
+	}
+	firstHeartbeat := online.LastHeartbeatAt
+
+	if err := nodes.SetAgentStatus(ctx, created.ID, AgentStatusOffline, false); err != nil {
+		t.Fatalf("SetAgentStatus(offline, bumpHeartbeat=false) error: %v", err)
+	}
+	offline, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if offline.AgentStatus != AgentStatusOffline {
+		t.Errorf("AgentStatus = %q, want %q", offline.AgentStatus, AgentStatusOffline)
+	}
+	if offline.LastHeartbeatAt == nil || !offline.LastHeartbeatAt.Equal(*firstHeartbeat) {
+		t.Errorf("LastHeartbeatAt changed to %v on a bumpHeartbeat=false call, want it unchanged from %v", offline.LastHeartbeatAt, firstHeartbeat)
+	}
+}

@@ -179,6 +179,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   its hash is ever persisted, and that hash is excluded from `Node`/
   `FindByID`/`List` so it can't leak through the future Nodes dashboard.
   Migration verified up and down against a real local Postgres instance.
+- `internal/agentconn`: the server-side Agent-Communication Layer - Phase 4
+  of the agent runtime/WebSocket work, ARCHITECTURE.md's "only component
+  that speaks the agent protocol." `Handler`, mounted at `GET
+  /agent/connect`, uses `github.com/coder/websocket` to accept the
+  connection and run the hello/auth handshake (`internal/agentproto`)
+  against new `internal/nodes.AuthService` - the first real caller of Phase
+  3's stored bearer token hash (new `db.NodeCredential`/
+  `FindCredentialByName`/`SetAgentStatus`). A rejected handshake (unknown
+  node name or wrong token) gets the same generic reason either way, so it
+  can't be used to enumerate node names. The success ack is sent only after
+  the node is marked `online` in `agent_status` and added to `Registry`
+  (which just tracks live connections for now - no command dispatch yet),
+  so the agent can never observe acceptance before the central app's own
+  state reflects it. `agent_status` only ever reaches `online`/`offline` for
+  now, not `unreachable` - that needs a heartbeat timeout with nothing to
+  time out yet, since the agent doesn't send heartbeats until Phase 5; see
+  PLANNING.md Known Issues. Verified end-to-end through the real compiled
+  `internal/httpapi` router with a real Postgres-issued token and a real
+  WebSocket client, in addition to the committed fake-based unit tests.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
@@ -192,6 +211,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no other callers existed yet to migrate.
 - `internal/httpapi.New` takes a fourth parameter, the break-glass store
   the setup gate checks - no other callers existed yet to migrate.
+- `internal/httpapi.New` takes a fifth parameter, an `http.Handler` for
+  `internal/agentconn`'s WebSocket endpoint, mounted at `GET
+  /agent/connect` via chi's `Method` (not `Get`) so a nil handler - as in
+  this package's own login/logout tests, which never exercise that route -
+  doesn't panic building the router at all.
 
 ### Deprecated
 

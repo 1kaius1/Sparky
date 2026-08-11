@@ -18,19 +18,25 @@ type API struct {
 	breakGlassLoginService *BreakGlassLoginService
 	setupGate              *setupGate
 	sessionSecret          string
+	agentConn              http.Handler
 }
 
 // New constructs an API. sessionSecret is used to verify session cookies
 // on protected routes via RequireSession - login/logout themselves go
 // through LoginService/BreakGlassLoginService, which hold their own copies
 // for signing. breakGlassStore gates every route via setupGate until
-// first-run setup has completed - see setup_gate.go.
-func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string) *API {
+// first-run setup has completed - see setup_gate.go. agentConn is
+// internal/agentconn's WebSocket endpoint (ARCHITECTURE.md's
+// Agent-Communication Layer) - it is a plain http.Handler here, not a
+// concrete type, so this package doesn't need to depend on
+// internal/agentconn's other exports.
+func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler) *API {
 	return &API{
 		loginService:           loginService,
 		breakGlassLoginService: breakGlassLoginService,
 		setupGate:              newSetupGate(breakGlassStore),
 		sessionSecret:          sessionSecret,
+		agentConn:              agentConn,
 	}
 }
 
@@ -50,6 +56,16 @@ func (a *API) Router() http.Handler {
 	r.Post("/login", a.handleLogin)
 	r.Post("/login/break-glass", a.handleBreakGlassLogin)
 	r.Post("/logout", a.handleLogout)
+
+	// Outside /api/v1: this isn't a REST endpoint (CLAUDE.md API
+	// Conventions) - it's a WebSocket upgrade, authenticated by the
+	// node's own bearer token (ARCHITECTURE.md Protocol), not a session
+	// cookie or RequireSession. r.Method (not r.Get) takes the
+	// http.Handler interface directly rather than eagerly binding a
+	// method value at route-registration time - a nil agentConn (as in
+	// this package's own tests, which don't exercise this route) would
+	// otherwise panic building the router at all, not just on a request.
+	r.Method(http.MethodGet, "/agent/connect", a.agentConn)
 
 	return r
 }

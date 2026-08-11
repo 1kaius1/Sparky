@@ -16,10 +16,12 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/1kaius1/Sparky/internal/agentconn"
 	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/config"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/httpapi"
+	"github.com/1kaius1/Sparky/internal/nodes"
 )
 
 // shutdownTimeout bounds how long graceful shutdown waits for in-flight
@@ -69,9 +71,14 @@ func main() {
 	breakGlass := db.NewBreakGlassRepository(pool)
 	breakGlassLoginService := httpapi.NewBreakGlassLoginService(breakGlass, cfg.SessionSecret)
 
+	nodeRepo := db.NewNodeRepository(pool)
+	nodeAuth := nodes.NewAuthService(nodeRepo)
+	agentRegistry := agentconn.NewRegistry()
+	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger)
+
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
-	api := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret)
+	api := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler)
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.ListenPort,

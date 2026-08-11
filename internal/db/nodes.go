@@ -121,6 +121,53 @@ func (r *NodeRepository) FindByID(ctx context.Context, id string) (*Node, error)
 	return scanNode(row)
 }
 
+// NodeCredential pairs a node's identity with its bearer token hash - the
+// only place bearer_token_hash is ever read, and only for connect-time
+// verification (internal/nodes.AuthService). It is not part of Node/
+// nodeColumns, so the hash can never flow out through FindByID or List.
+type NodeCredential struct {
+	Node            Node
+	BearerTokenHash string
+}
+
+// FindCredentialByName looks up a node by its registered name (matching
+// SPARKY_NODE_NAME, per docs/AGENT.md Configuration) along with its
+// bearer token hash. Returns ErrNodeNotFound if no row matches.
+func (r *NodeRepository) FindCredentialByName(ctx context.Context, name string) (*NodeCredential, error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+nodeColumns+`, bearer_token_hash FROM nodes WHERE name = $1`, name)
+
+	var c NodeCredential
+	err := row.Scan(&c.Node.ID, &c.Node.Name, &c.Node.Hostname, &c.Node.IPAddress, &c.Node.NodeType, &c.Node.ContainerRuntime,
+		&c.Node.GPUMemoryGB, &c.Node.CPUMemoryGB, &c.Node.AgentStatus, &c.Node.LastHeartbeatAt, &c.Node.RegisteredBy, &c.Node.RegisteredAt,
+		&c.BearerTokenHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrNodeNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find node credential: %w", err)
+	}
+	return &c, nil
+}
+
+// SetAgentStatus updates a node's agent_status as its WebSocket connection
+// lifecycle changes (internal/agentconn) - see SCHEMA.md Nodes'
+// agent_status. bumpHeartbeat also sets last_heartbeat_at to now(): true
+// on a successful connect (we just confirmed the agent is alive), false
+// on disconnect (last_heartbeat_at should keep recording the last time it
+// was actually seen, not the moment it went away).
+func (r *NodeRepository) SetAgentStatus(ctx context.Context, nodeID string, status AgentStatus, bumpHeartbeat bool) error {
+	var err error
+	if bumpHeartbeat {
+		_, err = r.pool.Exec(ctx, `UPDATE nodes SET agent_status = $1, last_heartbeat_at = now() WHERE id = $2`, status, nodeID)
+	} else {
+		_, err = r.pool.Exec(ctx, `UPDATE nodes SET agent_status = $1 WHERE id = $2`, status, nodeID)
+	}
+	if err != nil {
+		return fmt.Errorf("set agent status for node %s: %w", nodeID, err)
+	}
+	return nil
+}
+
 // List returns every registered node, ordered by name - the registry's
 // full inventory, for the future Nodes dashboard page.
 func (r *NodeRepository) List(ctx context.Context) ([]*Node, error) {
