@@ -369,7 +369,7 @@ below are otherwise not yet built.
     Decisions Log entry and Known Issues). Check it off once that's
     resolved, not before - the phase breakdown existing doesn't mean the
     original bullet's full claim is true yet.
-  - [ ] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
+  - [x] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
     - [x] Phase 1: `model_profiles` schema + `internal/db.ProfileRepository` -
           matching SCHEMA.md Model profiles, Create/FindByID/List/Update/Delete.
           `fabric_group_id` is not part of this migration, same reasoning as
@@ -436,7 +436,7 @@ below are otherwise not yet built.
           live install here - vLLM's CUDA/torch dependency chain wasn't
           practical to install in this environment - an honest
           confidence gap between the two adapters, not glossed over.
-    - [ ] Phase 3: `internal/profiles.Service` - RBAC-gated (new
+    - [x] Phase 3: `internal/profiles.Service` - RBAC-gated (new
           `rbac.CanManageProfiles`: PowerDev, Admin, or SuperAdmin: see
           CLAUDE.md Frontend Conventions, Model profiles' sidebar tier
           "PowerDev create" - no permission-override path, same precedent as
@@ -448,6 +448,27 @@ below are otherwise not yet built.
           for the repository, adapter registry, node lookup, and audit
           dependencies, exercising RBAC denial, adapter validation failure,
           and the happy path for both engine types.
+          Done - `CreateProfile`/`UpdateProfile`/`DeleteProfile`, all
+          RBAC-gated the same way. `RequiresFullGPUResidency` is
+          deliberately absent from `profiles.Fields` (the input struct) -
+          it's derived from the resolved adapter, not caller-supplied,
+          so it can never disagree with `EngineType`. A shared `resolve`
+          step (field validation, adapter lookup + `ValidateParams`,
+          target-node existence check) backs both Create and Update,
+          since the same checks apply either way. `UpdateProfile`/
+          `DeleteProfile` propagate `db.ErrProfileNotFound` unwrapped,
+          matching `ProfileRepository`'s own style. 18 unit tests against
+          fakes, including one using the real `engines.Registry` (not a
+          fake) for both vLLM and llama.cpp end to end through the
+          service, per this phase's own completion bar.
+
+    All three phases done - checking off the top-level "Model profiles"
+    item above. Unlike the agent runtime/WebSocket item, there's no
+    similar functional gap blocking this: the vLLM adapter's parameter
+    validation wasn't verified against a live install (Phase 2's honest
+    confidence-level note), but that's a depth-of-verification caveat on
+    a working adapter, not a missing capability the checklist item
+    actually claims.
   - [ ] Model transfers: Hugging Face download only (no peer replication yet)
   - [ ] Running instances: single-node load/unload
   - [ ] Metrics: live telemetry collection and dashboard (no historical retention yet)

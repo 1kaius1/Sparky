@@ -245,6 +245,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dependency chain). Pure validation logic, no networking or container
   calls - no database dependency either, unlike most of this project's
   other packages.
+- `internal/profiles.Service` - Phase 3, and the last phase, of the
+  Model profiles work: RBAC-gated (new `rbac.CanManageProfiles` -
+  PowerDev, Admin, or SuperAdmin) `CreateProfile`/`UpdateProfile`/
+  `DeleteProfile`. `RequiresFullGPUResidency` is deliberately absent
+  from the input params - it's derived from the resolved engine adapter
+  (Phase 2), not caller-supplied, so it can never disagree with the
+  chosen `EngineType`. Validates `engine_params` through the adapter
+  registry and confirms `target_node_id` refers to a real registered
+  node (`internal/nodes`) before persisting (Phase 1) and auditing
+  every create/update/delete. No HTTP handler yet, same precedent as
+  the node registry. All three Model profiles phases are now done -
+  the top-level checklist item is checked off in PLANNING.md.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
