@@ -470,6 +470,80 @@ below are otherwise not yet built.
     a working adapter, not a missing capability the checklist item
     actually claims.
   - [ ] Model transfers: Hugging Face download only (no peer replication yet)
+    - [ ] Phase 1: `model_transfers` + `node_model_inventory` schema and
+          repositories - matching SCHEMA.md Model transfers and Node model
+          inventory. `source_type`/`source_node_id` gets the same CHECK
+          pairing as `nodes.container_runtime`/`node_type`
+          (`source_node_id` required when and only when `source_type =
+          'peer_node'`) - a real invariant worth enforcing at the database
+          level even though nothing produces `peer_node` yet (that's
+          v0.3.0's rsync work); `requested_by` is nullable, same reasoning
+          as `nodes.registered_by` (the break-glass SuperAdmin can initiate
+          a transfer too). `node_model_inventory` has no separate `id` -
+          SCHEMA.md doesn't list one, so `(node_id, model_ref)` is the
+          natural composite primary key, and the repository upserts on it
+          rather than inserting a new row per transfer. Complete when
+          covered by integration tests against a real Postgres instance,
+          including that the CHECK constraint rejects both pairing
+          violations and that both migrations' `down` reverse cleanly.
+    - [ ] Phase 2: Protocol extension + dispatch capability -
+          `internal/agentproto` gains `TypeStartTransfer` (central -> agent:
+          transfer ID, model ref) and `TypeTransferProgress` (agent ->
+          central: bytes transferred/total, status, error message).
+          `internal/agentconn`'s `Registry` gains its first real send
+          capability (`Send(nodeID, envelope) error`) - up to now it has
+          only tracked which node owns which connection (Phase 4 of the
+          agent runtime work), never actually written to one. `Handler`
+          gains a pluggable `OnMessage` callback for message types it
+          doesn't handle internally (hello/heartbeat/error stay internal),
+          so this package stays generic - it does not need to know
+          anything about transfers specifically, matching ARCHITECTURE.md's
+          framing of it as the only component that speaks the agent
+          protocol, not a place for feature-specific logic. Pure
+          types/plumbing, testable the same way Phase 2 and Phase 4 of the
+          agent runtime work were - real `coder/websocket` test
+          connections, no actual download involved.
+    - [ ] Phase 3: Agent-side Transfer Executor (`agent/transfer`) - a
+          native Go Hugging Face downloader, no external tool dependency
+          (no Python/`huggingface_hub`, no `git`/`git-lfs`) - see this
+          date's Decisions Log entry for why, and for the real HF Hub API
+          behavior this was verified against (not assumed) before writing
+          it: `GET /api/models/{repo}` lists files (`siblings`, no sizes),
+          and `GET /{repo}/resolve/{revision}/{file}` - Go's `net/http`
+          follows the redirect automatically - lands on a response with a
+          real `Content-Length` and `Accept-Ranges: bytes`, confirmed
+          against a real Hugging Face repo. v0.1.0 downloads every file in
+          the repo's default revision - correct for a vLLM/full-residency
+          model (which needs the whole HF Transformers-format directory
+          anyway) but wasteful for a multi-quantization GGUF repo (only one
+          `.gguf` file is actually needed) - a known, deliberate
+          simplification, not silently assumed to be fine. Wired into
+          `agent/connection.Conn`'s dispatch on `TypeStartTransfer`: one
+          goroutine per active transfer, per docs/AGENT.md Service
+          Architecture Notes, pushing `TypeTransferProgress` back
+          periodically via Phase 2's plumbing. Complete when covered by
+          unit tests against a local HTTP test server standing in for the
+          Hugging Face API (for deterministic behavior - progress
+          reporting, resume-via-Range, error handling), plus one real,
+          ad hoc download against an actual small public Hugging Face repo
+          verified manually, matching this project's empirical-verification
+          discipline.
+    - [ ] Phase 4: `internal/transfers.Service` - RBAC-gated with the
+          existing `rbac.CanManageModelStore` (no new RBAC function needed:
+          CLAUDE.md's sidebar tier note, "Transfers... Admin+grant
+          initiate", already matches `CanManageModelStore`'s exact shape -
+          Admin/SuperAdmin implicit, PowerDev only with the
+          `manage_model_store` override). `InitiateTransfer` confirms the
+          destination node has a live connection (Phase 2's `Registry`),
+          creates the `model_transfers` row (`queued`), and dispatches
+          `TypeStartTransfer`. A handler registered via Phase 2's
+          `OnMessage` receives `TypeTransferProgress` and updates
+          `bytes_transferred`/`status`, upserting `node_model_inventory` on
+          completion. No HTTP handler yet, same precedent as the node
+          registry and Model profiles. Complete when covered by unit tests
+          against fakes for the repository, registry/dispatch, and audit
+          dependencies, exercising RBAC denial, an offline destination
+          node, and the happy path through to a completed transfer.
   - [ ] Running instances: single-node load/unload
   - [ ] Metrics: live telemetry collection and dashboard (no historical retention yet)
   - [ ] Dashboard UI (htmx), sidebar nav, Read-only through Admin views
@@ -579,6 +653,10 @@ below are otherwise not yet built.
 | 2026-08-11 | Manual fallback check: a real container serving a tiny CPU-only model (`ghcr.io/ggml-org/llama.cpp:server`, Qwen2.5-0.5B-Instruct GGUF, no GPU/CDI involved) produces genuine inference output through Podman on this dev machine | The 2nd laptop's GPU can't be assigned via CDI because its nvidia drivers aren't loaded, blocking a GPU-based sanity check there; this confirms the container engine itself (start, port-publish, serve, stop) is healthy independent of the still-open CDI gap above - a real `/v1/chat/completions` request returned a coherent completion at ~93 tok/s | Ad hoc via raw `podman run`, not through `agent/runtime/containers.Backend` - `Spec` has no `Cmd`/port-binding fields yet, since nothing has needed them before now; not added here since no code task was requested, just an infrastructure check |
 | 2026-08-11 | Model profiles' `topology` enum declares both `single_node` and `clustered` from the start; a `CHECK` constraint, not a narrower enum, is what enforces v0.1.0's single-node-only scope | An enum value costs nothing and doesn't need `fabric_group_id` to exist first (unlike `nodes.agent_status` already shipping `unreachable` before anything produces it) - only `target_node_id`/`fabric_group_id` actually need the deferral nodes' `fabric_group_id` set the precedent for, since a clustered profile has nowhere to record its cluster target without that column | A `single_node`-only enum, extended via `ALTER TYPE ... ADD VALUE 'clustered'` once Fabric groups lands (rejected: enums are cheap to declare fully upfront; deferring the value too would just mean an extra migration later for something a `CHECK` constraint already prevents from being used) |
 | 2026-08-11 | `internal/engines` (Phase 2 of Model profiles) validates `engine_params` and reports `requires_full_gpu_residency` only - it does not translate a profile into an actual launch command | ARCHITECTURE.md's Component Breakdown already splits this: Model Profile Management (CRUD + validation) is a distinct component from the Model Lifecycle Orchestrator (owns load/unload, translates into agent commands), which belongs to the separate "Running instances" v0.1.0 item | Building launch-command translation into the adapter now (rejected: nothing calls it yet - Running instances doesn't exist - so it would be exactly the kind of speculative code CLAUDE.md's "don't design for hypothetical future requirements" warns against) |
+| 2026-08-11 | Model transfers' agent-side downloader (`agent/transfer`, Phase 3) talks to the Hugging Face Hub API directly over `net/http` - no `huggingface_hub`/Python, no `git`/`git-lfs` on the agent host | Matches the "own it, don't add dependencies you don't need" reasoning already on record for `chi`, `internal/session`, and `coder/websocket` - a system-level Python or git-lfs dependency on every compute node would be a real deviation from this project's single-Go-binary deployment story (CLAUDE.md, docs/AGENT.md Install). Verified against the real API before committing to this, not assumed: `GET https://huggingface.co/api/models/{repo}` lists files via `siblings` (no sizes); `GET https://huggingface.co/{repo}/resolve/{revision}/{file}` redirects to a signed CDN URL - Go's `net/http` follows this by default - and the final response carries a real `Content-Length` and `Accept-Ranges: bytes`, confirmed against `Qwen/Qwen2.5-0.5B-Instruct-GGUF` | Shelling out to `huggingface-cli download` or `git clone` a repo's git-lfs remote (rejected: both require installing and maintaining a second language runtime or tool on every agent host, for no capability a plain HTTP client with redirect support doesn't already provide) |
+| 2026-08-11 | Model transfers downloads every file in a Hugging Face repo's default revision for v0.1.0, not just the one file an engine actually needs | Correct and necessary for a vLLM/full-residency profile, which needs the whole HF Transformers-format directory (config, tokenizer, every safetensors shard) anyway. Wasteful specifically for a multi-quantization GGUF repo, where only one `.gguf` file is actually needed (see the earlier CPU-only model test: `Qwen2.5-0.5B-Instruct-GGUF` alone has 8 different quantizations) - a known, deliberate v0.1.0 simplification, not silently assumed fine | Parsing a quantization/file selector out of `model_ref` now, mirroring `llama.cpp`'s own `-hf repo:QUANT` convention (rejected for v0.1.0: no engine adapter needs it yet to actually launch anything - Running instances, the feature that would consume a downloaded file, doesn't exist - revisit once it does) |
+| 2026-08-11 | `model_transfers.source_type`/`source_node_id` gets a `CHECK` constraint pairing them (`source_node_id` required if and only if `source_type = 'peer_node'`), even though nothing produces `peer_node` until v0.3.0's rsync work | Same real data-integrity invariant as `nodes.container_runtime`/`node_type` - "populated only when source_type = peer_node" (SCHEMA.md Model transfers) is exactly the shape that precedent already covers, so it gets the same treatment: enforced at the database level regardless of caller discipline, not just documented as an application-level assumption | No constraint, relying on `internal/transfers.Service` alone to never construct an invalid pairing (rejected: the whole reason the nodes precedent exists is that relying on caller discipline alone was judged insufficient there, and nothing about this case is different) |
+| 2026-08-11 | `internal/agentconn`'s `Registry` gains a generic `Send(nodeID, envelope) error`, and `Handler` gains a generic `OnMessage` callback for message types it doesn't handle internally, rather than anything transfer-specific | ARCHITECTURE.md frames the Agent-Communication Layer as "the only component that speaks the agent protocol" that every other component goes through - it should not need to know what a transfer is. Running instances (a separate, later v0.1.0 item) will need the same send/receive capability for container-start commands, so building it generically now, at the size Model transfers actually needs, avoids either duplicating it later or guessing at a needs a future feature hasn't stated yet | A transfers-specific method on `Registry`/`Handler` (rejected: couples a cross-cutting protocol layer to one feature, and CLAUDE.md's Component Breakdown already documents this layer as feature-agnostic) |
 
 ---
 
