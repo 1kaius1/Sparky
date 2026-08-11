@@ -216,6 +216,16 @@ REST/JSON was chosen over gRPC for both boundaries: consistency with vLLM's own
 OpenAI-compatible convention, and approachability for an open-source audience (no
 protobuf toolchain required to inspect traffic).
 
+The agent WebSocket endpoint is `GET /agent/connect` - deliberately outside
+`/api/v1` (CLAUDE.md API Conventions), since it's a WebSocket upgrade
+authenticated by the node's own bearer token, not a REST call authenticated by a
+session cookie. This is what `SPARKY_CENTRAL_URL` (docs/AGENT.md Configuration)
+resolves to. The first message the agent sends after the upgrade must be a
+`hello` envelope (`internal/agentproto`) carrying its node name and bearer
+token; the central app replies with a `hello_ack` either way, using the same
+generic rejection reason for an unknown node name and a wrong token, so the
+handshake can't be used to enumerate registered node names.
+
 ---
 
 ## Request Lifecycle

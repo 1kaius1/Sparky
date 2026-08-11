@@ -71,6 +71,7 @@ sparky/
   - metrics/              # Telemetry ingestion, retention/downsample, NFS/S3 export
   - engines/               # Pluggable adapters: vllm, aphrodite, llamacpp
   - agentproto/            # Shared WebSocket/JSON protocol types (used by both binaries)
+  - agentconn/             # Agent-Communication Layer: the server-side WebSocket endpoint (GET /agent/connect), hello/auth handshake, connection registry
   - db/                    # Repository layer (pgx), query code
   - session/               # Signed cookie session encode/verify (HMAC, no server-side store)
   - httpapi/                # chi router, middleware, handlers; login/logout wire auth + db + session together

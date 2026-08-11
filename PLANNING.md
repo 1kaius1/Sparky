@@ -290,7 +290,7 @@ below are otherwise not yet built.
           never flow out through `FindByID`/`List` once those eventually
           back a Nodes dashboard. No token-verification lookup yet - that
           belongs to Phase 4, which is the first actual caller.
-    - [ ] Phase 4: Server-side Agent-Communication Layer - the WebSocket
+    - [x] Phase 4: Server-side Agent-Communication Layer - the WebSocket
           endpoint ARCHITECTURE.md's Component Breakdown describes as "the
           only component that speaks the agent protocol." Accepts inbound
           connections, validates the bearer token against Phase 3's stored
@@ -302,6 +302,34 @@ below are otherwise not yet built.
           maintained and minimal, matching the "own it, don't add
           dependencies you don't need" pattern already on record for
           `chi`/`internal/session`.
+          Done - new `internal/agentconn` package: `Handler` (mounted at
+          `GET /agent/connect`, outside `/api/v1` since it's a WebSocket
+          upgrade, not REST) runs the hello/auth handshake against
+          `internal/nodes.AuthService` (new - `db.NodeCredential`/
+          `FindCredentialByName`/`SetAgentStatus`, the first real caller
+          of Phase 3's stored hash), and `Registry` tracks which node
+          owns which live connection (bookkeeping only - no send/dispatch
+          API yet, since nothing generates real commands until Model
+          profiles/Running instances exist). The success `hello_ack` is
+          sent only after the node is registered and marked online, so
+          the agent can never observe acceptance before this layer's own
+          state reflects it - verified directly with a race-detector test
+          that awaits the status-store call before asserting on it, not
+          a sleep. A rejected handshake (unknown node name or wrong
+          token) gets the same generic `hello_ack` reason either way, so
+          it can't be used to enumerate node names. `agent_status` only
+          tracks `online`/`offline` for now - `unreachable` (a connection
+          that's open but has gone silent) needs a heartbeat timeout
+          mechanism that has nothing to detect yet, since the agent side
+          doesn't send heartbeats until Phase 5; tracked as a real,
+          explicit gap below, not silently treated as covered. One-off
+          verified end-to-end (then removed, not kept as a permanent
+          test - the unit/integration tests already cover this logic in
+          isolation) through the actual compiled `internal/httpapi`
+          router: a real `RegisterNode` call issuing a real token against
+          a real Postgres instance, dialed with a real `coder/websocket`
+          client, confirming `agent_status` flips `online` then `offline`
+          in the real database across connect/disconnect.
     - [ ] Phase 5: Agent-side connection goroutine - dial
           `SPARKY_CENTRAL_URL`, present `SPARKY_BEARER_TOKEN`, reconnect
           with backoff on disconnect, per docs/AGENT.md Service
@@ -430,6 +458,7 @@ below are otherwise not yet built.
 |-------|----------|-------------------|
 | Mid-session behavior when a user loses AD access-group membership is undefined | Low | Not a stated priority during auth design; existing session likely persists until natural expiry |
 | CDI GPU passthrough via Podman's Docker-Engine-API-compatible socket not yet verified on target hardware/Podman version - neither Docker API mechanism for requesting a CDI device (`HostConfig.DeviceRequests` with `Driver: "cdi"`, or `HostConfig.Devices` with a CDI name as `PathOnHost`) triggered CDI resolution against a real local Podman 4.9.3 daemon, even though Podman's own CLI resolves CDI names correctly - see 2026-08-10 Decisions Log entry for the full empirical finding | Medium | Requires the actual target Podman version (likely much newer than the 4.9.3 available here) and real GPU hardware to determine whether this is fixed upstream or still needs a workaround; `agent/runtime/containers` implements the documented, correct Docker API contract regardless, which is right for Docker and the best available attempt for Podman |
+| `agent_status` never reaches `unreachable` - `internal/agentconn` only ever sets `online` (on a successful handshake) or `offline` (on any disconnect, clean or not), even though SCHEMA.md's third state exists for a connection that's still technically open but has gone silent | Low | Detecting that case needs a heartbeat timeout, which needs the agent side to actually send heartbeats first - that's Phase 5 (agent runtime/WebSocket work), not yet built. Revisit once Phase 5 lands |
 | `agent/config`'s `SPARKY_MODEL_STORAGE_PATH` has no default - docs/AGENT.md documents `/home/serviceloop/models` as the Spark default, but that depends on `SPARKY_NODE_TYPE` at runtime and isn't implemented yet | Low | No bare-metal runtime backend exists yet to consume this default; implement alongside the v0.2.0 backend and `sparky-agent setup` work |
 | `rbac.Service.ElevateTier`'s tier update and its audit-log write are two separate calls, not one database transaction - a tier change can persist while its audit record fails to write (surfaced to the caller as an error after the fact, but not rolled back) | Low | No cross-repository transaction pattern exists anywhere else in the codebase yet to extend; the failure mode requires the audit Postgres write itself to fail immediately after a successful update, which is rare enough not to block this pass |
 
