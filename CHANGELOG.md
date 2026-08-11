@@ -167,6 +167,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   silently zero-filling fields that don't overlap. Pure types - no
   networking, bearer-token enforcement, or connection lifecycle yet;
   covered entirely by marshal/unmarshal round-trip tests.
+- Node bearer token issuance and storage - Phase 3 of the agent runtime/
+  WebSocket work. Migration `000006_add_node_bearer_token` adds
+  `nodes.bearer_token_hash`. `internal/auth`'s `GenerateNodeToken` makes a
+  `spk_`-prefixed 256-bit random token; `HashNodeToken`/`VerifyNodeToken`
+  use plain SHA-256, not Argon2id like the break-glass credential -
+  deliberately, since a memory-hard KDF only helps against a low-entropy
+  human-chosen secret, not an already-random 256-bit token, and would add
+  needless latency to every agent reconnect. `nodes.Service.RegisterNode`
+  now returns the plaintext token once, alongside the created node; only
+  its hash is ever persisted, and that hash is excluded from `Node`/
+  `FindByID`/`List` so it can't leak through the future Nodes dashboard.
+  Migration verified up and down against a real local Postgres instance.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

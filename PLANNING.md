@@ -266,13 +266,30 @@ below are otherwise not yet built.
           multiplexed channel where `Type` and the Go type used to decode
           `Payload` can drift apart. No networking, bearer-token
           enforcement, or connection lifecycle yet - that's Phases 3-5.
-    - [ ] Phase 3: Node bearer token issuance and storage - extends the
+    - [x] Phase 3: Node bearer token issuance and storage - extends the
           `nodes` schema with a hashed token column (same pattern as the
           break-glass credential: only the hash is stored). `RegisterNode`
           generates a random token at registration time and returns the
           plaintext once, for the Admin to put into that node's
           `SPARKY_BEARER_TOKEN` - standard API-token UX, confirmed with the
           user 2026-08-10 since nothing in the docs specified this before.
+          Done - migration `000006_add_node_bearer_token` adds
+          `nodes.bearer_token_hash text NOT NULL` (verified up and down
+          against a real local Postgres instance, including the fresh
+          `up` applying cleanly with zero existing rows to backfill).
+          `internal/auth`'s new `GenerateNodeToken`/`HashNodeToken`/
+          `VerifyNodeToken` use a `spk_`-prefixed 256-bit random token and
+          plain SHA-256, not Argon2id - a memory-hard KDF defends against
+          brute-forcing a low-entropy human password, which buys nothing
+          against an already-uniformly-random 256-bit token, and would
+          only add latency to every agent reconnect handshake. `Service.
+          RegisterNode` now returns `(*db.Node, string, error)`, the
+          string being the plaintext token shown this once.
+          `NodeRepository.Create` takes the hash but `bearer_token_hash`
+          is deliberately excluded from `nodeColumns`/`Node`, so it can
+          never flow out through `FindByID`/`List` once those eventually
+          back a Nodes dashboard. No token-verification lookup yet - that
+          belongs to Phase 4, which is the first actual caller.
     - [ ] Phase 4: Server-side Agent-Communication Layer - the WebSocket
           endpoint ARCHITECTURE.md's Component Breakdown describes as "the
           only component that speaks the agent protocol." Accepts inbound
