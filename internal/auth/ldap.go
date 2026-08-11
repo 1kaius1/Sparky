@@ -70,8 +70,9 @@ func dialLDAP(serverAddr string) (ldapConn, error) {
 
 // Authenticate implements IdentityProvider. ctx is accepted for
 // consistency with the rest of this codebase's handler/service functions -
-// see .clauderules - but go-ldap v3's Bind and Search calls do not accept
-// a context themselves; dialTimeout bounds connection latency instead.
+// see CLAUDE.md's Go Language Conventions - but go-ldap v3's Bind and
+// Search calls do not accept a context themselves; dialTimeout bounds
+// connection latency instead.
 func (p *LDAPProvider) Authenticate(ctx context.Context, username, password string) (*AuthenticatedUser, error) {
 	// AD (like most LDAP servers) treats a bind with a valid DN and an
 	// EMPTY password as an "unauthenticated bind" that succeeds without
