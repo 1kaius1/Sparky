@@ -88,3 +88,18 @@ func CanManageModelStore(actor Actor, hasOverride bool) bool {
 	}
 	return actor.Tier == db.TierPowerDev && hasOverride
 }
+
+// CanManageProfiles reports whether actor may create, edit, or delete
+// Model profiles - see CLAUDE.md Frontend Conventions, Model profiles'
+// sidebar tier ("PowerDev create"). Unlike CanManageModelStore, this is
+// tier-native for PowerDev - no permission-override path, same
+// unconditional-by-tier shape as CanManageNodes.
+func CanManageProfiles(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	if actor.Tier == db.TierAdmin {
+		return true
+	}
+	return actor.Tier == db.TierPowerDev
+}

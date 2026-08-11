@@ -105,6 +105,29 @@ func TestCanManageNodes(t *testing.T) {
 	}
 }
 
+func TestCanManageProfiles(t *testing.T) {
+	tests := []struct {
+		actor Actor
+		want  bool
+	}{
+		{Actor{IsSuperAdmin: true}, true},
+		{Actor{Tier: db.TierAdmin}, true},
+		{Actor{Tier: db.TierPowerDev}, true},
+		{Actor{Tier: db.TierDeveloper}, false},
+		{Actor{Tier: db.TierReadOnly}, false},
+	}
+
+	for _, tt := range tests {
+		name := fmt.Sprintf("tier=%s,superadmin=%v", tt.actor.Tier, tt.actor.IsSuperAdmin)
+		t.Run(name, func(t *testing.T) {
+			got := CanManageProfiles(tt.actor)
+			if got != tt.want {
+				t.Errorf("CanManageProfiles() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCanManageModelStore(t *testing.T) {
 	tests := []struct {
 		actor       Actor
