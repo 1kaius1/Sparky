@@ -217,6 +217,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SIGTERM` -> clean shutdown -> `offline`, and a second run with the
   server killed mid-connection showing real backoff growth and a
   successful reconnect once the server came back.
+- Model profiles schema + `internal/db.ProfileRepository` - Phase 1 of
+  the Model profiles work (PLANNING.md). Migration
+  `000007_create_model_profiles` matches SCHEMA.md's Model profiles,
+  single-node only for v0.1.0: `topology` is declared with both enum
+  values up front, but a `model_profiles_single_node_only` CHECK
+  constraint is what actually enforces the scope (rejects `clustered`
+  or a null `target_node_id`) - `fabric_group_id` itself isn't part of
+  this migration at all, same reasoning as `nodes.fabric_group_id`.
+  `ProfileRepository` covers Create/FindByID/List/Update/Delete;
+  `engine_params` is `jsonb NOT NULL DEFAULT '{}'::jsonb`. Verified up
+  and down against a real local Postgres instance, plus integration
+  tests confirming the CHECK constraint rejects both violations via a
+  direct `INSERT`, not just that the Go API happens to never construct
+  one.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

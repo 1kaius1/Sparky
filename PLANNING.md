@@ -370,7 +370,7 @@ below are otherwise not yet built.
     resolved, not before - the phase breakdown existing doesn't mean the
     original bullet's full claim is true yet.
   - [ ] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
-    - [ ] Phase 1: `model_profiles` schema + `internal/db.ProfileRepository` -
+    - [x] Phase 1: `model_profiles` schema + `internal/db.ProfileRepository` -
           matching SCHEMA.md Model profiles, Create/FindByID/List/Update/Delete.
           `fabric_group_id` is not part of this migration, same reasoning as
           `nodes.fabric_group_id` (Fabric groups doesn't exist until v0.3.0).
@@ -386,6 +386,24 @@ below are otherwise not yet built.
           covered by integration tests against a real Postgres instance,
           including that the `CHECK` constraint rejects a `clustered`
           topology and that the migration's `down` reverses cleanly.
+          Done - migration `000007_create_model_profiles`, verified up and
+          down against a real local Postgres instance. `engine_params` is
+          `jsonb NOT NULL DEFAULT '{}'::jsonb` (not nullable - it always
+          represents real launch configuration, unlike `audit_log.detail`,
+          which may legitimately be absent). `Update` takes the same
+          mutable fields as `Create` (name, model_ref, engine_type,
+          engine_params, requires_full_gpu_residency, required_memory_gb,
+          target_node_id, port) - `topology` isn't updatable in v0.1.0,
+          matching the CHECK constraint. `FindByID`/`Update`/`Delete`
+          return `ErrProfileNotFound` unwrapped (not `fmt.Errorf("...: %w"`),
+          matching `NodeRepository.FindByID`'s style, since it's an
+          expected outcome calling code compares against directly, not an
+          edge case. 13 integration tests, including that the CHECK
+          constraint rejects both a `clustered` topology and a null
+          `target_node_id` by direct `INSERT` (bypassing the repository
+          entirely, to confirm the database enforces this regardless of
+          caller discipline, not just that the Go API happens to never
+          construct such a row).
     - [ ] Phase 2: `internal/engines` - the adapter interface and registry
           (CLAUDE.md: "engines/ - Pluggable adapters"), plus two concrete
           adapters, vLLM and llama.cpp-style (Aphrodite is v0.3.0 per this
