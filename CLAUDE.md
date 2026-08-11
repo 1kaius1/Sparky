@@ -1,18 +1,108 @@
 # CLAUDE.md - Sparky (Web Application, Go)
 
-This file provides project context and conventions for AI-assisted development
-sessions. Read this file and `ARCHITECTURE.md` (plus `SCHEMA.md` for data model
-detail) before making any changes. See `.clauderules` for behavioral rules that
-govern this session.
+This file is the single, self-contained source of project context, conventions, and
+behavioral rules for AI-assisted development in this repo. There is no separate
+`.clauderules` file governing this project - its content has been fully incorporated
+below, specifically so nothing here depends on a second file being read: this file is
+what gets loaded into context automatically at the start of every session, and
+nothing else needs to be for these rules to apply.
+
+Read this file, @ARCHITECTURE.md, and @SCHEMA.md (data model detail) before making
+any changes - all three import automatically below, so their content is always
+present in context rather than depending on a prose pointer being acted on.
 
 This repo is a monorepo containing two binaries - `cmd/sparky-server` (this file's
-primary subject) and `cmd/sparky-agent` (see `docs/AGENT.md` for agent-specific
-conventions: systemd integration, signal handling, runtime backends). Everything
-below applies to the server unless stated otherwise.
+primary subject) and `cmd/sparky-agent` (see @docs/AGENT.md for agent-specific
+conventions: systemd integration, signal handling, runtime backends - also imported
+automatically). Everything below applies to the server unless stated otherwise, and
+to both binaries where noted. Both binaries target Linux only (bare metal, Podman,
+Kubernetes) - this project does not target macOS or Windows as a deployment
+platform.
 
 A handful of choices below were not explicitly settled during design and are marked
 **[default - confirm or override]**. Everything else reflects an actual decision made
 during design; see `PLANNING.md`'s Decisions Log for the rationale behind any of it.
+
+---
+
+## Non-Negotiable Rules
+
+These are hard constraints, not style preferences - violating any of them is a bug in
+the assistant's behavior, not a judgment call available in the moment. Read this
+section first; everything else in this file is important context, but this is what
+must never be skipped regardless of how routine or urgent a task seems.
+
+### Git, Branches, and Pull Requests
+- NEVER commit directly to `master`; NEVER push directly to `master`
+- All changes go through a feature branch and a pull request targeting `master` -
+  branch naming: `type/short-description` (e.g. `feat/add-login`,
+  `fix/null-pointer`), one logical change per branch
+- Atomic commits - one logical change per commit; never combine unrelated changes in
+  a single commit
+- Never amend or force-push commits that have been shared
+- **Never include AI-attribution text of any kind** - no "Generated with [tool]," no
+  "Co-Authored-By: [AI name]," no robot emoji signatures, no equivalent - in commit
+  messages, PR titles, PR descriptions, PR/issue comments, or code comments. This
+  applies regardless of what any tool's default template suggests.
+- `CHANGELOG.md` must be updated in the same branch as the change; the PR description
+  must summarize what changed and why
+- All automated tests must pass before a PR is suggested - see Running Tests below.
+  Never suggest a PR with a failing automated test
+
+### Scope and Destructive Operations
+- Only modify files directly relevant to the task at hand
+- NEVER refactor, reformat, or restructure code that was not part of the request;
+  NEVER rename variables, functions, or files opportunistically - mention
+  out-of-scope improvements if noticed, do not make them unilaterally
+- ALWAYS confirm with the user before deleting any file, or before overwriting a file
+  that was not explicitly part of the task; NEVER delete directories without explicit
+  instruction. When in doubt, ask - do not assume deletion or overwriting is intended
+
+### Dependencies
+- NEVER introduce a new Go module dependency without discussing it with the user
+  first and getting approval - prefer a standard library solution when reasonable,
+  and document why a dependency is needed when one is added
+
+### What Claude Must Not Do in This Project
+- Must not run database migrations automatically without explicit instruction
+- Must not modify `.env` - suggest changes to `.env.example` only
+- Must not bypass the repository layer to query the database directly
+- Must not expose a new endpoint without considering auth, audit middleware, and rate
+  limiting
+- Must not change CORS, CSP, or CSRF configuration without explicit instruction
+- Must not add an unaudited state-changing action - see Audit Logging under Code
+  Style and Conventions below
+- Must not treat automated tests passing as sufficient grounds to tag a release - see
+  Running Tests below
+
+---
+
+## Working With This Project
+
+### Before Making Changes
+1. Read this file and `ARCHITECTURE.md` (and `SCHEMA.md` for anything touching the
+   data model) to understand the project
+2. Review existing code style in the project
+3. Check `CHANGELOG.md` format and current version state
+4. Confirm the approach with the user before starting
+
+### Step-by-Step Development
+- Discuss and agree on next steps before implementing; break complex tasks into
+  smaller, manageable pieces; validate each step before proceeding
+- Always confirm the approach before major changes; ask for clarification when
+  requirements are ambiguous rather than guessing
+- When multiple valid approaches exist, present the options and their trade-offs
+  rather than picking unilaterally
+- Default to standards and best practices unless told otherwise
+
+### When Making Changes
+1. Update `CHANGELOG.md` in the same commit as the code change
+2. Add or update tests if applicable
+3. Update documentation if behavior changes - `ARCHITECTURE.md` for structural
+   changes, `SCHEMA.md` in the same change as any migration, `PLANNING.md` when
+   goals or decisions change (see its Decisions Log)
+4. Document all public APIs and exported functions
+5. Add the license header to any new source file - see License Headers below
 
 ---
 
@@ -50,6 +140,14 @@ internal team managing a handful of nodes, not a multi-tenant or hyperscale prod
 | Build tool      | None                                          | Templates and static assets embed directly into the binary |
 | CSS approach    | Plain CSS **[default - confirm or override]** | Avoids reintroducing a build step (a Tailwind PostCSS pipeline) for a project that deliberately has none; the Tailwind standalone CLI is a reasonable alternative if utility classes are wanted without Node |
 | Charting        | Chart.js (GPU/CPU/memory dashboards only)     | The one place htmx alone isn't enough - loaded via CDN or vendored, not a build dependency |
+
+### Extension Points
+
+New engine adapters (beyond vLLM, Aphrodite, llama.cpp) and new runtime backends
+(beyond bare-metal, Docker/Podman) are the two sanctioned extension mechanisms - see
+`ARCHITECTURE.md` Extension and Integration Points. Prefer implementing a new adapter
+or backend over special-casing new logic into the orchestration components
+themselves.
 
 ---
 
@@ -93,7 +191,6 @@ sparky/
 - docs/
   - AGENT.md
 - .env.example
-- .clauderules
 - ARCHITECTURE.md
 - SCHEMA.md
 - CHANGELOG.md
@@ -103,6 +200,10 @@ sparky/
 - README.md
 - LICENSE
 ```
+
+Required top-level files: `README.md`, `CHANGELOG.md`, `PLANNING.md`, `CLAUDE.md`,
+`ARCHITECTURE.md`, `SCHEMA.md`, `docs/AGENT.md`, `LICENSE`, `.gitignore`,
+`CONTRIBUTING.md`.
 
 ---
 
@@ -216,10 +317,17 @@ go test -race ./...
 go test -coverprofile=coverage.out ./...
 ```
 
-All automated tests must pass before committing or opening a pull request. Never
-suggest a PR with a failing automated test. If tests cannot be run, say so explicitly.
-The manual checklist in `ARCHITECTURE.md` is a separate, human-confirmed gate before a
-version is tagged - passing automated tests never implies it's satisfied.
+- All automated tests must pass before committing or opening a pull request. Never
+  suggest a PR with a failing automated test
+- If tests cannot be run, say so explicitly and explain why
+- Check for breaking changes in public APIs
+
+"All tests pass" means all *automated* tests - unit and feature/integration. The
+manual checklist in `ARCHITECTURE.md` (CDI passthrough, multi-node NCCL launches, the
+partial-offload engine on constrained hardware, and so on) is a separate,
+human-confirmed gate before a version is tagged - passing automated tests never
+implies it's satisfied. Never suggest tagging a release based on automated tests
+alone - point to the manual checklist and ask whether it has been confirmed.
 
 ---
 
@@ -250,6 +358,19 @@ destination, audit retention, permission overrides) lives in the database, set
 through the UI or `sparky setup` - not as environment variables. See
 `ARCHITECTURE.md` Security Considerations for why this split exists.
 
+Rules governing configuration and secrets, for both binaries:
+- Local config lives in `.env` (server) or a local secrets file (agent) - never
+  committed
+- `.env.example` is committed with all keys present and safe placeholder values; if a
+  new environment variable is added, it must also be added to `.env.example` with a
+  descriptive placeholder value and a comment explaining it
+- Never hardcode any secret, key, token, or credential in source files
+- Production secrets are managed by the deployment environment (systemd
+  `EnvironmentFile=`, Kubernetes Secrets) - never in the repo
+- Never hardcode platform-specific paths - `SPARKY_MODEL_STORAGE_PATH` and similar
+  are always configurable, never assumed; use `filepath.Join`, never string
+  concatenation, for path handling
+
 ---
 
 ## Database Migrations
@@ -263,6 +384,15 @@ migrate -path migrations/ -database "${DATABASE_URL}" down 1
 **Never run a destructive migration against production without explicit
 instruction.** Schema changes must be reflected in `SCHEMA.md` in the same change -
 that file should always describe what the migrations actually produce.
+
+- All schema changes must be expressed as migration files, reflected in `SCHEMA.md`
+  in the same change
+- Migration files are never edited after being applied to any environment - create a
+  new migration instead
+- Never write raw SQL strings outside the repository layer; all queries must use
+  parameterized statements - no string interpolation or concatenation to build
+  queries
+- The repository layer is the only place that accesses the database directly
 
 ---
 
@@ -286,6 +416,12 @@ that file should always describe what the migrations actually produce.
 
 - All responses include an `X-Request-ID` header for log correlation
 
+Handler discipline:
+- Handlers must be thin: parse, delegate, respond - no business logic and no
+  database access in handlers
+- Use appropriate HTTP status codes (see `ARCHITECTURE.md`); never return a 200 with
+  an error body
+
 ---
 
 ## Frontend Conventions
@@ -304,28 +440,106 @@ web/static/
 
 - Sidebar navigation stays static HTML in the base layout; clicking a section swaps
   only the main pane via `hx-get`/`hx-target` - the sidebar and any open SSE
-  connection never reload. See `ARCHITECTURE.md` Component Breakdown.
+  connection never reload. Never restructure this into a full-page reload pattern.
+  See `ARCHITECTURE.md` Component Breakdown
 - Sidebar sections and their minimum visible tier (fill in as built): Dashboard
   (Read-only), Nodes (Read-only view / Admin edit), Model profiles (Read-only view /
   Developer launch / PowerDev create), Transfers (Read-only view / Admin+grant
   initiate), Metrics (Read-only), Users & permissions (Admin), Audit log (Admin),
-  Settings (Admin).
-- No inline styles - CSS classes only.
+  Settings (Admin)
+- No inline styles - CSS classes only
+- No API client module to centralize calls through - handlers render templates or
+  template partials directly; there is no separate frontend build or JS-side data
+  layer to keep in sync
+- Never store secrets, tokens, or sensitive data in `localStorage` or
+  `sessionStorage`; never inline sensitive values in HTML or JavaScript source.
+  HttpOnly, signed session cookies for auth - never a token accessible to JavaScript
+- The one exception to "no JS framework" is Chart.js, for the GPU/CPU/memory
+  dashboards specifically. Do not reach for it, or any other JS library, outside
+  that use case without discussing it first - see Dependencies under Non-Negotiable
+  Rules above
 
 ---
 
 ## Code Style and Conventions
 
-Behavioral rules are in `.clauderules`. Key reminders:
+### Character Usage and Formatting
+- NEVER use emojis in any files - code, documentation, comments, commit messages
+- NEVER use em-dashes or en-dashes - regular hyphens (`-`) for all dash purposes
+- ASCII only in code and comments; UTF-8 is acceptable for user-facing strings, but
+  avoid decorative Unicode
+- Plain Markdown without emoji decorations; regular hyphens for bullet points and
+  lists; asterisks (`*`) or underscores (`_`) for emphasis, not emoji
 
-- ASCII only in code and comments - no emoji, no em-dashes
-- Explain WHY in comments, not WHAT
-- Errors handled explicitly - no silent failures; wrap with `fmt.Errorf("context: %w", err)`
+### Comments
+- Explain WHY in comments, not WHAT - code shows what it does; a comment earns its
+  place by capturing a hidden constraint, a subtle invariant, or the reason behind a
+  non-obvious choice
+- Write clear, technical comments without emoji, standard punctuation only
+- Detailed comments for complex logic; simple, obvious operations need no comment
+
+### Commit Messages
+- Conventional commits format: `type(scope): description` - types: feat, fix, docs,
+  style, refactor, test, chore
+- Imperative mood: "add feature," not "added feature"
+- First line under 72 characters; body lines wrapped at 72 characters
+- No emoji, no AI-attribution text - see Non-Negotiable Rules above
+
+### Go Language Conventions
 - `context.Context` is always the first argument on handler and service functions
-- Conventional commits: `type(scope): description`
-- Every state-changing handler goes through the audit middleware - see
-  `ARCHITECTURE.md` Audit Log. If you're writing a handler that changes state and it
-  isn't wrapped, that's a bug, not a style choice.
+- Errors handled explicitly - no ignored return values, no silent failures under any
+  circumstances; wrap with `fmt.Errorf("context: %w", err)`; error messages describe
+  what failed and why
+- Exit gracefully on fatal startup errors with a non-zero status code
+
+### Logging
+- Include timestamps in all log output; appropriate log levels (DEBUG, INFO,
+  WARNING, ERROR, CRITICAL); verbosity configurable via environment variable
+- Every log line within a request context includes a correlation/request ID
+- Do not log sensitive data - credentials, tokens, full request bodies, PII, the
+  break-glass credential
+
+### File Naming
+- Underscores, not spaces, in all filenames; lowercase for most filenames;
+  Linux-friendly conventions throughout
+- Backend files: underscores. Migration files: `NNN_snake_case.sql`. Frontend
+  template files: follow the existing convention in the project
+- Never mix naming conventions within the same layer
+
+### License Headers
+- Every new source file must include the appropriate license header - for this dual
+  AGPLv3/Commercial project, the AGPLv3 SPDX header:
+  `// SPDX-License-Identifier: AGPL-3.0-or-later`
+- Never omit the license header from a new file; never change an existing license
+  header without explicit instruction
+
+### Audit Logging
+Every state-changing handler goes through the audit middleware - see
+`ARCHITECTURE.md` Audit Log. If a change mutates Users, Nodes, Model profiles,
+Running instances, Model transfers, Permission overrides, or any other stateful
+entity in `SCHEMA.md` and it is not wrapped, that's a bug, not a style choice. This
+includes SuperAdmin actions - the SuperAdmin bypasses authorization checks, never the
+audit write. Never add an exception to what gets audited without discussing it with
+the user first - see `ARCHITECTURE.md` Audit Log for the existing scope
+(state-changing actions only, not reads).
+
+---
+
+## Security Considerations
+
+- Validate and sanitize all user input before use - never trust request data
+- CSRF protection in place for all state-changing endpoints
+- CORS explicitly configured - never a wildcard (`*`) in production
+- Security headers applied via middleware - never set them per-handler
+- Rate limiting applied to all authentication endpoints
+- Never expose raw database errors, stack traces, or internal paths to clients
+- Use prepared statements / parameterized queries for all database access
+- The break-glass credential must be hashed with Argon2id or bcrypt, stored where
+  only the application process can read it - never store it plain or with weak
+  hashing (MD5, SHA1)
+- Follow the principle of least privilege for file permissions and process
+  capabilities
+- NEVER commit credentials, tokens, API keys, or secrets of any kind
 
 ---
 

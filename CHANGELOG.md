@@ -275,12 +275,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   /agent/connect` via chi's `Method` (not `Get`) so a nil handler - as in
   this package's own login/logout tests, which never exercise that route -
   doesn't panic building the router at all.
+- `CLAUDE.md` fully absorbs `.clauderules`' content and now `@import`s
+  `ARCHITECTURE.md`, `SCHEMA.md`, and `docs/AGENT.md` directly, so project
+  conventions and behavioral rules are guaranteed present in context every
+  session rather than depending on a prose pointer to a second file being
+  acted on - see PLANNING.md's 2026-08-11 Decisions Log entry for the full
+  reasoning and the tradeoffs knowingly accepted (`CLAUDE.md` now exceeds
+  Claude Code's own ~200-line size guidance; `PLANNING.md` stays
+  unimported).
+- `PLANNING.md`'s Current Status, Current Sprint / Active Work, Open
+  Questions, and Dependencies and Blockers sections corrected for
+  staleness - several described pre-implementation state, referenced the
+  wrong milestone version, or duplicated an entry now tracked in Known
+  Issues and Technical Debt.
 
 ### Deprecated
 
 ### Removed
+- `.clauderules` - fully merged into `CLAUDE.md`. Its two real remaining
+  references (`docs/AGENT.md`, a code comment in
+  `internal/auth/ldap.go`) now point at `CLAUDE.md` instead.
 
 ### Fixed
+- Commits and pull requests going forward no longer include AI-attribution
+  text (a `Co-Authored-By` trailer, a "Generated with" footer) - this
+  violated `.clauderules`' explicit prohibition throughout the session,
+  because `.clauderules` was never actually being read: `CLAUDE.md` only
+  mentioned it in prose, and nothing auto-loads an arbitrary filename.
+  Already-merged history is not rewritten - see PLANNING.md's Decisions
+  Log for why.
 
 ### Security
 

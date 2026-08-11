@@ -2,7 +2,7 @@
 
 Companion to `CLAUDE.md` and `ARCHITECTURE.md`, scoped to `cmd/sparky-agent`. Read
 this before touching anything under `agent/` or `cmd/sparky-agent/`. General Go style
-and workflow rules still come from `.clauderules` - this file covers what's specific
+and workflow rules still come from `CLAUDE.md` - this file covers what's specific
 to running as a background daemon on compute hardware rather than a web app on
 general-purpose infrastructure.
 
@@ -189,5 +189,5 @@ same change - do not let it drift from what the binary actually does.
 
 ## Code Style
 
-Same rules as the rest of the repo - see `.clauderules`. Nothing agent-specific to
-add beyond what's already in this file.
+Same rules as the rest of the repo - see `CLAUDE.md`'s Code Style and Conventions
+section. Nothing agent-specific to add beyond what's already in this file.
