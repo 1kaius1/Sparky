@@ -231,6 +231,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tests confirming the CHECK constraint rejects both violations via a
   direct `INSERT`, not just that the Go API happens to never construct
   one.
+- `internal/engines` - Phase 2 of the Model profiles work. The `Adapter`
+  interface and a `Registry` mapping `db.ProfileEngineType` to it, plus
+  vLLM and llama.cpp-style adapters (Aphrodite is v0.3.0 scope). An
+  adapter reports its engine's fixed `requires_full_gpu_residency` and
+  validates the handful of `engine_params` keys Sparky recognizes when
+  present, passing everything else through unvalidated - `engine_params`
+  stays deliberately opaque beyond that, per SCHEMA.md Model profiles.
+  llama.cpp's recognized keys (`n_gpu_layers`, `ctx_size`, `threads`)
+  were confirmed against a real `llama-server --help`, not guessed;
+  vLLM's reflect well-established, stable CLI arguments but weren't
+  verified against a live install (impractical here - vLLM's CUDA/torch
+  dependency chain). Pure validation logic, no networking or container
+  calls - no database dependency either, unlike most of this project's
+  other packages.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
