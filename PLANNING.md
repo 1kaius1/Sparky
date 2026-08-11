@@ -404,7 +404,7 @@ below are otherwise not yet built.
           entirely, to confirm the database enforces this regardless of
           caller discipline, not just that the Go API happens to never
           construct such a row).
-    - [ ] Phase 2: `internal/engines` - the adapter interface and registry
+    - [x] Phase 2: `internal/engines` - the adapter interface and registry
           (CLAUDE.md: "engines/ - Pluggable adapters"), plus two concrete
           adapters, vLLM and llama.cpp-style (Aphrodite is v0.3.0 per this
           milestone file's own split - see the v0.3.0 section below). An
@@ -417,6 +417,25 @@ below are otherwise not yet built.
           v0.1.0 item below, not this one. Pure validation logic, no
           networking or container calls - testable via unit tests against
           valid/invalid `engine_params` payloads for both adapters.
+          Done - `Adapter{RequiresFullGPUResidency() bool,
+          ValidateParams(json.RawMessage) error}`, a `Registry` mapping
+          `db.ProfileEngineType` to its `Adapter`
+          (`db.ProfileEngineAphrodite` has none, returns
+          `ErrUnknownEngineType`). Each adapter validates only the
+          handful of keys Sparky recognizes when present (type/range
+          checks) and passes everything else through unvalidated -
+          `engine_params` stays deliberately opaque beyond that, per
+          SCHEMA.md. llama.cpp's recognized keys (`n_gpu_layers`,
+          `ctx_size`, `threads`) were confirmed against a real
+          `llama-server --help` (the same
+          `ghcr.io/ggml-org/llama.cpp:server` image `agent/runtime/
+          containers` was verified against), not guessed. vLLM's
+          (`tensor_parallel_size`, `gpu_memory_utilization`, `dtype`,
+          `quantization`, `max_model_len`) reflect well-established,
+          long-stable vLLM CLI arguments but were not verified against a
+          live install here - vLLM's CUDA/torch dependency chain wasn't
+          practical to install in this environment - an honest
+          confidence gap between the two adapters, not glossed over.
     - [ ] Phase 3: `internal/profiles.Service` - RBAC-gated (new
           `rbac.CanManageProfiles`: PowerDev, Admin, or SuperAdmin: see
           CLAUDE.md Frontend Conventions, Model profiles' sidebar tier
