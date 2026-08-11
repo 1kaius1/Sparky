@@ -37,6 +37,7 @@ See `CLAUDE.md` for the full repo tree. Agent-specific code lives under:
 
 ```
 agent/
+- connection/          # Connection goroutine: dial, hello/auth handshake, heartbeat, reconnect-with-backoff
 - runtime/
   - baremetal/      # Spark: direct process exec, runs as `serviceloop`
   - containers/      # Docker/Podman: shared Docker-Engine-API-compatible backend
