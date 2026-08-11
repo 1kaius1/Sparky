@@ -330,7 +330,7 @@ below are otherwise not yet built.
           a real Postgres instance, dialed with a real `coder/websocket`
           client, confirming `agent_status` flips `online` then `offline`
           in the real database across connect/disconnect.
-    - [ ] Phase 5: Agent-side connection goroutine - dial
+    - [x] Phase 5: Agent-side connection goroutine - dial
           `SPARKY_CENTRAL_URL`, present `SPARKY_BEARER_TOKEN`, reconnect
           with backoff on disconnect, per docs/AGENT.md Service
           Architecture Notes. Wires Phase 1's runtime backend to commands
@@ -341,6 +341,34 @@ below are otherwise not yet built.
           real, the same "logic layer ahead of its eventual caller"
           precedent already used for RBAC Phase B, the audit log, and the
           node registry.
+          Done - new `agent/connection.Conn`: dial (with a 10s per-attempt
+          timeout), the same hello/auth handshake internal/agentconn
+          expects, a read loop, and reconnect with exponential backoff
+          (1s to 30s, equal jitter, reset to 1s after any handshake that
+          got accepted). Also sends a `heartbeat` envelope every 30s over
+          the established connection - closing the loop this package's
+          own Phase 4 Known Issues note committed to, though the
+          server-side `unreachable` detection that would actually consume
+          those heartbeats is still open (updated below). `dispatch`
+          recognizes `heartbeat`/`error` (the only message types that
+          exist today beyond `hello`/`hello_ack`) and logs anything else -
+          `agent/runtime/containers.Backend` is wired in as a field ready
+          for a real command type to call into, but nothing routes to it
+          yet, matching the phase's stated scope. Verified end-to-end
+          (ad hoc, not committed) with the real compiled `sparky-server`
+          and `sparky-agent` binaries over a real TCP socket: connect,
+          `agent_status` -> `online` in real Postgres, `SIGTERM` ->
+          clean shutdown -> `agent_status` -> `offline`, then a second run
+          with the server killed mid-connection showing real backoff
+          growth (768ms, 1.2s, 2.6s, 4.4s, 15.3s) and a successful
+          reconnect once the server came back.
+
+    This top-level item stays unchecked even with all five phases done:
+    its own stated scope includes CDI GPU passthrough, and that specific
+    piece was never verified working (Phase 1's gap - see the 2026-08-10
+    Decisions Log entry and Known Issues). Check it off once that's
+    resolved, not before - the phase breakdown existing doesn't mean the
+    original bullet's full claim is true yet.
   - [ ] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
   - [ ] Model transfers: Hugging Face download only (no peer replication yet)
   - [ ] Running instances: single-node load/unload
@@ -458,7 +486,7 @@ below are otherwise not yet built.
 |-------|----------|-------------------|
 | Mid-session behavior when a user loses AD access-group membership is undefined | Low | Not a stated priority during auth design; existing session likely persists until natural expiry |
 | CDI GPU passthrough via Podman's Docker-Engine-API-compatible socket not yet verified on target hardware/Podman version - neither Docker API mechanism for requesting a CDI device (`HostConfig.DeviceRequests` with `Driver: "cdi"`, or `HostConfig.Devices` with a CDI name as `PathOnHost`) triggered CDI resolution against a real local Podman 4.9.3 daemon, even though Podman's own CLI resolves CDI names correctly - see 2026-08-10 Decisions Log entry for the full empirical finding | Medium | Requires the actual target Podman version (likely much newer than the 4.9.3 available here) and real GPU hardware to determine whether this is fixed upstream or still needs a workaround; `agent/runtime/containers` implements the documented, correct Docker API contract regardless, which is right for Docker and the best available attempt for Podman |
-| `agent_status` never reaches `unreachable` - `internal/agentconn` only ever sets `online` (on a successful handshake) or `offline` (on any disconnect, clean or not), even though SCHEMA.md's third state exists for a connection that's still technically open but has gone silent | Low | Detecting that case needs a heartbeat timeout, which needs the agent side to actually send heartbeats first - that's Phase 5 (agent runtime/WebSocket work), not yet built. Revisit once Phase 5 lands |
+| `agent_status` never reaches `unreachable` - `internal/agentconn` only ever sets `online` (on a successful handshake) or `offline` (on any disconnect, clean or not), even though SCHEMA.md's third state exists for a connection that's still technically open but has gone silent | Low | `agent/connection.Conn` sends a `heartbeat` envelope every 30s as of Phase 5 (agent runtime/WebSocket work), but `internal/agentconn` doesn't read-deadline or otherwise track them yet - the server-side timeout/detection logic to actually consume those heartbeats and flip a stale connection to `unreachable` still doesn't exist. Revisit when there's a concrete reason to distinguish `unreachable` from `offline` operationally |
 | `agent/config`'s `SPARKY_MODEL_STORAGE_PATH` has no default - docs/AGENT.md documents `/home/serviceloop/models` as the Spark default, but that depends on `SPARKY_NODE_TYPE` at runtime and isn't implemented yet | Low | No bare-metal runtime backend exists yet to consume this default; implement alongside the v0.2.0 backend and `sparky-agent setup` work |
 | `rbac.Service.ElevateTier`'s tier update and its audit-log write are two separate calls, not one database transaction - a tier change can persist while its audit record fails to write (surfaced to the caller as an error after the fact, but not rolled back) | Low | No cross-repository transaction pattern exists anywhere else in the codebase yet to extend; the failure mode requires the audit Postgres write itself to fail immediately after a successful update, which is rare enough not to block this pass |
 

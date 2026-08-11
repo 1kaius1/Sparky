@@ -198,6 +198,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PLANNING.md Known Issues. Verified end-to-end through the real compiled
   `internal/httpapi` router with a real Postgres-issued token and a real
   WebSocket client, in addition to the committed fake-based unit tests.
+- `agent/connection`: the agent-side Connection goroutine - Phase 5, and
+  the last phase, of the agent runtime/WebSocket work. `Conn.Run` dials
+  `SPARKY_CENTRAL_URL`, presents `SPARKY_BEARER_TOKEN`/`SPARKY_NODE_NAME`
+  in the same hello/auth handshake `internal/agentconn` expects, and
+  reconnects with exponential backoff (1s-30s, equal jitter, reset after
+  any accepted handshake) on disconnect - per docs/AGENT.md Service
+  Architecture Notes. Also sends a `heartbeat` envelope every 30s over an
+  established connection. `agent/runtime/containers.Backend` (Phase 1) is
+  wired in as a field, ready for a real command type to dispatch to once
+  Model profiles/Running instances define one - `dispatch` today only
+  recognizes `heartbeat`/`error`, logging anything else, since no command
+  message type exists yet. `cmd/sparky-agent` now actually starts the
+  connection loop on `SIGTERM`/`SIGINT`-cancellable context instead of
+  just validating config and exiting. Verified end-to-end (ad hoc, not
+  committed) with the real compiled `sparky-server`/`sparky-agent`
+  binaries over a real TCP socket: connect, `agent_status` -> `online`,
+  `SIGTERM` -> clean shutdown -> `offline`, and a second run with the
+  server killed mid-connection showing real backoff growth and a
+  successful reconnect once the server came back.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
