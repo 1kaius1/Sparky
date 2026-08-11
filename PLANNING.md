@@ -370,6 +370,47 @@ below are otherwise not yet built.
     resolved, not before - the phase breakdown existing doesn't mean the
     original bullet's full claim is true yet.
   - [ ] Model profiles: single-node only; vLLM (full-residency) and llama.cpp-style (partial-offload) adapters both from the start, with `requires_full_gpu_residency` - the laptop's 32GB RAM budget makes partial offload immediately relevant, not a later nice-to-have
+    - [ ] Phase 1: `model_profiles` schema + `internal/db.ProfileRepository` -
+          matching SCHEMA.md Model profiles, Create/FindByID/List/Update/Delete.
+          `fabric_group_id` is not part of this migration, same reasoning as
+          `nodes.fabric_group_id` (Fabric groups doesn't exist until v0.3.0).
+          Unlike that precedent, `topology` is declared with both
+          `single_node` and `clustered` values up front (cheap - it's just an
+          enum, not a FK to a nonexistent table, same reasoning as
+          `agent_status` shipping `unreachable` before anything produces it) -
+          a `CHECK` constraint (`model_profiles_single_node_only`) is what
+          actually enforces v0.1.0's single-node-only scope, rejecting any row
+          where `topology <> 'single_node'` or `target_node_id IS NULL`. A
+          future v0.3.0 migration relaxes that constraint once
+          `fabric_group_id` exists to hold the alternative. Complete when
+          covered by integration tests against a real Postgres instance,
+          including that the `CHECK` constraint rejects a `clustered`
+          topology and that the migration's `down` reverses cleanly.
+    - [ ] Phase 2: `internal/engines` - the adapter interface and registry
+          (CLAUDE.md: "engines/ - Pluggable adapters"), plus two concrete
+          adapters, vLLM and llama.cpp-style (Aphrodite is v0.3.0 per this
+          milestone file's own split - see the v0.3.0 section below). An
+          adapter validates `engine_params` for its `engine_type` and reports
+          `requires_full_gpu_residency` (`true` for vLLM, `false` for
+          llama.cpp) - see SCHEMA.md Model profiles. Deliberately does not
+          translate a profile into an actual launch command yet - that's the
+          Model Lifecycle Orchestrator's job (ARCHITECTURE.md Component
+          Breakdown), which belongs to the separate "Running instances"
+          v0.1.0 item below, not this one. Pure validation logic, no
+          networking or container calls - testable via unit tests against
+          valid/invalid `engine_params` payloads for both adapters.
+    - [ ] Phase 3: `internal/profiles.Service` - RBAC-gated (new
+          `rbac.CanManageProfiles`: PowerDev, Admin, or SuperAdmin: see
+          CLAUDE.md Frontend Conventions, Model profiles' sidebar tier
+          "PowerDev create" - no permission-override path, same precedent as
+          `CanManageNodes`) CRUD orchestration: validate params via Phase 2's
+          adapter registry, confirm `target_node_id` refers to a real node
+          (`internal/nodes`), persist via Phase 1, audit every create/update/
+          delete. No HTTP handler yet, same precedent as the node registry
+          and RBAC Phase B. Complete when covered by unit tests against fakes
+          for the repository, adapter registry, node lookup, and audit
+          dependencies, exercising RBAC denial, adapter validation failure,
+          and the happy path for both engine types.
   - [ ] Model transfers: Hugging Face download only (no peer replication yet)
   - [ ] Running instances: single-node load/unload
   - [ ] Metrics: live telemetry collection and dashboard (no historical retention yet)
@@ -477,6 +518,9 @@ below are otherwise not yet built.
 | 2026-08-10 | `github.com/coder/websocket` (formerly `nhooyr.io/websocket`) chosen for `internal/agentproto`'s transport, over `gorilla/websocket` | Actively maintained and minimal API surface, matching the "own it, don't add dependencies you don't need" reasoning already on record for `chi` and `internal/session`'s hand-rolled cookie signing | `gorilla/websocket` (rejected: the long-time standard choice and still very widely used, but its maintenance status has been in flux - archived, then revived under a new org - a less certain footing for a protocol boundary this central to the whole system) |
 | 2026-08-10 | `agent/runtime/containers` imports `github.com/moby/moby/client`, not `github.com/docker/docker/client` as CLAUDE.md's tech stack table originally said | The upstream project renamed from `docker/docker` to `moby/moby`; `go get github.com/docker/docker/client` fails outright (`module declares its path as: github.com/moby/moby/client`) - this is not a naming preference, it is the only path that resolves | None - not a real alternative, `docker/docker/client` simply does not exist as an importable module under that path anymore |
 | 2026-08-10 | CDI GPU passthrough via Podman's Docker-Engine-API-compatible socket needs verification on the actual target Podman version before it can be trusted, tracked as a known gap rather than assumed to work | Empirically found while building Phase 1, against a real local Podman 4.9.3 daemon (no GPU hardware): Podman's own CLI resolves CDI-qualified device names correctly (`podman run --device nvidia.com/gpu=all` fails with a proper "unresolvable CDI devices" error - the expected failure with no CDI spec present, proving CDI parsing works), but neither Docker API mechanism for requesting CDI devices worked through the compat socket - `HostConfig.DeviceRequests` with `Driver: "cdi"` (confirmed correct against `moby/moby`'s own `daemon/cdi.go` source, so right for a real Docker daemon) was silently accepted and dropped with no error and no device (confirmed via `podman inspect`, which does not even have a `DeviceRequests` field to report), and `HostConfig.Devices` with a CDI name as `PathOnHost` was treated as a literal filesystem path and failed a plain `stat()`. Non-GPU container lifecycle (create, pull-if-missing, start, inspect, stop, remove) is unaffected and fully verified against the same real daemon | Chasing a workaround further in this environment (rejected: no GPU hardware and an old Podman version here make this untestable to a real conclusion either way - this is exactly the kind of gap ARCHITECTURE.md's existing manual test checklist item "CDI GPU passthrough verified on Podman" already anticipates needing real target hardware, not something to guess past) |
+| 2026-08-11 | Manual fallback check: a real container serving a tiny CPU-only model (`ghcr.io/ggml-org/llama.cpp:server`, Qwen2.5-0.5B-Instruct GGUF, no GPU/CDI involved) produces genuine inference output through Podman on this dev machine | The 2nd laptop's GPU can't be assigned via CDI because its nvidia drivers aren't loaded, blocking a GPU-based sanity check there; this confirms the container engine itself (start, port-publish, serve, stop) is healthy independent of the still-open CDI gap above - a real `/v1/chat/completions` request returned a coherent completion at ~93 tok/s | Ad hoc via raw `podman run`, not through `agent/runtime/containers.Backend` - `Spec` has no `Cmd`/port-binding fields yet, since nothing has needed them before now; not added here since no code task was requested, just an infrastructure check |
+| 2026-08-11 | Model profiles' `topology` enum declares both `single_node` and `clustered` from the start; a `CHECK` constraint, not a narrower enum, is what enforces v0.1.0's single-node-only scope | An enum value costs nothing and doesn't need `fabric_group_id` to exist first (unlike `nodes.agent_status` already shipping `unreachable` before anything produces it) - only `target_node_id`/`fabric_group_id` actually need the deferral nodes' `fabric_group_id` set the precedent for, since a clustered profile has nowhere to record its cluster target without that column | A `single_node`-only enum, extended via `ALTER TYPE ... ADD VALUE 'clustered'` once Fabric groups lands (rejected: enums are cheap to declare fully upfront; deferring the value too would just mean an extra migration later for something a `CHECK` constraint already prevents from being used) |
+| 2026-08-11 | `internal/engines` (Phase 2 of Model profiles) validates `engine_params` and reports `requires_full_gpu_residency` only - it does not translate a profile into an actual launch command | ARCHITECTURE.md's Component Breakdown already splits this: Model Profile Management (CRUD + validation) is a distinct component from the Model Lifecycle Orchestrator (owns load/unload, translates into agent commands), which belongs to the separate "Running instances" v0.1.0 item | Building launch-command translation into the adapter now (rejected: nothing calls it yet - Running instances doesn't exist - so it would be exactly the kind of speculative code CLAUDE.md's "don't design for hypothetical future requirements" warns against) |
 
 ---
 
