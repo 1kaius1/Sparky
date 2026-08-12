@@ -257,6 +257,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every create/update/delete. No HTTP handler yet, same precedent as
   the node registry. All three Model profiles phases are now done -
   the top-level checklist item is checked off in PLANNING.md.
+- `model_transfers` and `node_model_inventory` schema and repositories -
+  Phase 1 of the Model transfers work. Migrations `000008`/`000009` per
+  SCHEMA.md Model transfers and Node model inventory; `source_type`/
+  `source_node_id` get the same CHECK pairing as `nodes.container_runtime`/
+  `node_type`, enforced now even though nothing produces `peer_node` yet
+  (v0.3.0 rsync work). `node_model_inventory` has no separate `id` -
+  `(node_id, model_ref)` is the composite primary key, and
+  `NodeModelInventoryRepository.Upsert` replaces the existing row rather
+  than inserting a new one per transfer, the same `ON CONFLICT` pattern as
+  `PermissionOverrideRepository.Grant`. `ModelTransferRepository` covers
+  `Create`, `FindByID`, `UpdateProgress`, and `SetStatus` (which stamps
+  `completed_at` only for the three terminal statuses). Covered by
+  integration tests against a real Postgres instance, including both
+  directions of the CHECK constraint violation and a verified up/down/up
+  migration cycle.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

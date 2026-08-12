@@ -48,9 +48,11 @@ server-side Agent-Communication Layer, and the agent-side connection goroutine -
 all five phases done, though the top-level checklist item stays unchecked pending
 real-hardware CDI GPU passthrough verification, a known gap, not an oversight); and
 Model profiles (schema, engine adapters, RBAC-gated CRUD service). Model transfers
-has its phase breakdown recorded but no phase implemented yet - that's the current
-active work, see Current Sprint / Active Work below. Running instances, Metrics,
-Dashboard UI, and the bare-metal install script have not been started.
+has Phase 1 done (`model_transfers` + `node_model_inventory` schema and
+repositories); Phases 2-4 (protocol extension, agent-side transfer executor, HTTP
+wiring) are not started yet - that's the current active work, see Current Sprint /
+Active Work below. Running instances, Metrics, Dashboard UI, and the bare-metal
+install script have not been started.
 
 ---
 
@@ -493,6 +495,18 @@ Dashboard UI, and the bare-metal install script have not been started.
           covered by integration tests against a real Postgres instance,
           including that the CHECK constraint rejects both pairing
           violations and that both migrations' `down` reverse cleanly.
+          Done - migrations 000008/000009, `internal/db/transfers.go`
+          (`ModelTransferRepository`: `Create`, `FindByID`,
+          `UpdateProgress`, `SetStatus`, `ListByDestNode`) and
+          `internal/db/node_model_inventory.go`
+          (`NodeModelInventoryRepository`: `Upsert`, `Get`, `ListByNode`).
+          `SetStatus` stamps `completed_at` only for the three terminal
+          statuses. 13 new integration tests, including both directions of
+          the CHECK constraint violation and that `Upsert` replaces rather
+          than duplicates a `(node_id, model_ref)` row. SCHEMA.md's Model
+          transfers table updated in the same change to mark
+          `requested_by` nullable, matching what this phase actually
+          built.
     - [ ] Phase 2: Protocol extension + dispatch capability -
           `internal/agentproto` gains `TypeStartTransfer` (central -> agent:
           transfer ID, model ref) and `TypeTransferProgress` (agent ->
@@ -605,8 +619,9 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Model transfers, Phase 1 (`model_transfers` + `node_model_inventory`
-  schema and repositories) - no phase of that item has started yet.
+- Next up: Model transfers, Phase 2 (protocol extension + dispatch capability -
+  `internal/agentproto` `TypeStartTransfer`/`TypeTransferProgress`,
+  `internal/agentconn` `Registry.Send` and `Handler.OnMessage`) - Phase 1 is done.
 
 ---
 
