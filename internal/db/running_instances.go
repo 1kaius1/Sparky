@@ -174,3 +174,26 @@ func (r *RunningInstanceRepository) SetStatus(ctx context.Context, id string, st
 	}
 	return nil
 }
+
+// List returns every running instance, most recently started first - the
+// Dashboard overview page's fleet summary.
+func (r *RunningInstanceRepository) List(ctx context.Context) ([]*RunningInstance, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+runningInstanceColumns+` FROM running_instances ORDER BY started_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list running instances: %w", err)
+	}
+	defer rows.Close()
+
+	var instances []*RunningInstance
+	for rows.Next() {
+		inst, err := scanRunningInstance(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list running instances: %w", err)
+		}
+		instances = append(instances, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list running instances: %w", err)
+	}
+	return instances, nil
+}

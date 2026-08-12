@@ -1,0 +1,30 @@
+{{define "content"}}
+<h1>Nodes</h1>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Hostname</th>
+      <th>Type</th>
+      <th>Status</th>
+      <th>GPU memory</th>
+      <th>CPU memory</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Nodes}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.Hostname}}</td>
+      <td>{{.NodeType}}</td>
+      <td><span class="status status-{{.AgentStatus}}">{{.AgentStatus}}</span></td>
+      <td>{{.GPUMemoryGB}} GB</td>
+      <td>{{.CPUMemoryGB}} GB</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="6" class="empty">No nodes registered yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

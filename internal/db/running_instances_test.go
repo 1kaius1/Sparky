@@ -327,3 +327,34 @@ func TestRunningInstanceRepository_SetStatus_Terminal(t *testing.T) {
 		t.Errorf("ErrorMessage = %v, want %q", got.ErrorMessage, errMsg)
 	}
 }
+
+func TestRunningInstanceRepository_List(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profile := createTestProfile(t, profiles, node.ID)
+	a := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+	b := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+
+	got, err := instances.List(ctx)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	var foundA, foundB bool
+	for _, inst := range got {
+		if inst.ID == a.ID {
+			foundA = true
+		}
+		if inst.ID == b.ID {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("List() = %+v, want it to include both %q and %q", got, a.ID, b.ID)
+	}
+}

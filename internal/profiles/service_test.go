@@ -24,6 +24,16 @@ type fakeProfileStore struct {
 	created    []*db.Profile
 	updated    []*db.Profile
 	deletedIDs []string
+
+	listResult []*db.Profile
+	listErr    error
+}
+
+func (f *fakeProfileStore) List(_ context.Context) ([]*db.Profile, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
 }
 
 func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
@@ -450,5 +460,30 @@ func TestService_DeleteProfile_NotFound(t *testing.T) {
 	}
 	if len(audit.calls) != 0 {
 		t.Error("audit.Record was called despite a not-found delete")
+	}
+}
+
+func TestService_ListProfiles(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	want := []*db.Profile{{ID: "profile-1", Name: "a"}, {ID: "profile-2", Name: "b"}}
+	store.listResult = want
+	svc := NewService(store, nodes, adapters, audit)
+
+	got, err := svc.ListProfiles(context.Background())
+	if err != nil {
+		t.Fatalf("ListProfiles() error: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "profile-1" || got[1].ID != "profile-2" {
+		t.Errorf("ListProfiles() = %+v, want %+v", got, want)
+	}
+}
+
+func TestService_ListProfiles_StoreError(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	store.listErr = errors.New("database unreachable")
+	svc := NewService(store, nodes, adapters, audit)
+
+	if _, err := svc.ListProfiles(context.Background()); err == nil {
+		t.Fatal("ListProfiles() succeeded despite a store failure")
 	}
 }

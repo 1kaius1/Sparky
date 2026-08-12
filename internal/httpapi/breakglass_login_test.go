@@ -114,7 +114,10 @@ func TestHandleBreakGlassLogin_FullRoundTrip(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil)
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
 	srv := httptest.NewServer(api.Router())
 	defer srv.Close()
 	client := newBrowserClient(t)
@@ -154,7 +157,10 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil)
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
 	srv := httptest.NewServer(api.Router())
 	defer srv.Close()
 	client := newBrowserClient(t)
@@ -177,7 +183,10 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 func TestHandleBreakGlassLogin_MissingPassword(t *testing.T) {
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil)
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
 	srv := httptest.NewServer(api.Router())
 	defer srv.Close()
 	client := newBrowserClient(t)

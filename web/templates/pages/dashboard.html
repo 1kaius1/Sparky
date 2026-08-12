@@ -1,0 +1,46 @@
+{{define "content"}}
+<h1>Dashboard</h1>
+
+<section class="stat-grid">
+  <div class="stat-tile">
+    <div class="stat-value">{{.Data.TotalNodes}}</div>
+    <div class="stat-label">Nodes</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-value">{{.Data.OnlineNodes}}</div>
+    <div class="stat-label">Online</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-value">{{.Data.TotalInstances}}</div>
+    <div class="stat-label">Running instances</div>
+  </div>
+  <div class="stat-tile">
+    <div class="stat-value">{{.Data.RunningCount}}</div>
+    <div class="stat-label">Currently running</div>
+  </div>
+</section>
+
+<section class="panel">
+  <h2>Recent running instances</h2>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Node</th>
+        <th>Started</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Data.RecentInstances}}
+      <tr>
+        <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
+        <td>{{.NodeName}}</td>
+        <td>{{.StartedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="3" class="empty">No running instances yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+{{end}}

@@ -1,0 +1,28 @@
+{{define "content"}}
+<h1>Model profiles</h1>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Name</th>
+      <th>Model</th>
+      <th>Engine</th>
+      <th>Target node</th>
+      <th>Port</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Profiles}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.ModelRef}}</td>
+      <td>{{.EngineType}}</td>
+      <td>{{.TargetNode}}</td>
+      <td>{{.Port}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5" class="empty">No model profiles yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

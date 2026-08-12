@@ -16,6 +16,7 @@ import (
 // pattern as internal/rbac's userStore.
 type nodeStore interface {
 	Create(ctx context.Context, name, hostname, ipAddress string, nodeType db.NodeType, containerRuntime *db.ContainerRuntime, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string, bearerTokenHash string) (*db.Node, error)
+	List(ctx context.Context) ([]*db.Node, error)
 }
 
 // tokenGenerator is the subset of internal/auth's node token helpers this
@@ -91,4 +92,16 @@ func (s *Service) RegisterNode(ctx context.Context, actor rbac.Actor, params Reg
 		return nil, "", fmt.Errorf("record audit: %w", err)
 	}
 	return n, token, nil
+}
+
+// ListNodes returns every registered node - unguarded by RBAC, since
+// viewing the node registry is available at the lowest tier (CLAUDE.md
+// Frontend Conventions, Nodes' sidebar tier "Read-only view"). Read/view
+// actions are also never audited - see ARCHITECTURE.md Audit Log.
+func (s *Service) ListNodes(ctx context.Context) ([]*db.Node, error) {
+	nodes, err := s.nodes.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list nodes: %w", err)
+	}
+	return nodes, nil
 }

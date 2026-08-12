@@ -20,6 +20,7 @@ type profileStore interface {
 	Create(ctx context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, targetNodeID string, port int, createdBy *string) (*db.Profile, error)
 	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
 	Delete(ctx context.Context, id string) error
+	List(ctx context.Context) ([]*db.Profile, error)
 }
 
 // nodeLookup is the subset of *db.NodeRepository this package needs, to
@@ -181,4 +182,16 @@ func (s *Service) DeleteProfile(ctx context.Context, actor rbac.Actor, id string
 		return fmt.Errorf("record audit: %w", err)
 	}
 	return nil
+}
+
+// ListProfiles returns every model profile - unguarded by RBAC, since
+// viewing profiles is available at the lowest tier (CLAUDE.md Frontend
+// Conventions, Model profiles' sidebar tier "Read-only view"). Read/view
+// actions are also never audited - see ARCHITECTURE.md Audit Log.
+func (s *Service) ListProfiles(ctx context.Context) ([]*db.Profile, error) {
+	profiles, err := s.profiles.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list model profiles: %w", err)
+	}
+	return profiles, nil
 }
