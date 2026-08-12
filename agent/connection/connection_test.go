@@ -20,6 +20,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
 	"github.com/1kaius1/Sparky/internal/agentproto"
 )
@@ -107,6 +108,30 @@ func (f *fakeTransferExecutor) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
+}
+
+// fakeTelemetryCollector implements telemetryCollector for tests,
+// recording calls and letting a test control each result.
+type fakeTelemetryCollector struct {
+	mu       sync.Mutex
+	readErr  error
+	reading  telemetry.Reading
+	callChan chan struct{} // non-nil: signaled once per Read call
+}
+
+func (f *fakeTelemetryCollector) Read(context.Context) (telemetry.Reading, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.callChan != nil {
+		select {
+		case f.callChan <- struct{}{}:
+		default:
+		}
+	}
+	if f.readErr != nil {
+		return telemetry.Reading{}, f.readErr
+	}
+	return f.reading, nil
 }
 
 // testCentralApp is a minimal stand-in for internal/agentconn's real
@@ -210,7 +235,7 @@ func TestConn_Run_SuccessfulHandshake_SendsCorrectHello(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -249,7 +274,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_bad-token", NodeName: "spark-1"}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -264,7 +289,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 
 func TestConn_Run_ContextCanceledBeforeDial_ReturnsPromptly(t *testing.T) {
 	cfg := Config{CentralURL: "ws://127.0.0.1:1/agent/connect", BearerToken: "spk_x", NodeName: "spark-1"}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -301,7 +326,7 @@ func TestConn_Dispatch_StartTransfer_RunsDownloadAndReportsProgress(t *testing.T
 
 	exec := &fakeTransferExecutor{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, &fakeRuntimeBackend{}, exec, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, exec, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -376,7 +401,7 @@ func TestConn_Run_WaitsForInFlightTransferOnShutdown(t *testing.T) {
 
 	exec := &fakeTransferExecutor{block: make(chan struct{}), started: make(chan struct{})}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, &fakeRuntimeBackend{}, exec, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, exec, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -433,7 +458,7 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 
 	runtime := &fakeRuntimeBackend{startID: "container-1"}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -518,7 +543,7 @@ func TestConn_Dispatch_LoadInstance_PartialOffload_NoGGUFFile_ReportsFailed(t *t
 
 	runtime := &fakeRuntimeBackend{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: t.TempDir()}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -576,7 +601,7 @@ func TestConn_Dispatch_LoadInstance_StartContainerFails_ReportsFailed(t *testing
 
 	runtime := &fakeRuntimeBackend{startErr: errors.New("image pull failed")}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -625,7 +650,7 @@ func TestConn_Dispatch_UnloadInstance_StopsContainerAndReportsStopped(t *testing
 
 	runtime := &fakeRuntimeBackend{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -682,7 +707,7 @@ func TestConn_Run_WaitsForInFlightLoadOnShutdown(t *testing.T) {
 
 	runtime := &fakeRuntimeBackend{block: make(chan struct{}), called: make(chan struct{})}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -715,6 +740,132 @@ func TestConn_Run_WaitsForInFlightLoadOnShutdown(t *testing.T) {
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Run() did not return promptly after the in-flight load finished")
+	}
+}
+
+func TestConn_SendTelemetry_PushesReading(t *testing.T) {
+	app := newTestCentralApp(true, "")
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	reading := telemetry.Reading{
+		GPUUtilizationPct: 45, GPUMemoryUsedMB: 8192, GPUMemoryTotalMB: 24576,
+		CPUUtilizationPct: 12.5, SystemMemoryUsedMB: 4096, SystemMemoryTotalMB: 16384,
+	}
+	collector := &fakeTelemetryCollector{reading: reading}
+	cfg := Config{
+		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+		TelemetryPollInterval: 20 * time.Millisecond,
+	}
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, collector, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var got agentproto.Telemetry
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeTelemetry {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeTelemetry)
+		}
+		if err := env.DecodePayload(&got); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a telemetry message")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if got.GPUUtilizationPct != reading.GPUUtilizationPct || got.GPUMemoryUsedMB != reading.GPUMemoryUsedMB ||
+		got.GPUMemoryTotalMB != reading.GPUMemoryTotalMB || got.CPUUtilizationPct != reading.CPUUtilizationPct ||
+		got.SystemMemoryUsedMB != reading.SystemMemoryUsedMB || got.SystemMemoryTotalMB != reading.SystemMemoryTotalMB {
+		t.Errorf("telemetry payload = %+v, want values matching %+v", got, reading)
+	}
+	if got.RecordedAt.IsZero() {
+		t.Error("RecordedAt is zero, want the agent's own send-time timestamp")
+	}
+}
+
+func TestConn_SendTelemetry_ReadFails_NoMessageSent(t *testing.T) {
+	app := newTestCentralApp(true, "")
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	collector := &fakeTelemetryCollector{readErr: errors.New("nvidia-smi: executable file not found"), callChan: make(chan struct{}, 10)}
+	cfg := Config{
+		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+		TelemetryPollInterval: 20 * time.Millisecond,
+	}
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, collector, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	// Wait for at least one failed Read attempt.
+	select {
+	case <-collector.callChan:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for a telemetry Read attempt")
+	}
+
+	select {
+	case env := <-app.receivedMsgs:
+		t.Fatalf("received unexpected message %+v, want none after a Read failure", env)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	cancel()
+	<-done
+}
+
+func TestConn_SendTelemetry_ZeroInterval_DisabledNotPanicked(t *testing.T) {
+	app := newTestCentralApp(true, "")
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	// TelemetryPollInterval left at its zero value.
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return - a zero TelemetryPollInterval must not panic or hang")
 	}
 }
 

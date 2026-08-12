@@ -67,6 +67,12 @@ const (
 	// happened on the node, matching TypeTransferProgress's role for
 	// downloads.
 	TypeInstanceResult MessageType = "instance_result"
+
+	// TypeTelemetry is sent by an agent on its own poll interval
+	// (SPARKY_TELEMETRY_POLL_INTERVAL, docs/AGENT.md Configuration and
+	// Service Architecture Notes' Telemetry goroutine), unprompted - the
+	// central app never requests a reading.
+	TypeTelemetry MessageType = "telemetry"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -205,4 +211,25 @@ type InstanceResult struct {
 	Status       string `json:"status"`
 	ActualPort   int    `json:"actual_port,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// Telemetry is TypeTelemetry's payload - a single point-in-time hardware
+// reading, per SCHEMA.md Metrics. RecordedAt is set by the agent itself
+// (the same trust level already extended to Heartbeat.SentAt), not
+// stamped when the central app receives it, so the value reflects when
+// the reading was actually taken, not network/processing latency after
+// the fact. There is no running_instance_id field - only the central app
+// knows which Running instance (if any) is currently associated with a
+// node (internal/db.RunningInstance.PrimaryNodeID), so internal/metrics
+// resolves that correlation server-side rather than trusting the agent to
+// track its own Running instance state, which it doesn't otherwise need
+// to.
+type Telemetry struct {
+	RecordedAt          time.Time `json:"recorded_at"`
+	GPUUtilizationPct   float64   `json:"gpu_utilization_pct"`
+	GPUMemoryUsedMB     float64   `json:"gpu_memory_used_mb"`
+	GPUMemoryTotalMB    float64   `json:"gpu_memory_total_mb"`
+	CPUUtilizationPct   float64   `json:"cpu_utilization_pct"`
+	SystemMemoryUsedMB  float64   `json:"system_memory_used_mb"`
+	SystemMemoryTotalMB float64   `json:"system_memory_total_mb"`
 }

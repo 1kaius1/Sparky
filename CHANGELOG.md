@@ -390,6 +390,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   against Postgres (including a migration up/down/up cycle) and unit
   tests against fakes across every touched package; `go test -race`
   clean.
+- Metrics: live telemetry collection, completing that v0.1.0 milestone
+  item (ingestion only - "and dashboard" in the item's name is the
+  eventual consumer, built separately by the still-unstarted Dashboard UI
+  item; retention/downsample/export are the separate v0.4.0 Historical
+  metrics milestone). New `agent/telemetry.Collector` (ARCHITECTURE.md's
+  Telemetry Collector component) reads `nvidia-smi` (aggregated across
+  however many GPUs it reports - averaged utilization, summed memory,
+  unverified against real GPU hardware, an honest gap logged in
+  PLANNING.md's Known Issues) and `/proc/stat`/`/proc/meminfo` directly
+  (confirmed against this dev machine's real files). CPU utilization is a
+  stateful delta between successive `Read` calls - the first reading
+  after agent startup is always 0, with nothing yet to diff against.
+  `agentproto` gained `TypeTelemetry` (agent to central, unprompted) and
+  its `Telemetry` payload, `RecordedAt` trusted from the agent the same
+  way `Heartbeat.SentAt` already is. Migration `000011_create_metrics`
+  creates the `metrics` table per SCHEMA.md - no separate `id` column,
+  `(node_id, recorded_at)` is the composite primary key.
+  `internal/db.MetricsRepository` is write-only for now, same precedent
+  as `AuditRepository`. `RunningInstanceRepository` gained
+  `FindActiveByNode` (status = `running` specifically) so ingestion can
+  resolve `running_instance_id` server-side, from the connection's own
+  authenticated node identity - the agent is never asked to track its own
+  Running-instance state. `agent/connection.Conn` gained a telemetry
+  goroutine (own ticker, `Config.TelemetryPollInterval` -
+  `SPARKY_TELEMETRY_POLL_INTERVAL`, parsed and validated fail-fast by
+  `cmd/sparky-agent`) alongside the existing heartbeat goroutine; a
+  zero/negative interval is guarded against inside `sendTelemetry` itself
+  (logs and disables telemetry for that connection) since
+  `time.NewTicker` panics on one and an unrecovered goroutine panic would
+  take the whole agent process down over what should only disable one
+  feature. `internal/metrics.Service.HandleTelemetry` is the
+  `agentconn.OnMessageFunc` that persists a reading - unlike
+  `internal/transfers.Service`/`internal/lifecycle.Service`, no RBAC
+  check or audit record, since a telemetry push is agent-initiated
+  observational data, not a human actor's state-changing action. No HTTP
+  handler yet, same precedent as every other v0.1.0 service so far.
+  Verified with real integration tests against Postgres (including a
+  migration up/down/up cycle) and unit tests against fakes/real `/proc`
+  fixtures across every touched package; `go test -race` clean.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

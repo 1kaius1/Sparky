@@ -178,6 +178,64 @@ func TestRunningInstanceRepository_FindActiveByProfileID_NoneActive(t *testing.T
 	}
 }
 
+func TestRunningInstanceRepository_FindActiveByNode_Running(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profile := createTestProfile(t, profiles, node.ID)
+	created := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+
+	// FindActiveByNode requires status = running specifically - starting
+	// (created's default) doesn't count, unlike FindActiveByProfileID's
+	// broader starting/running/stopping definition of "active".
+	port := 8000
+	if err := instances.SetStatus(ctx, created.ID, RunningInstanceStatusRunning, &port, nil); err != nil {
+		t.Fatalf("SetStatus() error: %v", err)
+	}
+
+	got, err := instances.FindActiveByNode(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("FindActiveByNode() error: %v", err)
+	}
+	if got.ID != created.ID {
+		t.Errorf("FindActiveByNode() ID = %q, want %q", got.ID, created.ID)
+	}
+}
+
+func TestRunningInstanceRepository_FindActiveByNode_StartingNotYetRunning(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profile := createTestProfile(t, profiles, node.ID)
+	createTestRunningInstance(t, instances, profile.ID, node.ID, nil) // still "starting"
+
+	_, err := instances.FindActiveByNode(ctx, node.ID)
+	if err != ErrRunningInstanceNotFound {
+		t.Errorf("FindActiveByNode() error = %v, want ErrRunningInstanceNotFound for a starting (not yet running) instance", err)
+	}
+}
+
+func TestRunningInstanceRepository_FindActiveByNode_NoneActive(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+
+	_, err := instances.FindActiveByNode(context.Background(), node.ID)
+	if err != ErrRunningInstanceNotFound {
+		t.Errorf("FindActiveByNode() error = %v, want ErrRunningInstanceNotFound", err)
+	}
+}
+
 func TestRunningInstanceRepository_SetStatus_NonTerminal_ActualPortSet(t *testing.T) {
 	pool := newTestPool(t)
 	nodes := NewNodeRepository(pool)

@@ -57,9 +57,12 @@ native Hugging Face downloader wired into `agent/connection.Conn`'s dispatch;
 (single-node load/unload - `running_instances` schema, engine adapters' translation
 into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 `TypeInstanceResult` protocol and agent-side dispatch, `internal/lifecycle.Service`'s
-RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics, Dashboard UI, and the
-bare-metal install script have not been started - Metrics is the current active
-work, see Current Sprint / Active Work below.
+RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
+telemetry collection and ingestion, no historical retention yet -
+`agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
+Dashboard UI and the bare-metal install script have not been started -
+Dashboard UI is the current active work, see Current Sprint / Active Work
+below.
 
 ---
 
@@ -733,7 +736,75 @@ work, see Current Sprint / Active Work below.
         round-trip through `httptest`, and a shutdown-wait test for the
         new `instanceWG`), `internal/rbac`, and `internal/lifecycle`.
         `go test -race` clean across every touched package.
-  - [ ] Metrics: live telemetry collection and dashboard (no historical retention yet)
+  - [x] Metrics: live telemetry collection and dashboard (no historical retention yet)
+        Done, ingestion only - "and dashboard" in this item's own name is
+        the eventual consumer of this data, not something built here; the
+        actual UI/SSE wiring belongs to the separate, still-unstarted
+        "Dashboard UI" item directly below, matching ARCHITECTURE.md's own
+        component split (Metrics Ingestion & Retention is distinct from
+        HTTP/API + Dashboard). Retention/downsampling and NFS/S3 export
+        are also out of scope here - both are the separate v0.4.0
+        Historical metrics milestone, and this item's own name says "no
+        historical retention yet".
+
+        `agent/telemetry.Collector` (new package, ARCHITECTURE.md's
+        Telemetry Collector component) reads `nvidia-smi` (aggregated
+        across however many GPUs it reports - averaged utilization,
+        summed memory, matching Nodes' existing single `gpu_memory_gb`
+        scalar per node; untested against a real multi-GPU node, an
+        honest gap, not empirically verified, same standard as the vLLM
+        adapter's launch spec) and `/proc/stat`/`/proc/meminfo` directly,
+        confirmed against this dev machine's real files, not assumed. CPU
+        utilization is a stateful delta between successive `Read` calls
+        (a cumulative counter, not an instantaneous value) - the first
+        reading after agent startup is always 0, with no prior sample to
+        diff against.
+
+        `agentproto` gained `TypeTelemetry` (agent -> central, unprompted
+        - the central app never requests a reading) and its `Telemetry`
+        payload; `RecordedAt` is the agent's own timestamp, the same
+        trust level already extended to `Heartbeat.SentAt`. Migration
+        `000011_create_metrics` creates the `metrics` table per
+        SCHEMA.md - no separate `id` column, `(node_id, recorded_at)` is
+        the composite primary key, same reasoning as
+        `node_model_inventory`. `internal/db.MetricsRepository` is
+        write-only for now, same precedent as `AuditRepository` - nothing
+        yet reads metrics back. `RunningInstanceRepository` gained
+        `FindActiveByNode` (status = `running` specifically, narrower
+        than `FindActiveByProfileID`'s starting/running/stopping) so
+        ingestion can resolve `running_instance_id` server-side - the
+        agent has no reason to track its own Running instance state, so
+        it isn't asked to.
+
+        `agent/connection.Conn` gained a telemetry goroutine (own ticker,
+        `Config.TelemetryPollInterval` - `SPARKY_TELEMETRY_POLL_INTERVAL`,
+        parsed and validated fail-fast by `cmd/sparky-agent`, per the
+        existing config precedent) alongside the existing heartbeat
+        goroutine - "does not wait on the command loop" per docs/AGENT.md
+        Service Architecture Notes. A zero/negative interval is guarded
+        against inside `sendTelemetry` itself (logs and disables
+        telemetry for that connection) rather than trusted blindly from
+        config, since `time.NewTicker` panics on one and an unrecovered
+        goroutine panic would take the whole agent process down over what
+        should only ever disable one feature.
+
+        `internal/metrics.Service.HandleTelemetry` is the
+        `agentconn.OnMessageFunc` that persists an incoming reading -
+        unlike `internal/transfers.Service`/`internal/lifecycle.Service`,
+        there is no RBAC check or audit record, since a telemetry push is
+        agent-initiated observational data, not a human actor's
+        state-changing action (SCHEMA.md Audit log's own examples are all
+        administrative actions on domain objects). A `FindActiveByNode`
+        lookup failure (not "not found," an actual infrastructure error)
+        does not drop the reading - it persists with a nil
+        `running_instance_id` rather than losing a data point over a
+        correlation lookup's own trouble. No HTTP handler yet, same
+        precedent as every other v0.1.0 service so far.
+
+        Verified with real integration tests against Postgres (including
+        the migration's up/down/up cycle) and unit tests against fakes/
+        real `/proc` fixtures across every touched package; `go test
+        -race` clean.
   - [ ] Dashboard UI (htmx), sidebar nav, Read-only through Admin views
   - [ ] Bare-metal install script (apt + dnf)
 
@@ -786,8 +857,9 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Metrics (live telemetry collection and dashboard, no historical
-  retention yet) - Running instances (single-node load/unload) is now done.
+- Next up: Dashboard UI (htmx), sidebar nav, Read-only through Admin views -
+  Metrics (live telemetry collection, no historical retention yet) is now
+  done; the dashboard itself is what will actually consume that data.
 
 ---
 
@@ -870,6 +942,10 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | Running instances ships without a `running_instance_nodes` table, Green/Blue/Red launch eligibility, or reduced-capacity launch handling | All three are explicitly v0.3.0 clustering scope per this milestone file's own split (see the v0.3.0 section below) - `model_profiles_single_node_only` already guarantees every profile that exists today has exactly one `target_node_id`, so there is no multi-node topology yet for `running_instance_nodes` to record. Same precedent as `model_profiles.fabric_group_id` and `profile_cluster_nodes` not existing until Fabric groups lands | Building the table now with no populating code path (rejected: same "no consumer yet" reasoning already on record against `audit_settings` and an unconstrained `nodes.fabric_group_id`) |
 | 2026-08-11 | `internal/agentconn`'s `Registry` gains a generic `Send(nodeID, envelope) error`, and `Handler` gains a generic `OnMessage` callback for message types it doesn't handle internally, rather than anything transfer-specific | ARCHITECTURE.md frames the Agent-Communication Layer as "the only component that speaks the agent protocol" that every other component goes through - it should not need to know what a transfer is. Running instances (a separate, later v0.1.0 item) will need the same send/receive capability for container-start commands, so building it generically now, at the size Model transfers actually needs, avoids either duplicating it later or guessing at a needs a future feature hasn't stated yet | A transfers-specific method on `Registry`/`Handler` (rejected: couples a cross-cutting protocol layer to one feature, and CLAUDE.md's Component Breakdown already documents this layer as feature-agnostic) |
 | 2026-08-11 | `.clauderules` fully merged into `CLAUDE.md` (which now `@import`s `ARCHITECTURE.md`/`SCHEMA.md`/`docs/AGENT.md` too), rather than converting the pointer to `.clauderules` into an `@import`; `PLANNING.md` stays a prose-only reference, not imported and not moved into a path-scoped `.claude/rules/` file | `.clauderules` was never actually being read - CLAUDE.md only mentioned it in prose, and Claude Code has no mechanism that auto-loads an arbitrary filename, confirmed against actual documentation, not assumed. This caused a real compliance failure (AI-attribution text landed in commits/PRs across the whole session). The fix needed to be structural, not a stronger sentence: `@import` guarantees loading regardless of model behavior. Verified empirically (not assumed) that a `.claude/rules/` file whose content is only an `@import` pointing elsewhere resolves eagerly at session launch regardless of its `paths:` frontmatter - so it provides no conditional-loading benefit over a blanket import, only the downside of an unverified mechanism. Real conditional loading requires the referenced content to live directly inside the rule file, which means relocating `ARCHITECTURE.md`/`SCHEMA.md`/`docs/AGENT.md` out of their expected root-level locations - real surgery, disproportionate to a project this scoped (a handful of nodes, single team), given the failure mode that actually mattered (content that could never load without the model choosing to fetch it) is already fully closed by the blanket imports. `CLAUDE.md` now sits at 565 lines plus ~986 imported - well past Claude Code's own documented ~200-line guidance ("Bloated CLAUDE.md files cause Claude to ignore your actual instructions") - a known, accepted tradeoff, not an oversight. `PLANNING.md` (725 lines, growing) stays unimported for the same bloat reason and because it doesn't map to a narrow file-path pattern the way `docs/AGENT.md` does; the mitigation is behavioral (reading it at the start of every substantive task, maintained without a miss for this entire session) rather than structural | Doing the full `.claude/rules/` relocation now (rejected: disproportionate surgery - moving canonical docs out of their expected locations, re-deriving path-scoping, re-testing - for a project this size, when the actually damaging failure mode is already closed); importing `PLANNING.md` too (rejected: makes the already-past-guidance bloat strictly worse for a file that keeps growing by design). Revisit `.claude/rules/`-based organization as part of a future, separate examination of the project boilerplate this repo was based on, where it can be designed in from a project's first commit rather than retrofitted mid-project |
+| 2026-08-12 | `agent/telemetry.Collector` aggregates across every GPU `nvidia-smi` reports into one reading (utilization averaged, memory summed) rather than one row per GPU | Matches Nodes' existing single `gpu_memory_gb` scalar per node (SCHEMA.md Nodes) and Metrics' own single `gpu_utilization_pct`/`gpu_memory_used_mb` columns (SCHEMA.md Metrics) - neither table has a per-GPU-index concept to preserve. Every node this project actually develops against has exactly one GPU (the laptop RTX 4090 and Dell Precision RTX 3080Ti), so this aggregation choice is unverified against a real multi-GPU node - an honest gap, not silently assumed correct, same standard already applied to the vLLM adapter's launch spec | A schema change to record per-GPU rows (rejected: no consumer asks for per-GPU granularity anywhere in SCHEMA.md/ARCHITECTURE.md, and Nodes' own capacity fields already model a node as having one GPU-memory pool) |
+| 2026-08-12 | CPU utilization is computed as a stateful delta between successive `agent/telemetry.Collector.Read` calls, not a single instantaneous read; the very first reading after agent startup is always 0 | `/proc/stat` exposes cumulative tick counters since boot, not a point-in-time percentage - a single sample cannot yield a utilization figure, only a rate computed from two samples separated by known time. Keeping the previous sample as `Collector` state (rather than sleeping between two reads inside one `Read` call) avoids blocking the telemetry goroutine's tick for the poll interval's duration just to answer one question | Sleeping briefly inside `Read` to take two samples per call (rejected: blocks the telemetry goroutine, and duplicates state `Collector` can just keep between ticks instead - the poll interval itself is already the natural sampling window) |
+| 2026-08-12 | `agentproto.Telemetry` carries no node or Running-instance identity - `internal/metrics.Service.HandleTelemetry` resolves `running_instance_id` server-side via the new `RunningInstanceRepository.FindActiveByNode`, using the connection's own authenticated node identity, not a value in the payload | Same trust boundary already established for `HandleTransferProgress`/`HandleInstanceResult`: the agent-communication layer's authenticated `nodeID` is the source of truth for which node sent a message, never a client-supplied field. The agent has no reason to track its own Running-instance state - only the central app's `running_instances` table knows what's currently loaded where, so asking the agent to duplicate that bookkeeping just to echo an ID back would be redundant, error-prone state to keep in sync | Sending `running_instance_id` from the agent, tracked locally in `agent/connection.Conn` from the `load_instance`/`unload_instance` commands it has already handled (rejected: duplicates state the central app already has authoritatively, and diverges the moment a reconnect or restart loses the agent's own copy) |
+| 2026-08-12 | `internal/metrics.Service.HandleTelemetry` has no RBAC check and writes no audit record, unlike `internal/transfers.Service`/`internal/lifecycle.Service` | A telemetry push is agent-initiated observational data collection, not a human actor's state-changing action - SCHEMA.md Audit log's own action examples (`loaded_model`, `elevated_user`, `deleted_model_copy`) are all administrative actions on domain objects, the same reasoning PLANNING.md's audit-log entry already used to exclude authentication/session bookkeeping from the audit trail. There is also no actor to RBAC-check against - the caller is the node itself over an already-authenticated connection, the same situation `nodes.AuthService.Authenticate` (not RBAC-gated either) is already in | Auditing every telemetry write anyway for consistency with other services (rejected: would flood the audit log with a few-second-interval, non-actor-attributable event stream that SCHEMA.md's own audit log framing was never meant to hold) |
 
 ---
 
@@ -884,6 +960,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `rbac.Service.ElevateTier`'s tier update and its audit-log write are two separate calls, not one database transaction - a tier change can persist while its audit record fails to write (surfaced to the caller as an error after the fact, but not rolled back) | Low | No cross-repository transaction pattern exists anywhere else in the codebase yet to extend; the failure mode requires the audit Postgres write itself to fail immediately after a successful update, which is rare enough not to block this pass |
 | `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
+| `agent/telemetry.Collector`'s `nvidia-smi` integration (CSV parsing, multi-GPU aggregation) is unverified against a real `nvidia-smi` binary or real GPU hardware - this dev environment has neither (same gap already on record for CDI GPU passthrough). The CSV query shape (`--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is well-documented, stable `nvidia-smi` behavior, not guessed, but has never actually been run here | Medium | Requires real GPU hardware with `nvidia-smi` installed to close, same blocker already tracked for CDI verification; the parsing logic itself is unit-tested against a fake command runner exercising realistic CSV shapes (single GPU, multiple GPUs, malformed lines), so the gap is specifically "does the real binary's output match the documented format," not "is the parser correct for the format it's given" |
 
 ---
 

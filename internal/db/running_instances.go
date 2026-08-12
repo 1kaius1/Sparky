@@ -132,6 +132,22 @@ func (r *RunningInstanceRepository) FindActiveByProfileID(ctx context.Context, p
 	return scanRunningInstance(row)
 }
 
+// FindActiveByNode returns the most recently started
+// RunningInstanceStatusRunning instance on nodeID, if any - used by
+// internal/metrics to correlate an incoming telemetry reading with
+// whatever model is currently loaded on that node. Deliberately narrower
+// than FindActiveByProfileID's "starting, running, or stopping" - only a
+// genuinely running instance represents "which model was loaded at the
+// time" (SCHEMA.md Metrics). Returns ErrRunningInstanceNotFound if none.
+func (r *RunningInstanceRepository) FindActiveByNode(ctx context.Context, nodeID string) (*RunningInstance, error) {
+	row := r.pool.QueryRow(ctx,
+		`SELECT `+runningInstanceColumns+` FROM running_instances
+		 WHERE primary_node_id = $1 AND status = 'running'
+		 ORDER BY started_at DESC LIMIT 1`,
+		nodeID)
+	return scanRunningInstance(row)
+}
+
 // SetStatus transitions a running instance's status. actualPort, when
 // non-nil, is recorded (typically once status becomes
 // RunningInstanceStatusRunning, per the agent's instance_result report);

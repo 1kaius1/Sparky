@@ -231,6 +231,31 @@ func TestEnvelope_RoundTrip_InstanceResult_Failed(t *testing.T) {
 	}
 }
 
+func TestEnvelope_RoundTrip_Telemetry(t *testing.T) {
+	want := Telemetry{
+		RecordedAt:        time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
+		GPUUtilizationPct: 45, GPUMemoryUsedMB: 8192, GPUMemoryTotalMB: 24576,
+		CPUUtilizationPct: 12.5, SystemMemoryUsedMB: 4096, SystemMemoryTotalMB: 16384,
+	}
+
+	env, err := NewEnvelope(TypeTelemetry, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got Telemetry
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if !got.RecordedAt.Equal(want.RecordedAt) {
+		t.Errorf("RecordedAt = %v, want %v", got.RecordedAt, want.RecordedAt)
+	}
+	got.RecordedAt, want.RecordedAt = time.Time{}, time.Time{}
+	if got != want {
+		t.Errorf("Telemetry (excl. RecordedAt) = %+v, want %+v", got, want)
+	}
+}
+
 func TestEnvelope_WireFormat(t *testing.T) {
 	// Confirms the JSON field names actually on the wire match
 	// ARCHITECTURE.md Protocol's snake_case convention (e.g. request_id),

@@ -10,10 +10,12 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/1kaius1/Sparky/agent/config"
 	"github.com/1kaius1/Sparky/agent/connection"
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
 )
 
@@ -26,6 +28,11 @@ func main() {
 	}
 	logger.Printf("configuration loaded (node_name=%s node_type=%s)", cfg.NodeName, cfg.NodeType)
 
+	telemetryPollInterval, err := time.ParseDuration(cfg.TelemetryPollInterval)
+	if err != nil {
+		logger.Fatalf("config: invalid SPARKY_TELEMETRY_POLL_INTERVAL %q: %v", cfg.TelemetryPollInterval, err)
+	}
+
 	// Bare-metal (Spark) runtime backend selection is v0.2.0 work
 	// (CLAUDE.md Current Focus) - only Docker/Podman exists today.
 	runtimeBackend, err := containers.New()
@@ -35,11 +42,12 @@ func main() {
 	defer runtimeBackend.Close()
 
 	conn := connection.New(connection.Config{
-		CentralURL:       cfg.CentralURL,
-		BearerToken:      cfg.BearerToken,
-		NodeName:         cfg.NodeName,
-		ModelStoragePath: cfg.ModelStoragePath,
-	}, runtimeBackend, transfer.New(), logger)
+		CentralURL:            cfg.CentralURL,
+		BearerToken:           cfg.BearerToken,
+		NodeName:              cfg.NodeName,
+		ModelStoragePath:      cfg.ModelStoragePath,
+		TelemetryPollInterval: telemetryPollInterval,
+	}, runtimeBackend, transfer.New(), telemetry.NewCollector(), logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
