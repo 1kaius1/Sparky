@@ -9,9 +9,11 @@ package containers
 import (
 	"context"
 	"fmt"
+	"strconv"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
 
@@ -28,10 +30,42 @@ type Spec struct {
 	Name  string
 	Env   []string
 
+	// Cmd is the command-line arguments passed to the container's
+	// entrypoint - e.g. an engine adapter's LaunchSpec.Args, plus
+	// whatever --model/--port flags the caller has already resolved. Nil
+	// means run the image's own default command.
+	Cmd []string
+
+	// Port, if nonzero, is published from the container to the identical
+	// port number on the host - Sparky always runs an engine's server on
+	// the same port number inside the container as the profile declares
+	// (SCHEMA.md Running instances' actual_port), so there is only ever
+	// one port number to track, not a separate host/container pair. Zero
+	// means no port is published.
+	Port int
+
+	// Mounts are bind mounts in "hostPath:containerPath[:mode]" form
+	// (Docker's -v syntax) - used to give the container access to the
+	// agent's local model storage directory at the identical path inside
+	// the container as on the host, so a --model flag resolved against
+	// the host path needs no translation to also resolve inside the
+	// container.
+	Mounts []string
+
 	// CDIDevices are CDI-qualified device names (e.g. "nvidia.com/gpu=all")
 	// - see docs/AGENT.md Tech Stack and ARCHITECTURE.md Runtime Backends.
 	// Nil/empty means no GPU passthrough.
 	CDIDevices []string
+}
+
+// InstanceContainerName returns the deterministic container name Sparky
+// uses for a Running instance. StartContainer (via Spec.Name) and
+// StopContainer (which the Docker Engine API accepts a name for
+// interchangeably with an ID) both key off this same value, so the
+// central app never needs to track a live container ID of its own - see
+// agent/connection's load_instance/unload_instance dispatch.
+func InstanceContainerName(instanceID string) string {
+	return "sparky-instance-" + instanceID
 }
 
 // dockerClient is the subset of *client.Client this package uses, narrow
@@ -104,13 +138,27 @@ func (b *Backend) StartContainer(ctx context.Context, spec Spec) (string, error)
 			},
 		}
 	}
+	if len(spec.Mounts) > 0 {
+		hostConfig.Binds = spec.Mounts
+	}
+
+	config := &container.Config{
+		Image: spec.Image,
+		Env:   spec.Env,
+		Cmd:   spec.Cmd,
+	}
+	if spec.Port != 0 {
+		port, err := network.ParsePort(fmt.Sprintf("%d/tcp", spec.Port))
+		if err != nil {
+			return "", fmt.Errorf("parse port %d: %w", spec.Port, err)
+		}
+		config.ExposedPorts = network.PortSet{port: struct{}{}}
+		hostConfig.PortBindings = network.PortMap{port: []network.PortBinding{{HostPort: strconv.Itoa(spec.Port)}}}
+	}
 
 	createOpts := client.ContainerCreateOptions{
-		Name: spec.Name,
-		Config: &container.Config{
-			Image: spec.Image,
-			Env:   spec.Env,
-		},
+		Name:       spec.Name,
+		Config:     config,
 		HostConfig: &hostConfig,
 	}
 

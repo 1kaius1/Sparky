@@ -5,10 +5,12 @@ package connection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,15 +24,52 @@ import (
 	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
-// fakeRuntimeBackend implements runtimeBackend - unused by dispatch
-// today (see runtimeBackend's doc comment), kept here only so New's
-// signature has something real to pass in tests.
-type fakeRuntimeBackend struct{}
+// fakeRuntimeBackend implements runtimeBackend, recording calls and
+// letting a test control each result - used by the load_instance/
+// unload_instance dispatch tests below, and as a working no-op backend
+// for tests that don't care about it.
+type fakeRuntimeBackend struct {
+	mu         sync.Mutex
+	startCalls []containers.Spec
+	startErr   error
+	startID    string
+	stopCalls  []string
+	stopErr    error
 
-func (fakeRuntimeBackend) StartContainer(context.Context, containers.Spec) (string, error) {
-	return "", nil
+	// block, if non-nil, is closed by a test to let a blocked
+	// StartContainer/StopContainer call proceed; called, if non-nil, is
+	// closed the moment that call is entered - lets a test control
+	// exactly when a load/unload "finishes" without a sleep-based poll,
+	// same pattern as fakeTransferExecutor's block/started.
+	block  chan struct{}
+	called chan struct{}
 }
-func (fakeRuntimeBackend) StopContainer(context.Context, string) error { return nil }
+
+func (f *fakeRuntimeBackend) StartContainer(_ context.Context, spec containers.Spec) (string, error) {
+	f.mu.Lock()
+	f.startCalls = append(f.startCalls, spec)
+	f.mu.Unlock()
+	if f.called != nil {
+		close(f.called)
+	}
+	if f.block != nil {
+		<-f.block
+	}
+	return f.startID, f.startErr
+}
+
+func (f *fakeRuntimeBackend) StopContainer(_ context.Context, containerID string) error {
+	f.mu.Lock()
+	f.stopCalls = append(f.stopCalls, containerID)
+	f.mu.Unlock()
+	if f.called != nil {
+		close(f.called)
+	}
+	if f.block != nil {
+		<-f.block
+	}
+	return f.stopErr
+}
 
 // fakeTransferExecutor implements transferExecutor without a real HTTP
 // download - it records each call and, unless told to block, immediately
@@ -171,7 +210,7 @@ func TestConn_Run_SuccessfulHandshake_SendsCorrectHello(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -210,7 +249,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_bad-token", NodeName: "spark-1"}
-	conn := New(cfg, fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -225,7 +264,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 
 func TestConn_Run_ContextCanceledBeforeDial_ReturnsPromptly(t *testing.T) {
 	cfg := Config{CentralURL: "ws://127.0.0.1:1/agent/connect", BearerToken: "spk_x", NodeName: "spark-1"}
-	conn := New(cfg, fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -262,7 +301,7 @@ func TestConn_Dispatch_StartTransfer_RunsDownloadAndReportsProgress(t *testing.T
 
 	exec := &fakeTransferExecutor{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, fakeRuntimeBackend{}, exec, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, exec, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -337,7 +376,7 @@ func TestConn_Run_WaitsForInFlightTransferOnShutdown(t *testing.T) {
 
 	exec := &fakeTransferExecutor{block: make(chan struct{}), started: make(chan struct{})}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, fakeRuntimeBackend{}, exec, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, exec, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -370,6 +409,312 @@ func TestConn_Run_WaitsForInFlightTransferOnShutdown(t *testing.T) {
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Run() did not return promptly after the in-flight transfer finished")
+	}
+}
+
+func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRunning(t *testing.T) {
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		Image:                    "vllm/vllm-openai:latest",
+		Args:                     []string{"--tensor-parallel-size", "1"},
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{startID: "container-1"}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var result agentproto.InstanceResult
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+		if err := env.DecodePayload(&result); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusRunning || result.ActualPort != 8000 {
+		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=running ActualPort=8000", result)
+	}
+
+	if len(runtime.startCalls) != 1 {
+		t.Fatalf("StartContainer called %d times, want 1", len(runtime.startCalls))
+	}
+	spec := runtime.startCalls[0]
+	if spec.Image != "vllm/vllm-openai:latest" {
+		t.Errorf("Image = %q, want %q", spec.Image, "vllm/vllm-openai:latest")
+	}
+	if spec.Name != "sparky-instance-instance-1" {
+		t.Errorf("Name = %q, want %q", spec.Name, "sparky-instance-instance-1")
+	}
+	if spec.Port != 8000 {
+		t.Errorf("Port = %d, want 8000", spec.Port)
+	}
+	// RequiresFullGPUResidency true - --model should point at the whole
+	// destDir, not a specific file within it (there is no glob step).
+	wantCmd := []string{"--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	if !reflect.DeepEqual(spec.Cmd, wantCmd) {
+		t.Errorf("Cmd = %v, want %v", spec.Cmd, wantCmd)
+	}
+	wantMounts := []string{"/models:/models:ro"}
+	if !reflect.DeepEqual(spec.Mounts, wantMounts) {
+		t.Errorf("Mounts = %v, want %v", spec.Mounts, wantMounts)
+	}
+}
+
+func TestConn_Dispatch_LoadInstance_PartialOffload_NoGGUFFile_ReportsFailed(t *testing.T) {
+	// requires_full_gpu_residency false with no matching .gguf file on
+	// local storage (nothing was ever downloaded here) - resolveModelPath
+	// must fail before ever calling StartContainer.
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-gguf-model",
+		Image:                    "ghcr.io/ggml-org/llama.cpp:server",
+		Port:                     8080,
+		RequiresFullGPUResidency: false,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: t.TempDir()}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var result agentproto.InstanceResult
+	select {
+	case env := <-app.receivedMsgs:
+		if err := env.DecodePayload(&result); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if result.Status != agentproto.InstanceStatusFailed || result.ErrorMessage == "" {
+		t.Errorf("instance_result = %+v, want Status=failed with a non-empty ErrorMessage", result)
+	}
+	if len(runtime.startCalls) != 0 {
+		t.Error("StartContainer was called despite no .gguf file existing to resolve --model to")
+	}
+}
+
+func TestConn_Dispatch_LoadInstance_StartContainerFails_ReportsFailed(t *testing.T) {
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		Image:                    "vllm/vllm-openai:latest",
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{startErr: errors.New("image pull failed")}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var result agentproto.InstanceResult
+	select {
+	case env := <-app.receivedMsgs:
+		if err := env.DecodePayload(&result); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if result.Status != agentproto.InstanceStatusFailed || result.ErrorMessage != "image pull failed" {
+		t.Errorf("instance_result = %+v, want Status=failed ErrorMessage=%q", result, "image pull failed")
+	}
+}
+
+func TestConn_Dispatch_UnloadInstance_StopsContainerAndReportsStopped(t *testing.T) {
+	unloadEnv, err := agentproto.NewEnvelope(agentproto.TypeUnloadInstance, "", agentproto.UnloadInstance{InstanceID: "instance-1"})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &unloadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var result agentproto.InstanceResult
+	select {
+	case env := <-app.receivedMsgs:
+		if err := env.DecodePayload(&result); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusStopped {
+		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=stopped", result)
+	}
+	if len(runtime.stopCalls) != 1 || runtime.stopCalls[0] != "sparky-instance-instance-1" {
+		t.Errorf("stopCalls = %v, want [sparky-instance-instance-1]", runtime.stopCalls)
+	}
+}
+
+func TestConn_Run_WaitsForInFlightLoadOnShutdown(t *testing.T) {
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		Image:                    "vllm/vllm-openai:latest",
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{block: make(chan struct{}), called: make(chan struct{})}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-runtime.called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for StartContainer to be called")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+		t.Fatal("Run() returned before its in-flight load finished, want it to wait")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(runtime.block)
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return promptly after the in-flight load finished")
 	}
 }
 

@@ -53,9 +53,13 @@ repositories; `internal/agentproto`'s `TypeStartTransfer`/`TypeTransferProgress`
 and `internal/agentconn`'s `Registry.Send`/`Handler.OnMessage`; `agent/transfer`'s
 native Hugging Face downloader wired into `agent/connection.Conn`'s dispatch;
 `internal/transfers.Service`'s RBAC-gated `InitiateTransfer` and its
-`HandleTransferProgress` `OnMessageFunc` callback). Running instances, Metrics,
-Dashboard UI, and the bare-metal install script have not been started - Running
-instances is the current active work, see Current Sprint / Active Work below.
+`HandleTransferProgress` `OnMessageFunc` callback). Running instances is also done
+(single-node load/unload - `running_instances` schema, engine adapters' translation
+into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
+`TypeInstanceResult` protocol and agent-side dispatch, `internal/lifecycle.Service`'s
+RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics, Dashboard UI, and the
+bare-metal install script have not been started - Metrics is the current active
+work, see Current Sprint / Active Work below.
 
 ---
 
@@ -650,7 +654,85 @@ instances is the current active work, see Current Sprint / Active Work below.
 
     All four phases done - checking off the top-level "Model transfers"
     item above.
-  - [ ] Running instances: single-node load/unload
+  - [x] Running instances: single-node load/unload
+        Done - migration `000010_create_running_instances` creates the
+        `running_instances` table per SCHEMA.md; `running_instance_nodes`,
+        Green/Blue/Red eligibility, and reduced-capacity launches are all
+        v0.3.0 clustering scope and do not exist yet (2026-08-12 Decisions
+        Log). `internal/db.RunningInstanceRepository` covers Create,
+        FindByID, FindActiveByProfileID (the non-terminal-status lookup
+        `LoadInstance` uses to refuse a second concurrent load for the
+        same profile), and SetStatus (COALESCE-preserves `actual_port`
+        across a status transition that has nothing new to report, e.g.
+        running -> stopping).
+
+        `internal/engines.Adapter` gained `BuildLaunchSpec(params)
+        (LaunchSpec, error)` - both adapters now translate their
+        recognized `engine_params` keys into image + command-line flags
+        (`llamaCPPImage` is the same `ghcr.io/ggml-org/llama.cpp:server`
+        image already verified serving real inference; `vllmImage` is
+        `vllm/vllm-openai:latest`, unverified against a live install, same
+        honest gap as `vllmParams` already carried). Deliberately excludes
+        `--model`/`--port` - see the 2026-08-12 Decisions Log entry on the
+        server/agent split.
+
+        `agentproto` gained `TypeLoadInstance`/`TypeUnloadInstance`
+        (central -> agent) and `TypeInstanceResult` (agent -> central,
+        `running`/`failed`/`stopped`). `agent/connection.Conn.dispatch`
+        gained matching cases, following `TypeStartTransfer`'s goroutine-
+        per-command pattern with its own `instanceWG` (separate from
+        `transferWG` - unrelated operations, no reason to block each
+        other's shutdown wait). `resolveModelPath` locates a model already
+        on local storage - the whole directory for a full-GPU-residency
+        engine, a single `.gguf` file for a partial-offload one (see this
+        pass's new Known Issues row for the multi-quantization gap that
+        creates). `agent/runtime/containers.Spec` gained `Cmd`/`Port`/
+        `Mounts` fields (previously only `Image`/`Name`/`Env`/`CDIDevices`
+        existed - nothing had needed them before now, per the 2026-08-11
+        manual-fallback-check Decisions Log entry); `StartContainer` wires
+        `Port` into `ExposedPorts`/`PortBindings` (host and container
+        always the same port number - SCHEMA.md's `actual_port` has no
+        separate host/container pair to reconcile) and `Mounts` into
+        `HostConfig.Binds`, mounting the agent's whole model storage root
+        read-only at the identical path inside the container, so a
+        `--model` path resolved against the host needs no translation.
+        `InstanceContainerName` (`sparky-instance-{id}`) is the
+        deterministic name both load and unload key off of - see the
+        2026-08-12 Decisions Log entry on why no `container_id` column
+        exists.
+
+        `rbac.CanLaunchInstances` (Developer, PowerDev, Admin, or
+        SuperAdmin) matches CLAUDE.md's already-documented sidebar tier
+        note ("Developer launch") - deliberately a lower bar than
+        `CanManageProfiles`, since a Developer may launch a profile
+        someone else created but not edit it. One function guards both
+        load and unload, same reasoning as `CanManageModelStore` guarding
+        both download and delete.
+
+        `internal/lifecycle.Service` (the Model Lifecycle Orchestrator)
+        ties it together: `LoadInstance` checks the rule, confirms no
+        active instance already exists for the profile
+        (`ErrAlreadyRunning`) and the target node is connected
+        (`ErrTargetNodeOffline`) before ever persisting a row, resolves
+        the engine adapter's `LaunchSpec`, creates the `running_instances`
+        row, dispatches `TypeLoadInstance`, and audits (`loaded_model` -
+        SCHEMA.md's own audit log example). `UnloadInstance` requires the
+        instance to currently be `running` (`ErrInstanceNotRunning`),
+        transitions it to `stopping`, dispatches `TypeUnloadInstance`, and
+        audits (`unloaded_model`). `HandleInstanceResult` is `Service`'s
+        `agentconn.OnMessageFunc` for `TypeInstanceResult`, updating
+        `running_instances` status/`actual_port`/`error_message` from
+        whatever the agent actually reports. No HTTP handler yet, same
+        precedent as the node registry, Model profiles, and Model
+        transfers.
+
+        Verified with real integration tests against Postgres (migration
+        up/down/up cycle, `internal/db`) and unit tests against fakes for
+        `internal/engines`, `agent/runtime/containers`,
+        `agent/connection` (including a real in-process WebSocket
+        round-trip through `httptest`, and a shutdown-wait test for the
+        new `instanceWG`), `internal/rbac`, and `internal/lifecycle`.
+        `go test -race` clean across every touched package.
   - [ ] Metrics: live telemetry collection and dashboard (no historical retention yet)
   - [ ] Dashboard UI (htmx), sidebar nav, Read-only through Admin views
   - [ ] Bare-metal install script (apt + dnf)
@@ -704,8 +786,8 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Running instances (single-node load/unload) - Model transfers is
-  now fully done (all four phases).
+- Next up: Metrics (live telemetry collection and dashboard, no historical
+  retention yet) - Running instances (single-node load/unload) is now done.
 
 ---
 
@@ -782,6 +864,10 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-11 | Model transfers downloads every file in a Hugging Face repo's default revision for v0.1.0, not just the one file an engine actually needs | Correct and necessary for a vLLM/full-residency profile, which needs the whole HF Transformers-format directory (config, tokenizer, every safetensors shard) anyway. Wasteful specifically for a multi-quantization GGUF repo, where only one `.gguf` file is actually needed (see the earlier CPU-only model test: `Qwen2.5-0.5B-Instruct-GGUF` alone has 8 different quantizations) - a known, deliberate v0.1.0 simplification, not silently assumed fine | Parsing a quantization/file selector out of `model_ref` now, mirroring `llama.cpp`'s own `-hf repo:QUANT` convention (rejected for v0.1.0: no engine adapter needs it yet to actually launch anything - Running instances, the feature that would consume a downloaded file, doesn't exist - revisit once it does) |
 | 2026-08-11 | `model_transfers.source_type`/`source_node_id` gets a `CHECK` constraint pairing them (`source_node_id` required if and only if `source_type = 'peer_node'`), even though nothing produces `peer_node` until v0.3.0's rsync work | Same real data-integrity invariant as `nodes.container_runtime`/`node_type` - "populated only when source_type = peer_node" (SCHEMA.md Model transfers) is exactly the shape that precedent already covers, so it gets the same treatment: enforced at the database level regardless of caller discipline, not just documented as an application-level assumption | No constraint, relying on `internal/transfers.Service` alone to never construct an invalid pairing (rejected: the whole reason the nodes precedent exists is that relying on caller discipline alone was judged insufficient there, and nothing about this case is different) |
 | 2026-08-12 | `agent/transfer.Executor`'s resume logic treats a `200` response to a Range-header'd request as "start this file over," never appending its body to the existing partial file | Re-verifying the real Hugging Face Hub API before writing Phase 3's resume path (not just trusting the 2026-08-11 entry's Content-Length/Accept-Ranges finding) surfaced a case that entry didn't cover: small, non-LFS files served directly from `huggingface.co` (e.g. `LICENSE`) advertise `Accept-Ranges: bytes` but silently ignore an actual `Range` header, returning `200` with the full body. Only large LFS-tracked files - redirected to a CDN (`us.aws.cdn.hf.co`) - honor it with a real `206`/`Content-Range`, confirmed against both a small file and a large one in `Qwen/Qwen2.5-0.5B-Instruct-GGUF`. Blindly appending a `200`'s body under an assumption of `206` would silently corrupt the file (partial content followed by the full file again) | Treating any non-error status as success and appending regardless (rejected: works for the CDN-redirected case observed in the 2026-08-11 entry, but silently corrupts a resumed small file - exactly the kind of untested assumption this project's empirical-verification discipline exists to catch) |
+| 2026-08-12 | Running instances' `agentproto.LoadInstance` payload carries a server-built `Image`/`Args` (from `internal/engines.Adapter.BuildLaunchSpec`) plus a bare `ModelRef`/`Port`/`RequiresFullGPUResidency` - not a fully-formed `containers.Spec`. The agent resolves `ModelRef` to a local path itself and fills in `--model`/`--port`/`--host` before invoking `containers.Backend.StartContainer` | Engine-specific flag translation (`--tensor-parallel-size`, `--gpu-layers`, etc.) needs no agent-local state, so it belongs server-side in `internal/engines`, the same package that already validates those params - keeping the agent oblivious to per-engine CLI shape, exactly as `internal/agentconn`'s generic `OnMessage` design already keeps that layer oblivious to transfers. But the model's actual on-disk path is agent-local knowledge the central app does not have (`SPARKY_MODEL_STORAGE_PATH` is agent-only config) - same reasoning `agent/connection`'s `TypeStartTransfer` handling already established for download destinations. `RequiresFullGPUResidency` rides along on the wire so the agent can decide directory-vs.-single-file resolution using the same capability flag SCHEMA.md's Model profiles already defines, rather than needing to know engine type names itself | A fully agent-side translation, sending only `ModelRef`/`EngineType`/`EngineParams` and letting the agent import an engine-adapter equivalent (rejected: `internal/engines` depends on `internal/db`, and `cmd/sparky-agent` deliberately has zero database dependency - agentproto's own `TransferProgress.Status` design already draws this exact line); a fully server-side translation that also resolves the model path (rejected: the central app has no visibility into any given node's local storage layout, and hardcoding an assumed path would silently break the moment `SPARKY_MODEL_STORAGE_PATH` differs node to node) |
+| 2026-08-12 | A Running instance's container is named deterministically (`containers.InstanceContainerName`, `sparky-instance-{instance_id}`) rather than the central app tracking a live container ID | `UnloadInstance`'s wire payload only needs `InstanceID` - the agent derives the exact same name it started the container under and the Docker Engine API accepts a name anywhere it accepts an ID (`ContainerStop`/`ContainerRemove` don't distinguish). Tracking a returned container ID server-side would need a new `running_instances` column with no other consumer, purely to round-trip a value the agent can already reconstruct on its own | Adding `running_instances.container_id`, populated from the agent's `instance_result` on a successful load, then echoed back on unload (rejected: extra schema and an extra round-trip for a value that's a pure function of `instance_id` - `SCHEMA.md` was left unchanged for exactly this reason) |
+| 2026-08-12 | `vllm/vllm-openai:latest` chosen as the container image vLLM profiles launch, unverified against a live install | Vllm's own official OpenAI-compatible server image, well-documented and stable - but installing vLLM's CUDA/torch dependency chain wasn't practical in this environment, the same constraint `vllmParams`' own 2026-08-11-adjacent doc comment already disclosed for its recognized flags. `llamaCPPImage` (`ghcr.io/ggml-org/llama.cpp:server`), by contrast, is the same image already empirically verified serving real inference (2026-08-11 entry above) | Deferring the vLLM adapter's `BuildLaunchSpec` until a real install could be tested (rejected: `internal/lifecycle` needs both adapters to exist to build at all, and the codebase's own established pattern - see `vllmParams`' doc comment - is to state an honest confidence gap rather than block on hardware access that may not materialize soon) |
+| 2026-08-12 | Running instances ships without a `running_instance_nodes` table, Green/Blue/Red launch eligibility, or reduced-capacity launch handling | All three are explicitly v0.3.0 clustering scope per this milestone file's own split (see the v0.3.0 section below) - `model_profiles_single_node_only` already guarantees every profile that exists today has exactly one `target_node_id`, so there is no multi-node topology yet for `running_instance_nodes` to record. Same precedent as `model_profiles.fabric_group_id` and `profile_cluster_nodes` not existing until Fabric groups lands | Building the table now with no populating code path (rejected: same "no consumer yet" reasoning already on record against `audit_settings` and an unconstrained `nodes.fabric_group_id`) |
 | 2026-08-11 | `internal/agentconn`'s `Registry` gains a generic `Send(nodeID, envelope) error`, and `Handler` gains a generic `OnMessage` callback for message types it doesn't handle internally, rather than anything transfer-specific | ARCHITECTURE.md frames the Agent-Communication Layer as "the only component that speaks the agent protocol" that every other component goes through - it should not need to know what a transfer is. Running instances (a separate, later v0.1.0 item) will need the same send/receive capability for container-start commands, so building it generically now, at the size Model transfers actually needs, avoids either duplicating it later or guessing at a needs a future feature hasn't stated yet | A transfers-specific method on `Registry`/`Handler` (rejected: couples a cross-cutting protocol layer to one feature, and CLAUDE.md's Component Breakdown already documents this layer as feature-agnostic) |
 | 2026-08-11 | `.clauderules` fully merged into `CLAUDE.md` (which now `@import`s `ARCHITECTURE.md`/`SCHEMA.md`/`docs/AGENT.md` too), rather than converting the pointer to `.clauderules` into an `@import`; `PLANNING.md` stays a prose-only reference, not imported and not moved into a path-scoped `.claude/rules/` file | `.clauderules` was never actually being read - CLAUDE.md only mentioned it in prose, and Claude Code has no mechanism that auto-loads an arbitrary filename, confirmed against actual documentation, not assumed. This caused a real compliance failure (AI-attribution text landed in commits/PRs across the whole session). The fix needed to be structural, not a stronger sentence: `@import` guarantees loading regardless of model behavior. Verified empirically (not assumed) that a `.claude/rules/` file whose content is only an `@import` pointing elsewhere resolves eagerly at session launch regardless of its `paths:` frontmatter - so it provides no conditional-loading benefit over a blanket import, only the downside of an unverified mechanism. Real conditional loading requires the referenced content to live directly inside the rule file, which means relocating `ARCHITECTURE.md`/`SCHEMA.md`/`docs/AGENT.md` out of their expected root-level locations - real surgery, disproportionate to a project this scoped (a handful of nodes, single team), given the failure mode that actually mattered (content that could never load without the model choosing to fetch it) is already fully closed by the blanket imports. `CLAUDE.md` now sits at 565 lines plus ~986 imported - well past Claude Code's own documented ~200-line guidance ("Bloated CLAUDE.md files cause Claude to ignore your actual instructions") - a known, accepted tradeoff, not an oversight. `PLANNING.md` (725 lines, growing) stays unimported for the same bloat reason and because it doesn't map to a narrow file-path pattern the way `docs/AGENT.md` does; the mitigation is behavioral (reading it at the start of every substantive task, maintained without a miss for this entire session) rather than structural | Doing the full `.claude/rules/` relocation now (rejected: disproportionate surgery - moving canonical docs out of their expected locations, re-deriving path-scoping, re-testing - for a project this size, when the actually damaging failure mode is already closed); importing `PLANNING.md` too (rejected: makes the already-past-guidance bloat strictly worse for a file that keeps growing by design). Revisit `.claude/rules/`-based organization as part of a future, separate examination of the project boilerplate this repo was based on, where it can be designed in from a project's first commit rather than retrofitted mid-project |
 
@@ -796,6 +882,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `agent_status` never reaches `unreachable` - `internal/agentconn` only ever sets `online` (on a successful handshake) or `offline` (on any disconnect, clean or not), even though SCHEMA.md's third state exists for a connection that's still technically open but has gone silent | Low | `agent/connection.Conn` sends a `heartbeat` envelope every 30s as of Phase 5 (agent runtime/WebSocket work), but `internal/agentconn` doesn't read-deadline or otherwise track them yet - the server-side timeout/detection logic to actually consume those heartbeats and flip a stale connection to `unreachable` still doesn't exist. Revisit when there's a concrete reason to distinguish `unreachable` from `offline` operationally |
 | `agent/config`'s `SPARKY_MODEL_STORAGE_PATH` has no default - docs/AGENT.md documents `/home/serviceloop/models` as the Spark default, but that depends on `SPARKY_NODE_TYPE` at runtime and isn't implemented yet | Low | No bare-metal runtime backend exists yet to consume this default; implement alongside the v0.2.0 backend and `sparky-agent setup` work |
 | `rbac.Service.ElevateTier`'s tier update and its audit-log write are two separate calls, not one database transaction - a tier change can persist while its audit record fails to write (surfaced to the caller as an error after the fact, but not rolled back) | Low | No cross-repository transaction pattern exists anywhere else in the codebase yet to extend; the failure mode requires the audit Postgres write itself to fail immediately after a successful update, which is rare enough not to block this pass |
+| `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
+| `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
 
 ---
 

@@ -49,6 +49,24 @@ const (
 	// progress, streamed periodically rather than only on completion - see
 	// docs/AGENT.md Service Architecture Notes' Transfer goroutines.
 	TypeTransferProgress MessageType = "transfer_progress"
+
+	// TypeLoadInstance is sent by the central app to an agent, instructing
+	// it to start a container serving a Running instance - see
+	// PLANNING.md's Running instances work, internal/lifecycle (the Model
+	// Lifecycle Orchestrator, ARCHITECTURE.md Component Breakdown), and
+	// agent/connection's dispatch, which handles it.
+	TypeLoadInstance MessageType = "load_instance"
+
+	// TypeUnloadInstance is sent by the central app to an agent,
+	// instructing it to stop and remove a Running instance's container.
+	TypeUnloadInstance MessageType = "unload_instance"
+
+	// TypeInstanceResult is sent by an agent in response to
+	// TypeLoadInstance/TypeUnloadInstance, reporting the outcome - the
+	// only feedback mechanism the central app has for what actually
+	// happened on the node, matching TypeTransferProgress's role for
+	// downloads.
+	TypeInstanceResult MessageType = "instance_result"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -134,4 +152,57 @@ type TransferProgress struct {
 	BytesTotal       int64  `json:"bytes_total"`
 	Status           string `json:"status"`
 	ErrorMessage     string `json:"error_message,omitempty"`
+}
+
+// LoadInstance is TypeLoadInstance's payload. Image and Args are already
+// fully resolved server-side by internal/engines' adapter registry (see
+// engines.Adapter.BuildLaunchSpec) - the agent does not need any
+// engine-specific knowledge, only how to run a container. There is no
+// model path field: only the agent knows its own local model storage
+// layout (SPARKY_MODEL_STORAGE_PATH), so it resolves ModelRef to a local
+// path itself, the same way its TypeStartTransfer handling already does
+// for downloads. RequiresFullGPUResidency tells the agent whether that
+// local path should be the model's whole directory (vLLM-style,
+// Transformers format) or a single .gguf file within it
+// (llama.cpp-style, partial offload) - reusing the same capability flag
+// SCHEMA.md's Model profiles already defines, rather than the agent
+// needing to know engine type names.
+type LoadInstance struct {
+	InstanceID               string   `json:"instance_id"`
+	ModelRef                 string   `json:"model_ref"`
+	Image                    string   `json:"image"`
+	Args                     []string `json:"args,omitempty"`
+	Port                     int      `json:"port"`
+	RequiresFullGPUResidency bool     `json:"requires_full_gpu_residency"`
+}
+
+// UnloadInstance is TypeUnloadInstance's payload. There is no
+// container-ID field - the agent derives the same deterministic container
+// name from InstanceID that it used at load time (see
+// containers.InstanceContainerName), so the central app never needs to
+// track a live container identity of its own.
+type UnloadInstance struct {
+	InstanceID string `json:"instance_id"`
+}
+
+// InstanceStatus* are InstanceResult.Status's possible values - plain
+// strings, not internal/db.RunningInstanceStatus, deliberately, for the
+// same reason as TransferProgress.Status: this package has no dependency
+// on internal/db. Only a subset of db.RunningInstanceStatus's values
+// appears here - "starting" and "stopping" are set centrally, before and
+// during dispatch, never reported by the agent.
+const (
+	InstanceStatusRunning = "running"
+	InstanceStatusFailed  = "failed"
+	InstanceStatusStopped = "stopped"
+)
+
+// InstanceResult is TypeInstanceResult's payload. ActualPort is
+// meaningful only when Status is InstanceStatusRunning; ErrorMessage only
+// when Status is InstanceStatusFailed.
+type InstanceResult struct {
+	InstanceID   string `json:"instance_id"`
+	Status       string `json:"status"`
+	ActualPort   int    `json:"actual_port,omitempty"`
+	ErrorMessage string `json:"error_message,omitempty"`
 }

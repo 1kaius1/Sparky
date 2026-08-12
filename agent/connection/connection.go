@@ -4,11 +4,10 @@
 // docs/AGENT.md Service Architecture Notes: "owns the WebSocket
 // lifecycle - dial, handshake with the bearer token, read loop, and
 // reconnect-with-backoff on disconnect." Phase 5 of the agent runtime/
-// WebSocket work (PLANNING.md): makes the connection to
-// internal/agentconn's server-side endpoint real. No real command
-// payloads exist yet beyond agentproto's hello/heartbeat/error - Model
-// profiles and Running instances are what will eventually define one -
-// so dispatch only recognizes what already exists today.
+// WebSocket work (PLANNING.md) made the connection to
+// internal/agentconn's server-side endpoint real; TypeStartTransfer
+// (Model transfers) and TypeLoadInstance/TypeUnloadInstance (Running
+// instances) are the real command types dispatch recognizes today.
 package connection
 
 import (
@@ -18,6 +17,7 @@ import (
 	"log"
 	"math/rand"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -46,12 +46,9 @@ const (
 	defaultMaxBackoff = 30 * time.Second
 )
 
-// runtimeBackend is the subset of *containers.Backend a real command
-// dispatch would call into - narrow enough to fake in tests. Nothing
-// calls it yet (see Conn.dispatch); this is the "logic layer ahead of
-// its eventual caller" pattern already used for RBAC Phase B, the audit
-// log, and the node registry - wiring the dependency through now so a
-// real command type, once one exists, has somewhere to go.
+// runtimeBackend is the subset of *containers.Backend this package's
+// TypeLoadInstance/TypeUnloadInstance dispatch calls into - narrow enough
+// to fake in tests.
 type runtimeBackend interface {
 	StartContainer(ctx context.Context, spec containers.Spec) (string, error)
 	StopContainer(ctx context.Context, containerID string) error
@@ -96,6 +93,12 @@ type Conn struct {
 	// process exiting mid-write - see docs/AGENT.md Service Architecture
 	// Notes.
 	transferWG sync.WaitGroup
+
+	// instanceWG tracks in-flight load_instance/unload_instance
+	// goroutines - same reasoning as transferWG, kept as a separate group
+	// since a load and a transfer are unrelated operations with no reason
+	// to block each other's shutdown wait.
+	instanceWG sync.WaitGroup
 }
 
 // New constructs a Conn.
@@ -120,16 +123,18 @@ func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, logg
 // heartbeats and transfer progress are the two senders that do today.
 //
 // Before returning, Run waits for every in-flight transfer goroutine
-// (dispatch's TypeStartTransfer case) to reach a safe stopping point -
+// (dispatch's TypeStartTransfer case) and load/unload goroutine
+// (TypeLoadInstance/TypeUnloadInstance) to reach a safe stopping point -
 // see docs/AGENT.md Service Architecture Notes: "sync.WaitGroup tracks
 // in-flight transfers so graceful shutdown can wait for them ... rather
-// than killing a transfer mid-write." A transfer goroutine is spawned
-// with this method's ctx, not a per-connection one, so it keeps running
-// (and gets a chance to finish or fail cleanly) across a mere WebSocket
-// reconnect - only this method's own cancellation (agent shutdown) stops
-// it.
+// than killing a transfer mid-write," and Signal Handling's "stop managed
+// engine processes cleanly." Each such goroutine is spawned with this
+// method's ctx, not a per-connection one, so it keeps running (and gets a
+// chance to finish or fail cleanly) across a mere WebSocket reconnect -
+// only this method's own cancellation (agent shutdown) stops it.
 func (c *Conn) Run(ctx context.Context) {
 	defer c.transferWG.Wait()
+	defer c.instanceWG.Wait()
 
 	backoff := c.minBackoff
 	for ctx.Err() == nil {
@@ -309,6 +314,28 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.transferWG.Done()
 			c.runTransfer(ctx, conn, start)
 		}()
+	case agentproto.TypeLoadInstance:
+		var load agentproto.LoadInstance
+		if err := env.DecodePayload(&load); err != nil {
+			c.logger.Printf("agent connection: received malformed load_instance payload: %v", err)
+			return
+		}
+		c.instanceWG.Add(1)
+		go func() {
+			defer c.instanceWG.Done()
+			c.runLoad(ctx, conn, load)
+		}()
+	case agentproto.TypeUnloadInstance:
+		var unload agentproto.UnloadInstance
+		if err := env.DecodePayload(&unload); err != nil {
+			c.logger.Printf("agent connection: received malformed unload_instance payload: %v", err)
+			return
+		}
+		c.instanceWG.Add(1)
+		go func() {
+			defer c.instanceWG.Done()
+			c.runUnload(ctx, conn, unload)
+		}()
 	default:
 		c.logger.Printf("agent connection: received unhandled message type %q", env.Type)
 	}
@@ -364,6 +391,108 @@ func (c *Conn) runTransfer(ctx context.Context, conn *websocket.Conn, start agen
 
 	if err := c.transfer.Download(ctx, start.ModelRef, destDir, progress); err != nil {
 		c.logger.Printf("agent connection: transfer %s failed: %v", start.TransferID, err)
+	}
+}
+
+// resolveModelPath locates a model already downloaded to local storage for
+// a load_instance command - the same destDir a start_transfer download for
+// the same ModelRef landed in (see runTransfer above). A full-GPU-residency
+// engine (vLLM-style) is pointed at that directory itself, since it expects
+// a whole HF Transformers-format directory (config, tokenizer, every
+// safetensors shard); a partial-offload engine (llama.cpp-style) is
+// pointed at a single .gguf file within it, since v0.1.0's downloader
+// fetches every file in a GGUF repo's default revision (PLANNING.md's
+// 2026-08-11 Decisions Log), which can include multiple quantizations -
+// exactly one is required here, since there is no quantization selector
+// yet to prefer one over another.
+func (c *Conn) resolveModelPath(modelRef string, requiresFullGPUResidency bool) (string, error) {
+	dir := filepath.Join(c.cfg.ModelStoragePath, filepath.FromSlash(modelRef))
+	if requiresFullGPUResidency {
+		return dir, nil
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*.gguf"))
+	if err != nil {
+		return "", fmt.Errorf("glob for a .gguf file in %s: %w", dir, err)
+	}
+	if len(matches) != 1 {
+		return "", fmt.Errorf("expected exactly one .gguf file in %s, found %d", dir, len(matches))
+	}
+	return matches[0], nil
+}
+
+// runLoad starts a Running instance's container - one goroutine per
+// load/unload command, same reasoning as runTransfer, so a slow image
+// pull never blocks readLoop's command handling. The outcome is always
+// reported back as an instance_result message, success or failure - never
+// silently dropped, since the central app has no other way to learn what
+// actually happened on this node.
+func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentproto.LoadInstance) {
+	modelPath, err := c.resolveModelPath(load.ModelRef, load.RequiresFullGPUResidency)
+	if err != nil {
+		c.logger.Printf("agent connection: resolve model path for instance %s: %v", load.InstanceID, err)
+		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
+		return
+	}
+
+	cmd := append([]string{"--model", modelPath, "--port", strconv.Itoa(load.Port), "--host", "0.0.0.0"}, load.Args...)
+	spec := containers.Spec{
+		Image: load.Image,
+		Name:  containers.InstanceContainerName(load.InstanceID),
+		Cmd:   cmd,
+		Port:  load.Port,
+		// Read-only: the agent already owns writing to this directory
+		// (runTransfer above) - the engine container only ever needs to
+		// read the model files back out. Mounted at the identical path
+		// inside the container as on the host, so modelPath (resolved
+		// above from this same host path) needs no translation to also
+		// resolve inside the container.
+		Mounts: []string{c.cfg.ModelStoragePath + ":" + c.cfg.ModelStoragePath + ":ro"},
+	}
+
+	if _, err := c.runtime.StartContainer(ctx, spec); err != nil {
+		c.logger.Printf("agent connection: start container for instance %s: %v", load.InstanceID, err)
+		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
+		return
+	}
+	c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusRunning, load.Port, "")
+}
+
+// runUnload stops and removes a Running instance's container, identified
+// by the same deterministic name runLoad started it under - see
+// containers.InstanceContainerName.
+func (c *Conn) runUnload(ctx context.Context, conn *websocket.Conn, unload agentproto.UnloadInstance) {
+	name := containers.InstanceContainerName(unload.InstanceID)
+	if err := c.runtime.StopContainer(ctx, name); err != nil {
+		c.logger.Printf("agent connection: stop container for instance %s: %v", unload.InstanceID, err)
+		c.sendInstanceResult(ctx, conn, unload.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
+		return
+	}
+	c.sendInstanceResult(ctx, conn, unload.InstanceID, agentproto.InstanceStatusStopped, 0, "")
+}
+
+// sendInstanceResult reports a load/unload outcome back to the central
+// app - see agentproto.InstanceResult's doc comment.
+func (c *Conn) sendInstanceResult(ctx context.Context, conn *websocket.Conn, instanceID, status string, actualPort int, errMsg string) {
+	env, err := agentproto.NewEnvelope(agentproto.TypeInstanceResult, "", agentproto.InstanceResult{
+		InstanceID:   instanceID,
+		Status:       status,
+		ActualPort:   actualPort,
+		ErrorMessage: errMsg,
+	})
+	if err != nil {
+		c.logger.Printf("agent connection: build instance_result for %s: %v", instanceID, err)
+		return
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		c.logger.Printf("agent connection: marshal instance_result for %s: %v", instanceID, err)
+		return
+	}
+	// conn.Write is safe for concurrent use - see runTransfer's progress
+	// closure above for the same claim and its source.
+	if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+		c.logger.Printf("agent connection: send instance_result for %s: %v", instanceID, err)
 	}
 }
 

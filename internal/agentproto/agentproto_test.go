@@ -4,6 +4,7 @@ package agentproto
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 )
@@ -152,6 +153,81 @@ func TestEnvelope_RoundTrip_TransferProgress_WithError(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("TransferProgress = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_LoadInstance(t *testing.T) {
+	want := LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "meta-llama/Llama-3-8B",
+		Image:                    "vllm/vllm-openai:latest",
+		Args:                     []string{"--tensor-parallel-size", "1"},
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+	}
+
+	env, err := NewEnvelope(TypeLoadInstance, "req-4", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got LoadInstance
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LoadInstance = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_UnloadInstance(t *testing.T) {
+	want := UnloadInstance{InstanceID: "instance-1"}
+
+	env, err := NewEnvelope(TypeUnloadInstance, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got UnloadInstance
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("UnloadInstance = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_InstanceResult(t *testing.T) {
+	want := InstanceResult{InstanceID: "instance-1", Status: InstanceStatusRunning, ActualPort: 8000}
+
+	env, err := NewEnvelope(TypeInstanceResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got InstanceResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("InstanceResult = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_InstanceResult_Failed(t *testing.T) {
+	want := InstanceResult{InstanceID: "instance-1", Status: InstanceStatusFailed, ErrorMessage: "image pull failed"}
+
+	env, err := NewEnvelope(TypeInstanceResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got InstanceResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("InstanceResult = %+v, want %+v", got, want)
 	}
 }
 

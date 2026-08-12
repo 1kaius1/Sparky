@@ -103,3 +103,23 @@ func CanManageProfiles(actor Actor) bool {
 	}
 	return actor.Tier == db.TierPowerDev
 }
+
+// CanLaunchInstances reports whether actor may load or unload a Running
+// instance - see CLAUDE.md Frontend Conventions, Model profiles' sidebar
+// tier ("Developer launch"). Deliberately a lower bar than
+// CanManageProfiles: a Developer may launch a profile someone else
+// (PowerDev+) created, but may not create, edit, or delete the profile
+// itself. One function guards both load and unload, same reasoning as
+// CanManageModelStore guarding both download and delete - see SCHEMA.md
+// Permission overrides.
+func CanLaunchInstances(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	switch actor.Tier {
+	case db.TierDeveloper, db.TierPowerDev, db.TierAdmin:
+		return true
+	default:
+		return false
+	}
+}
