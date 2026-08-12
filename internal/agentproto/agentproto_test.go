@@ -95,6 +95,66 @@ func TestEnvelope_RoundTrip_ErrorPayload(t *testing.T) {
 	}
 }
 
+func TestEnvelope_RoundTrip_StartTransfer(t *testing.T) {
+	want := StartTransfer{TransferID: "xfer-1", ModelRef: "meta-llama/Llama-3-8B"}
+
+	env, err := NewEnvelope(TypeStartTransfer, "req-3", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got StartTransfer
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("StartTransfer = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_TransferProgress(t *testing.T) {
+	want := TransferProgress{
+		TransferID:       "xfer-1",
+		BytesTransferred: 4096,
+		BytesTotal:       8192,
+		Status:           "transferring",
+	}
+
+	env, err := NewEnvelope(TypeTransferProgress, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got TransferProgress
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("TransferProgress = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_TransferProgress_WithError(t *testing.T) {
+	want := TransferProgress{
+		TransferID:   "xfer-1",
+		Status:       "failed",
+		ErrorMessage: "connection reset by peer",
+	}
+
+	env, err := NewEnvelope(TypeTransferProgress, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got TransferProgress
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("TransferProgress = %+v, want %+v", got, want)
+	}
+}
+
 func TestEnvelope_WireFormat(t *testing.T) {
 	// Confirms the JSON field names actually on the wire match
 	// ARCHITECTURE.md Protocol's snake_case convention (e.g. request_id),

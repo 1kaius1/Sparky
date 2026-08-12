@@ -38,6 +38,17 @@ const (
 	// a rejection outside the hello handshake (which uses HelloAck
 	// instead, since it needs an Accepted flag, not just a message).
 	TypeError MessageType = "error"
+
+	// TypeStartTransfer is sent by the central app to an agent, instructing
+	// it to begin downloading (or, once v0.3.0's peer replication exists,
+	// receiving) a model - see PLANNING.md's Model transfers Phase 2/3 and
+	// agent/transfer, the Transfer Executor that will handle it.
+	TypeStartTransfer MessageType = "start_transfer"
+
+	// TypeTransferProgress is sent by an agent to report a transfer's
+	// progress, streamed periodically rather than only on completion - see
+	// docs/AGENT.md Service Architecture Notes' Transfer goroutines.
+	TypeTransferProgress MessageType = "transfer_progress"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -100,4 +111,27 @@ type Heartbeat struct {
 type ErrorPayload struct {
 	Message string `json:"message"`
 	Code    string `json:"code,omitempty"`
+}
+
+// StartTransfer is TypeStartTransfer's payload - identifies the
+// db.ModelTransfer row (by ID, not embedded) an agent should act on, and
+// the model to fetch. Everything else about the transfer (destination
+// node, source) is already implied by which agent this was sent to and is
+// looked up from that row rather than duplicated on the wire.
+type StartTransfer struct {
+	TransferID string `json:"transfer_id"`
+	ModelRef   string `json:"model_ref"`
+}
+
+// TransferProgress is TypeTransferProgress's payload. Status is a plain
+// string, not internal/db.TransferStatus, deliberately - this package has
+// no dependency on internal/db (it is shared by both binaries, and
+// cmd/sparky-agent has no database access at all), so it carries the
+// enum's string values without importing the type that defines them.
+type TransferProgress struct {
+	TransferID       string `json:"transfer_id"`
+	BytesTransferred int64  `json:"bytes_transferred"`
+	BytesTotal       int64  `json:"bytes_total"`
+	Status           string `json:"status"`
+	ErrorMessage     string `json:"error_message,omitempty"`
 }

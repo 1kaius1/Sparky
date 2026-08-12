@@ -272,6 +272,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   integration tests against a real Postgres instance, including both
   directions of the CHECK constraint violation and a verified up/down/up
   migration cycle.
+- Model transfers Phase 2: protocol extension and dispatch capability.
+  `internal/agentproto` gains `TypeStartTransfer` (central -> agent) and
+  `TypeTransferProgress` (agent -> central) message types - the latter's
+  `Status` field is a plain string, not `db.TransferStatus`, since this
+  package has no dependency on `internal/db`. `internal/agentconn.Registry`
+  gains its first real send capability, `Send(ctx, nodeID, envelope)
+  error`, returning the new `ErrNodeNotConnected` when the target node has
+  no live connection; it only holds its mutex for the map lookup, not the
+  network write, since `coder/websocket` supports concurrent writes on one
+  connection. `Handler` gains a pluggable `OnMessageFunc` callback (a new
+  required `NewHandler` parameter, nil-able) for message types it doesn't
+  handle internally - `hello`/`hello_ack`/`heartbeat` stay silently
+  internal, `error` is logged, everything else is forwarded. `readLoop` now
+  actually decodes every message instead of discarding it unread.
+  `cmd/sparky-server` currently passes `nil` for `onMessage` - nothing
+  dispatches a real command until Phase 3 exists. Pure types/plumbing,
+  covered by unit tests using real `coder/websocket` connections, no actual
+  download involved.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

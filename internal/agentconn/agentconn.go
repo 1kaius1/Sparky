@@ -44,18 +44,32 @@ type statusStore interface {
 	SetAgentStatus(ctx context.Context, nodeID string, status db.AgentStatus, bumpHeartbeat bool) error
 }
 
+// OnMessageFunc handles a message this package does not handle internally
+// - hello, hello_ack, heartbeat, and error stay internal (see readLoop);
+// everything else (e.g. TypeTransferProgress) is forwarded here. nodeID
+// identifies which node's connection sent env. This keeps Handler generic
+// - it does not need to know anything about transfers or any other
+// specific command, matching ARCHITECTURE.md's framing of this package as
+// the only component that speaks the agent protocol, not a place for
+// feature-specific logic.
+type OnMessageFunc func(nodeID string, env agentproto.Envelope)
+
 // Handler is the WebSocket endpoint agents dial into. It implements
 // http.Handler so it mounts directly into internal/httpapi's router.
 type Handler struct {
-	auth     authenticator
-	status   statusStore
-	registry *Registry
-	logger   *log.Logger
+	auth      authenticator
+	status    statusStore
+	registry  *Registry
+	logger    *log.Logger
+	onMessage OnMessageFunc
 }
 
-// NewHandler constructs a Handler.
-func NewHandler(auth authenticator, status statusStore, registry *Registry, logger *log.Logger) *Handler {
-	return &Handler{auth: auth, status: status, registry: registry, logger: logger}
+// NewHandler constructs a Handler. onMessage may be nil - a caller with no
+// command types to dispatch yet (as of Model transfers Phase 2, nothing
+// wires a real callback in) simply passes nil, and every message this
+// package doesn't already handle internally is silently discarded.
+func NewHandler(auth authenticator, status statusStore, registry *Registry, logger *log.Logger, onMessage OnMessageFunc) *Handler {
+	return &Handler{auth: auth, status: status, registry: registry, logger: logger, onMessage: onMessage}
 }
 
 // ServeHTTP upgrades the request to a WebSocket, runs the hello/auth
@@ -101,7 +115,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Printf("agentconn: node %s (%s) disconnected", node.Name, node.ID)
 	}()
 
-	h.readLoop(r.Context(), conn)
+	h.readLoop(r.Context(), node.ID, conn)
 }
 
 // handshake reads exactly one message and expects it to be TypeHello,
@@ -157,18 +171,42 @@ func (h *Handler) sendHelloAck(ctx context.Context, conn *websocket.Conn, reques
 	return conn.Write(ctx, websocket.MessageText, raw)
 }
 
-// readLoop blocks until the connection closes or errors. Dispatching a
-// received message to a runtime backend is Phase 5 and later work
-// (PLANNING.md) - no real command payloads exist yet, so there is
-// nothing to do with a message here beyond noticing the connection is
-// still alive.
-func (h *Handler) readLoop(ctx context.Context, conn *websocket.Conn) {
+// readLoop blocks until the connection closes or errors. hello, hello_ack,
+// heartbeat, and error message types are consumed here without further
+// action - hello/hello_ack are only meaningful during the handshake above,
+// heartbeat is a keepalive with nothing to act on yet, and error is a
+// peer-reported protocol failure this layer only needs to log. Every other
+// message type is handed to onMessage, if set - see OnMessageFunc.
+func (h *Handler) readLoop(ctx context.Context, nodeID string, conn *websocket.Conn) {
 	for {
-		if _, _, err := conn.Read(ctx); err != nil {
+		_, raw, err := conn.Read(ctx)
+		if err != nil {
 			if !errors.Is(err, context.Canceled) {
 				h.logger.Printf("agentconn: connection closed: %v", err)
 			}
 			return
+		}
+
+		var env agentproto.Envelope
+		if err := json.Unmarshal(raw, &env); err != nil {
+			h.logger.Printf("agentconn: node %s sent an undecodable message: %v", nodeID, err)
+			continue
+		}
+
+		switch env.Type {
+		case agentproto.TypeHello, agentproto.TypeHelloAck, agentproto.TypeHeartbeat:
+			// Nothing to do yet - see doc comment above.
+		case agentproto.TypeError:
+			var errPayload agentproto.ErrorPayload
+			if err := env.DecodePayload(&errPayload); err != nil {
+				h.logger.Printf("agentconn: node %s sent a malformed error message: %v", nodeID, err)
+				continue
+			}
+			h.logger.Printf("agentconn: node %s reported an error: %s (code %s)", nodeID, errPayload.Message, errPayload.Code)
+		default:
+			if h.onMessage != nil {
+				h.onMessage(nodeID, env)
+			}
 		}
 	}
 }

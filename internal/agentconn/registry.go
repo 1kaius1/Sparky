@@ -3,19 +3,30 @@
 package agentconn
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/coder/websocket"
+
+	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
-// Registry tracks which node currently owns which live connection. A
-// future caller - the Model Lifecycle Orchestrator, once Model profiles
-// and Running instances exist - will use this to find the right
-// connection to send a command to, without managing WebSocket state
-// itself, per ARCHITECTURE.md's Agent-Communication Layer ("the only
-// component that speaks the agent protocol"). No send/dispatch API yet -
-// this is just the bookkeeping Phase 4 needs; dispatch is a later phase's
-// job, once there's a real command to send.
+// ErrNodeNotConnected is returned by Send when nodeID has no live
+// connection. The caller (Model transfers Phase 3+, and eventually the
+// Model Lifecycle Orchestrator) decides how to handle that - queuing,
+// failing the operation immediately, and so on - this package makes no
+// such decision itself.
+var ErrNodeNotConnected = errors.New("node not connected")
+
+// Registry tracks which node currently owns which live connection, and
+// lets a caller send to it - the Model Lifecycle Orchestrator, once Model
+// profiles and Running instances exist, and Model transfers Phase 3+ in
+// the meantime, use this to reach a node without managing WebSocket state
+// themselves, per ARCHITECTURE.md's Agent-Communication Layer ("the only
+// component that speaks the agent protocol").
 type Registry struct {
 	mu    sync.Mutex
 	conns map[string]*websocket.Conn
@@ -52,4 +63,28 @@ func (r *Registry) Connected(nodeID string) bool {
 	defer r.mu.Unlock()
 	_, ok := r.conns[nodeID]
 	return ok
+}
+
+// Send writes env to nodeID's current connection. Returns
+// ErrNodeNotConnected if the node has no live connection - the lookup and
+// the write are two separate steps, so the mutex is only held for the
+// lookup; a connection is safe for concurrent writes on its own (per
+// coder/websocket), and holding the lock across a network write would
+// block every other node's Send/Register/Unregister call on it.
+func (r *Registry) Send(ctx context.Context, nodeID string, env agentproto.Envelope) error {
+	r.mu.Lock()
+	conn, ok := r.conns[nodeID]
+	r.mu.Unlock()
+	if !ok {
+		return ErrNodeNotConnected
+	}
+
+	raw, err := json.Marshal(env)
+	if err != nil {
+		return fmt.Errorf("marshal envelope for node %s: %w", nodeID, err)
+	}
+	if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+		return fmt.Errorf("write to node %s: %w", nodeID, err)
+	}
+	return nil
 }

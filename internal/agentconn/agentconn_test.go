@@ -68,10 +68,15 @@ func (f *fakeStatusStore) awaitCall(t *testing.T) statusCall {
 
 func testHandler(t *testing.T, auth authenticator) (*Handler, *fakeStatusStore, *Registry) {
 	t.Helper()
+	return testHandlerWithOnMessage(t, auth, nil)
+}
+
+func testHandlerWithOnMessage(t *testing.T, auth authenticator, onMessage OnMessageFunc) (*Handler, *fakeStatusStore, *Registry) {
+	t.Helper()
 	status := newFakeStatusStore()
 	registry := NewRegistry()
 	logger := log.New(io.Discard, "", 0)
-	return NewHandler(auth, status, registry, logger), status, registry
+	return NewHandler(auth, status, registry, logger, onMessage), status, registry
 }
 
 func dialTestServer(t *testing.T, h *Handler) *websocket.Conn {
@@ -228,5 +233,85 @@ func TestHandler_MalformedHelloPayload_Rejected(t *testing.T) {
 	}
 	if ack.Reason != "malformed hello" {
 		t.Errorf("Reason = %q, want %q", ack.Reason, "malformed hello")
+	}
+}
+
+func writeEnvelope(t *testing.T, conn *websocket.Conn, env agentproto.Envelope) {
+	t.Helper()
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	if err := conn.Write(context.Background(), websocket.MessageText, raw); err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+}
+
+type receivedMessage struct {
+	nodeID string
+	env    agentproto.Envelope
+}
+
+func TestHandler_OnMessage_ForwardsUnknownTypes(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	received := make(chan receivedMessage, 1)
+	onMessage := func(nodeID string, env agentproto.Envelope) {
+		received <- receivedMessage{nodeID, env}
+	}
+	h, _, _ := testHandlerWithOnMessage(t, &fakeAuthenticator{node: node}, onMessage)
+	conn := dialTestServer(t, h)
+
+	writeHello(t, conn, "req-1", "spark-1", "spk_validtoken")
+	readHelloAck(t, conn)
+
+	progress := agentproto.TransferProgress{TransferID: "xfer-1", BytesTransferred: 100, BytesTotal: 200, Status: "transferring"}
+	env, err := agentproto.NewEnvelope(agentproto.TypeTransferProgress, "", progress)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+	writeEnvelope(t, conn, env)
+
+	select {
+	case got := <-received:
+		if got.nodeID != "node-1" {
+			t.Errorf("onMessage nodeID = %q, want %q", got.nodeID, "node-1")
+		}
+		if got.env.Type != agentproto.TypeTransferProgress {
+			t.Errorf("Type = %q, want %q", got.env.Type, agentproto.TypeTransferProgress)
+		}
+		var gotProgress agentproto.TransferProgress
+		if err := got.env.DecodePayload(&gotProgress); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+		if gotProgress != progress {
+			t.Errorf("TransferProgress = %+v, want %+v", gotProgress, progress)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for onMessage to be called")
+	}
+}
+
+func TestHandler_OnMessage_NotCalledForInternalTypes(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	called := make(chan receivedMessage, 1)
+	onMessage := func(nodeID string, env agentproto.Envelope) {
+		called <- receivedMessage{nodeID, env}
+	}
+	h, _, _ := testHandlerWithOnMessage(t, &fakeAuthenticator{node: node}, onMessage)
+	conn := dialTestServer(t, h)
+
+	writeHello(t, conn, "req-1", "spark-1", "spk_validtoken")
+	readHelloAck(t, conn)
+
+	env, err := agentproto.NewEnvelope(agentproto.TypeHeartbeat, "", agentproto.Heartbeat{SentAt: time.Now()})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+	writeEnvelope(t, conn, env)
+
+	select {
+	case got := <-called:
+		t.Fatalf("onMessage was called (%+v) for a heartbeat, want it to stay internal", got)
+	case <-time.After(200 * time.Millisecond):
 	}
 }
