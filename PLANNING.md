@@ -48,12 +48,14 @@ server-side Agent-Communication Layer, and the agent-side connection goroutine -
 all five phases done, though the top-level checklist item stays unchecked pending
 real-hardware CDI GPU passthrough verification, a known gap, not an oversight); and
 Model profiles (schema, engine adapters, RBAC-gated CRUD service). Model transfers
-has Phases 1-2 done (`model_transfers` + `node_model_inventory` schema and
+has Phases 1-3 done (`model_transfers` + `node_model_inventory` schema and
 repositories; `internal/agentproto`'s `TypeStartTransfer`/`TypeTransferProgress`
-and `internal/agentconn`'s `Registry.Send`/`Handler.OnMessage`); Phases 3-4
-(agent-side transfer executor, HTTP wiring) are not started yet - that's the
-current active work, see Current Sprint / Active Work below. Running instances,
-Metrics, Dashboard UI, and the bare-metal install script have not been started.
+and `internal/agentconn`'s `Registry.Send`/`Handler.OnMessage`; `agent/transfer`'s
+native Hugging Face downloader wired into `agent/connection.Conn`'s dispatch);
+Phase 4 (`internal/transfers.Service` HTTP-adjacent wiring) is not started yet -
+that's the current active work, see Current Sprint / Active Work below. Running
+instances, Metrics, Dashboard UI, and the bare-metal install script have not been
+started.
 
 ---
 
@@ -542,7 +544,7 @@ Metrics, Dashboard UI, and the bare-metal install script have not been started.
           of discarding it unread; `hello`/`hello_ack`/`heartbeat` stay
           silently internal, `error` is logged, everything else goes to
           `onMessage`.
-    - [ ] Phase 3: Agent-side Transfer Executor (`agent/transfer`) - a
+    - [x] Phase 3: Agent-side Transfer Executor (`agent/transfer`) - a
           native Go Hugging Face downloader, no external tool dependency
           (no Python/`huggingface_hub`, no `git`/`git-lfs`) - see this
           date's Decisions Log entry for why, and for the real HF Hub API
@@ -567,6 +569,39 @@ Metrics, Dashboard UI, and the bare-metal install script have not been started.
           ad hoc download against an actual small public Hugging Face repo
           verified manually, matching this project's empirical-verification
           discipline.
+          Done - re-verified the real API shapes above against
+          `Qwen/Qwen2.5-0.5B-Instruct-GGUF` before writing any code, plus
+          one new finding neither PLANNING.md nor its Decisions Log had
+          previously recorded: a small, non-LFS file served directly from
+          `huggingface.co` (e.g. `LICENSE`) advertises `Accept-Ranges:
+          bytes` but silently ignores a `Range` header and returns `200`
+          with the full body anyway - only large LFS-tracked files
+          (redirected to a CDN) actually honor it with a real `206`. A
+          resumed request that comes back `200` is therefore treated as
+          "the server is sending the whole file, start over," not
+          appended to blindly - see the new Decisions Log entry.
+          `agent/transfer.Executor` HEAD-requests every file's size up
+          front (so `BytesTotal` is accurate from the first progress
+          call, not discovered file by file) and reports progress
+          throttled by a byte threshold (4 MiB default), not wall-clock
+          time, so tests stay deterministic without a sleep-based poll.
+          `Conn` gained a `sync.WaitGroup` (`transferWG`) around the
+          goroutine `dispatch` spawns on `TypeStartTransfer`, and `Run`
+          now waits on it before returning - the graceful-shutdown
+          behavior docs/AGENT.md already documented but nothing built
+          until this phase. 9 new unit tests in `agent/transfer` (full
+          download, periodic progress, real resume, a server that ignores
+          Range, skip-if-complete, list/download error handling, a
+          canceled context, a nested file path) plus 2 new tests in
+          `agent/connection` (`TypeStartTransfer` dispatch delivering
+          `TypeTransferProgress` back over the connection, and `Run`
+          provably blocking on an in-flight transfer until it finishes).
+          Manually verified end to end against the real Hugging Face Hub
+          (`hf-internal-testing/tiny-random-bert`, ~27 MB, 10 files
+          including one nested path): full download landed byte-correct
+          files; a re-run skipped every file (no GET calls, only HEAD);
+          truncating the largest file and re-running resumed and produced
+          output `md5sum`-identical to a fresh independent download.
     - [ ] Phase 4: `internal/transfers.Service` - RBAC-gated with the
           existing `rbac.CanManageModelStore` (no new RBAC function needed:
           CLAUDE.md's sidebar tier note, "Transfers... Admin+grant
@@ -637,10 +672,10 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Model transfers, Phase 3 (`agent/transfer`, the agent-side
-  Transfer Executor - a native Go Hugging Face downloader wired into
-  `agent/connection.Conn`'s dispatch on `TypeStartTransfer`) - Phases 1 and
-  2 are done.
+- Next up: Model transfers, Phase 4 (`internal/transfers.Service` -
+  RBAC-gated `InitiateTransfer`, dispatching `TypeStartTransfer` and
+  handling `TypeTransferProgress` via Phase 2's `OnMessage`) - Phases 1-3
+  are done.
 
 ---
 
@@ -716,6 +751,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-11 | Model transfers' agent-side downloader (`agent/transfer`, Phase 3) talks to the Hugging Face Hub API directly over `net/http` - no `huggingface_hub`/Python, no `git`/`git-lfs` on the agent host | Matches the "own it, don't add dependencies you don't need" reasoning already on record for `chi`, `internal/session`, and `coder/websocket` - a system-level Python or git-lfs dependency on every compute node would be a real deviation from this project's single-Go-binary deployment story (CLAUDE.md, docs/AGENT.md Install). Verified against the real API before committing to this, not assumed: `GET https://huggingface.co/api/models/{repo}` lists files via `siblings` (no sizes); `GET https://huggingface.co/{repo}/resolve/{revision}/{file}` redirects to a signed CDN URL - Go's `net/http` follows this by default - and the final response carries a real `Content-Length` and `Accept-Ranges: bytes`, confirmed against `Qwen/Qwen2.5-0.5B-Instruct-GGUF` | Shelling out to `huggingface-cli download` or `git clone` a repo's git-lfs remote (rejected: both require installing and maintaining a second language runtime or tool on every agent host, for no capability a plain HTTP client with redirect support doesn't already provide) |
 | 2026-08-11 | Model transfers downloads every file in a Hugging Face repo's default revision for v0.1.0, not just the one file an engine actually needs | Correct and necessary for a vLLM/full-residency profile, which needs the whole HF Transformers-format directory (config, tokenizer, every safetensors shard) anyway. Wasteful specifically for a multi-quantization GGUF repo, where only one `.gguf` file is actually needed (see the earlier CPU-only model test: `Qwen2.5-0.5B-Instruct-GGUF` alone has 8 different quantizations) - a known, deliberate v0.1.0 simplification, not silently assumed fine | Parsing a quantization/file selector out of `model_ref` now, mirroring `llama.cpp`'s own `-hf repo:QUANT` convention (rejected for v0.1.0: no engine adapter needs it yet to actually launch anything - Running instances, the feature that would consume a downloaded file, doesn't exist - revisit once it does) |
 | 2026-08-11 | `model_transfers.source_type`/`source_node_id` gets a `CHECK` constraint pairing them (`source_node_id` required if and only if `source_type = 'peer_node'`), even though nothing produces `peer_node` until v0.3.0's rsync work | Same real data-integrity invariant as `nodes.container_runtime`/`node_type` - "populated only when source_type = peer_node" (SCHEMA.md Model transfers) is exactly the shape that precedent already covers, so it gets the same treatment: enforced at the database level regardless of caller discipline, not just documented as an application-level assumption | No constraint, relying on `internal/transfers.Service` alone to never construct an invalid pairing (rejected: the whole reason the nodes precedent exists is that relying on caller discipline alone was judged insufficient there, and nothing about this case is different) |
+| 2026-08-12 | `agent/transfer.Executor`'s resume logic treats a `200` response to a Range-header'd request as "start this file over," never appending its body to the existing partial file | Re-verifying the real Hugging Face Hub API before writing Phase 3's resume path (not just trusting the 2026-08-11 entry's Content-Length/Accept-Ranges finding) surfaced a case that entry didn't cover: small, non-LFS files served directly from `huggingface.co` (e.g. `LICENSE`) advertise `Accept-Ranges: bytes` but silently ignore an actual `Range` header, returning `200` with the full body. Only large LFS-tracked files - redirected to a CDN (`us.aws.cdn.hf.co`) - honor it with a real `206`/`Content-Range`, confirmed against both a small file and a large one in `Qwen/Qwen2.5-0.5B-Instruct-GGUF`. Blindly appending a `200`'s body under an assumption of `206` would silently corrupt the file (partial content followed by the full file again) | Treating any non-error status as success and appending regardless (rejected: works for the CDN-redirected case observed in the 2026-08-11 entry, but silently corrupts a resumed small file - exactly the kind of untested assumption this project's empirical-verification discipline exists to catch) |
 | 2026-08-11 | `internal/agentconn`'s `Registry` gains a generic `Send(nodeID, envelope) error`, and `Handler` gains a generic `OnMessage` callback for message types it doesn't handle internally, rather than anything transfer-specific | ARCHITECTURE.md frames the Agent-Communication Layer as "the only component that speaks the agent protocol" that every other component goes through - it should not need to know what a transfer is. Running instances (a separate, later v0.1.0 item) will need the same send/receive capability for container-start commands, so building it generically now, at the size Model transfers actually needs, avoids either duplicating it later or guessing at a needs a future feature hasn't stated yet | A transfers-specific method on `Registry`/`Handler` (rejected: couples a cross-cutting protocol layer to one feature, and CLAUDE.md's Component Breakdown already documents this layer as feature-agnostic) |
 | 2026-08-11 | `.clauderules` fully merged into `CLAUDE.md` (which now `@import`s `ARCHITECTURE.md`/`SCHEMA.md`/`docs/AGENT.md` too), rather than converting the pointer to `.clauderules` into an `@import`; `PLANNING.md` stays a prose-only reference, not imported and not moved into a path-scoped `.claude/rules/` file | `.clauderules` was never actually being read - CLAUDE.md only mentioned it in prose, and Claude Code has no mechanism that auto-loads an arbitrary filename, confirmed against actual documentation, not assumed. This caused a real compliance failure (AI-attribution text landed in commits/PRs across the whole session). The fix needed to be structural, not a stronger sentence: `@import` guarantees loading regardless of model behavior. Verified empirically (not assumed) that a `.claude/rules/` file whose content is only an `@import` pointing elsewhere resolves eagerly at session launch regardless of its `paths:` frontmatter - so it provides no conditional-loading benefit over a blanket import, only the downside of an unverified mechanism. Real conditional loading requires the referenced content to live directly inside the rule file, which means relocating `ARCHITECTURE.md`/`SCHEMA.md`/`docs/AGENT.md` out of their expected root-level locations - real surgery, disproportionate to a project this scoped (a handful of nodes, single team), given the failure mode that actually mattered (content that could never load without the model choosing to fetch it) is already fully closed by the blanket imports. `CLAUDE.md` now sits at 565 lines plus ~986 imported - well past Claude Code's own documented ~200-line guidance ("Bloated CLAUDE.md files cause Claude to ignore your actual instructions") - a known, accepted tradeoff, not an oversight. `PLANNING.md` (725 lines, growing) stays unimported for the same bloat reason and because it doesn't map to a narrow file-path pattern the way `docs/AGENT.md` does; the mitigation is behavioral (reading it at the start of every substantive task, maintained without a miss for this entire session) rather than structural | Doing the full `.claude/rules/` relocation now (rejected: disproportionate surgery - moving canonical docs out of their expected locations, re-deriving path-scoping, re-testing - for a project this size, when the actually damaging failure mode is already closed); importing `PLANNING.md` too (rejected: makes the already-past-guidance bloat strictly worse for a file that keeps growing by design). Revisit `.claude/rules/`-based organization as part of a future, separate examination of the project boilerplate this repo was based on, where it can be designed in from a project's first commit rather than retrofitted mid-project |
 

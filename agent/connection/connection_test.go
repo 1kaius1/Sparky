@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	"github.com/1kaius1/Sparky/agent/transfer"
 	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
@@ -30,15 +32,58 @@ func (fakeRuntimeBackend) StartContainer(context.Context, containers.Spec) (stri
 }
 func (fakeRuntimeBackend) StopContainer(context.Context, string) error { return nil }
 
+// fakeTransferExecutor implements transferExecutor without a real HTTP
+// download - it records each call and, unless told to block, immediately
+// reports two progress calls (transferring, then completed) through
+// whatever ProgressFunc it's given.
+type fakeTransferExecutor struct {
+	mu    sync.Mutex
+	calls []struct{ modelRef, destDir string }
+
+	// block, if non-nil, is closed by a test to let a blocked Download
+	// call proceed - lets a test control exactly when a transfer
+	// "finishes" without a sleep-based poll.
+	block   chan struct{}
+	started chan struct{}
+}
+
+func (f *fakeTransferExecutor) Download(ctx context.Context, modelRef, destDir string, progress transfer.ProgressFunc) error {
+	f.mu.Lock()
+	f.calls = append(f.calls, struct{ modelRef, destDir string }{modelRef, destDir})
+	f.mu.Unlock()
+
+	if f.started != nil {
+		close(f.started)
+	}
+	if f.block != nil {
+		<-f.block
+	}
+
+	progress(0, 100, transfer.StatusTransferring, "")
+	progress(100, 100, transfer.StatusCompleted, "")
+	return nil
+}
+
+func (f *fakeTransferExecutor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 // testCentralApp is a minimal stand-in for internal/agentconn's real
 // handler, just enough to drive Conn through real WebSocket handshakes
 // in-process - accepts a connection, reads exactly one hello message,
-// and replies according to accept.
+// and replies according to accept. If sendAfterAccept is set, it's
+// written to the agent right after a successful handshake; every message
+// read after that is pushed to receivedMessages, if non-nil, instead of
+// being silently discarded.
 type testCentralApp struct {
-	accept        bool
-	reason        string
-	connectCount  atomic.Int32
-	receivedHello chan agentproto.Hello
+	accept          bool
+	reason          string
+	connectCount    atomic.Int32
+	receivedHello   chan agentproto.Hello
+	sendAfterAccept *agentproto.Envelope
+	receivedMsgs    chan agentproto.Envelope
 }
 
 func newTestCentralApp(accept bool, reason string) *testCentralApp {
@@ -84,11 +129,30 @@ func (a *testCentralApp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Accepted: stay open, reading (and discarding) anything further,
-	// until the client disconnects or the request context ends.
-	for {
-		if _, _, err := conn.Read(ctx); err != nil {
+	if a.sendAfterAccept != nil {
+		sendRaw, err := json.Marshal(*a.sendAfterAccept)
+		if err != nil {
 			return
+		}
+		if err := conn.Write(ctx, websocket.MessageText, sendRaw); err != nil {
+			return
+		}
+	}
+
+	// Accepted: stay open, reading anything further until the client
+	// disconnects or the request context ends - forwarded to
+	// receivedMsgs if set, otherwise discarded.
+	for {
+		_, msgRaw, err := conn.Read(ctx)
+		if err != nil {
+			return
+		}
+		if a.receivedMsgs == nil {
+			continue
+		}
+		var msgEnv agentproto.Envelope
+		if err := json.Unmarshal(msgRaw, &msgEnv); err == nil {
+			a.receivedMsgs <- msgEnv
 		}
 	}
 }
@@ -107,7 +171,7 @@ func TestConn_Run_SuccessfulHandshake_SendsCorrectHello(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, fakeRuntimeBackend{}, testLogger())
+	conn := New(cfg, fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -146,7 +210,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_bad-token", NodeName: "spark-1"}
-	conn := New(cfg, fakeRuntimeBackend{}, testLogger())
+	conn := New(cfg, fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -161,7 +225,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 
 func TestConn_Run_ContextCanceledBeforeDial_ReturnsPromptly(t *testing.T) {
 	cfg := Config{CentralURL: "ws://127.0.0.1:1/agent/connect", BearerToken: "spk_x", NodeName: "spark-1"}
-	conn := New(cfg, fakeRuntimeBackend{}, testLogger())
+	conn := New(cfg, fakeRuntimeBackend{}, &fakeTransferExecutor{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -178,6 +242,134 @@ func TestConn_Run_ContextCanceledBeforeDial_ReturnsPromptly(t *testing.T) {
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Run() did not return promptly for an already-canceled context")
+	}
+}
+
+func TestConn_Dispatch_StartTransfer_RunsDownloadAndReportsProgress(t *testing.T) {
+	startEnv, err := agentproto.NewEnvelope(agentproto.TypeStartTransfer, "", agentproto.StartTransfer{
+		TransferID: "xfer-1",
+		ModelRef:   "test-org/test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &startEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	exec := &fakeTransferExecutor{}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
+	conn := New(cfg, fakeRuntimeBackend{}, exec, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var progressMsgs []agentproto.TransferProgress
+	for i := 0; i < 2; i++ {
+		select {
+		case env := <-app.receivedMsgs:
+			if env.Type != agentproto.TypeTransferProgress {
+				t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeTransferProgress)
+			}
+			var p agentproto.TransferProgress
+			if err := env.DecodePayload(&p); err != nil {
+				t.Fatalf("DecodePayload() error: %v", err)
+			}
+			progressMsgs = append(progressMsgs, p)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for progress message %d", i+1)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if got := exec.callCount(); got != 1 {
+		t.Fatalf("Download was called %d times, want 1", got)
+	}
+	exec.mu.Lock()
+	call := exec.calls[0]
+	exec.mu.Unlock()
+	if call.modelRef != "test-org/test-model" {
+		t.Errorf("modelRef = %q, want %q", call.modelRef, "test-org/test-model")
+	}
+	wantDestDir := "/models/test-org/test-model"
+	if call.destDir != wantDestDir {
+		t.Errorf("destDir = %q, want %q", call.destDir, wantDestDir)
+	}
+
+	if progressMsgs[0].TransferID != "xfer-1" || progressMsgs[0].Status != transfer.StatusTransferring {
+		t.Errorf("first progress message = %+v, want TransferID=xfer-1 Status=%q", progressMsgs[0], transfer.StatusTransferring)
+	}
+	if progressMsgs[1].Status != transfer.StatusCompleted || progressMsgs[1].BytesTransferred != 100 {
+		t.Errorf("second progress message = %+v, want Status=%q BytesTransferred=100", progressMsgs[1], transfer.StatusCompleted)
+	}
+}
+
+func TestConn_Run_WaitsForInFlightTransferOnShutdown(t *testing.T) {
+	startEnv, err := agentproto.NewEnvelope(agentproto.TypeStartTransfer, "", agentproto.StartTransfer{
+		TransferID: "xfer-1",
+		ModelRef:   "test-org/test-model",
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &startEnv
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	exec := &fakeTransferExecutor{block: make(chan struct{}), started: make(chan struct{})}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
+	conn := New(cfg, fakeRuntimeBackend{}, exec, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the transfer to start")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+		t.Fatal("Run() returned before its in-flight transfer finished, want it to wait")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(exec.block)
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return promptly after the in-flight transfer finished")
 	}
 }
 
