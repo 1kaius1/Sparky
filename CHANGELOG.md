@@ -319,6 +319,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   byte-correct files, a re-run skipped every file, and resuming a
   truncated file produced output `md5sum`-identical to a fresh
   independent download.
+- `internal/transfers.Service` - Model transfers Phase 4, the last of the
+  four, completing the milestone item. RBAC-gated with the existing
+  `rbac.CanManageModelStore`; `Service.canManageModelStore` resolves its
+  `hasOverride` argument itself, only querying
+  `PermissionOverrideRepository.Get` for a PowerDev actor (Admin/SuperAdmin
+  already have the capability implicitly, and no other tier can have it
+  regardless). `InitiateTransfer` checks `agentconn.Registry.Connected` and
+  returns the new `ErrDestNodeOffline` before creating the `model_transfers`
+  row, so an unreachable destination never leaves behind a queued transfer
+  nothing will pick up; only then does it persist (`queued`,
+  `TransferSourceInternet` - v0.1.0 has no peer-replication source yet) and
+  dispatch `TypeStartTransfer`. `HandleTransferProgress` is `Service`'s
+  `agentconn.OnMessageFunc` for `TypeTransferProgress` - trusts the
+  connection's own authenticated `nodeID` rather than a value out of the
+  transfer row, updates `bytes_transferred`/`status`, and upserts
+  `node_model_inventory` (`present`) once status is `completed`, looking up
+  the transfer's `model_ref` via `FindByID` since the wire payload doesn't
+  carry it. As an `OnMessageFunc` with no return value, failures are logged
+  through a `*log.Logger` dependency, the same shape as `agentconn.Handler`'s
+  own. No HTTP handler yet, same precedent as the node registry and Model
+  profiles. 17 unit tests against fakes, covering RBAC denial (including the
+  PowerDev-with/without-override split), an offline destination node, and
+  the happy path through to a completed transfer; `go test -race` clean.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

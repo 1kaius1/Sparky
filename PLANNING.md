@@ -48,14 +48,14 @@ server-side Agent-Communication Layer, and the agent-side connection goroutine -
 all five phases done, though the top-level checklist item stays unchecked pending
 real-hardware CDI GPU passthrough verification, a known gap, not an oversight); and
 Model profiles (schema, engine adapters, RBAC-gated CRUD service). Model transfers
-has Phases 1-3 done (`model_transfers` + `node_model_inventory` schema and
+is done, all four phases (`model_transfers` + `node_model_inventory` schema and
 repositories; `internal/agentproto`'s `TypeStartTransfer`/`TypeTransferProgress`
 and `internal/agentconn`'s `Registry.Send`/`Handler.OnMessage`; `agent/transfer`'s
-native Hugging Face downloader wired into `agent/connection.Conn`'s dispatch);
-Phase 4 (`internal/transfers.Service` HTTP-adjacent wiring) is not started yet -
-that's the current active work, see Current Sprint / Active Work below. Running
-instances, Metrics, Dashboard UI, and the bare-metal install script have not been
-started.
+native Hugging Face downloader wired into `agent/connection.Conn`'s dispatch;
+`internal/transfers.Service`'s RBAC-gated `InitiateTransfer` and its
+`HandleTransferProgress` `OnMessageFunc` callback). Running instances, Metrics,
+Dashboard UI, and the bare-metal install script have not been started - Running
+instances is the current active work, see Current Sprint / Active Work below.
 
 ---
 
@@ -481,7 +481,7 @@ started.
     confidence-level note), but that's a depth-of-verification caveat on
     a working adapter, not a missing capability the checklist item
     actually claims.
-  - [ ] Model transfers: Hugging Face download only (no peer replication yet)
+  - [x] Model transfers: Hugging Face download only (no peer replication yet)
     - [x] Phase 1: `model_transfers` + `node_model_inventory` schema and
           repositories - matching SCHEMA.md Model transfers and Node model
           inventory. `source_type`/`source_node_id` gets the same CHECK
@@ -602,7 +602,7 @@ started.
           files; a re-run skipped every file (no GET calls, only HEAD);
           truncating the largest file and re-running resumed and produced
           output `md5sum`-identical to a fresh independent download.
-    - [ ] Phase 4: `internal/transfers.Service` - RBAC-gated with the
+    - [x] Phase 4: `internal/transfers.Service` - RBAC-gated with the
           existing `rbac.CanManageModelStore` (no new RBAC function needed:
           CLAUDE.md's sidebar tier note, "Transfers... Admin+grant
           initiate", already matches `CanManageModelStore`'s exact shape -
@@ -618,6 +618,38 @@ started.
           against fakes for the repository, registry/dispatch, and audit
           dependencies, exercising RBAC denial, an offline destination
           node, and the happy path through to a completed transfer.
+          Done - `Service.canManageModelStore` resolves
+          `CanManageModelStore`'s `hasOverride` argument itself, querying
+          `PermissionOverrideRepository.Get` only when actor is PowerDev
+          (Admin/SuperAdmin already have the capability implicitly, and no
+          other tier can have it regardless of `hasOverride`, so there is
+          no reason to hit the overrides table for them).
+          `InitiateTransfer` checks `Registry.Connected` and returns the
+          new `ErrDestNodeOffline` before ever calling `Create` - an
+          unreachable destination never leaves behind a queued transfer
+          nothing will ever pick up, matching this phase's stated
+          ordering. v0.1.0 only ever creates a `TransferSourceInternet`
+          row (`InitiateTransferParams` has no source-node field), per
+          this milestone item's "no peer replication yet" scope.
+          `HandleTransferProgress` is `Service`'s `agentconn.OnMessageFunc`
+          - it takes `nodeID` from the authenticated connection itself,
+          not a value out of the transfer row, and only upserts
+          `node_model_inventory` (`InventoryStatusPresent`) once status is
+          `completed`, looking up the transfer's `model_ref` via
+          `FindByID` since `TransferProgress`'s wire payload doesn't carry
+          it. As an `OnMessageFunc`, it has no return value to propagate
+          an error through, so it logs failures instead, the same
+          `*log.Logger` dependency shape as `agentconn.Handler`'s own.
+          17 unit tests against fakes, covering RBAC denial (including the
+          PowerDev-with/without-override split), invalid params, an
+          offline destination node, `Create`/`Send`/audit failures each
+          left unrolled-back per this codebase's established precedent
+          (`rbac.Service.ElevateTier`), and `HandleTransferProgress`'s
+          progress/status/completion/failure/malformed-payload/
+          wrong-message-type paths. `go test -race` clean.
+
+    All four phases done - checking off the top-level "Model transfers"
+    item above.
   - [ ] Running instances: single-node load/unload
   - [ ] Metrics: live telemetry collection and dashboard (no historical retention yet)
   - [ ] Dashboard UI (htmx), sidebar nav, Read-only through Admin views
@@ -672,10 +704,8 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Model transfers, Phase 4 (`internal/transfers.Service` -
-  RBAC-gated `InitiateTransfer`, dispatching `TypeStartTransfer` and
-  handling `TypeTransferProgress` via Phase 2's `OnMessage`) - Phases 1-3
-  are done.
+- Next up: Running instances (single-node load/unload) - Model transfers is
+  now fully done (all four phases).
 
 ---
 
