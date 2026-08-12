@@ -7,11 +7,13 @@ import (
 	"errors"
 	"io"
 	"iter"
+	"reflect"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/jsonstream"
+	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
 )
 
@@ -229,6 +231,107 @@ func TestStartContainer_NoCDIDevices_NoDeviceRequest(t *testing.T) {
 	}
 	if len(captured.HostConfig.DeviceRequests) != 0 {
 		t.Errorf("DeviceRequests = %v, want empty when Spec.CDIDevices is empty", captured.HostConfig.DeviceRequests)
+	}
+}
+
+func TestStartContainer_SetsCmd(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.StartContainer(context.Background(), Spec{
+		Image: "example/engine:latest",
+		Cmd:   []string{"--model", "/models/repo/model.gguf", "--port", "8000"},
+	})
+	if err != nil {
+		t.Fatalf("StartContainer() error: %v", err)
+	}
+	want := []string{"--model", "/models/repo/model.gguf", "--port", "8000"}
+	if !reflect.DeepEqual(captured.Config.Cmd, want) {
+		t.Errorf("Cmd = %v, want %v", captured.Config.Cmd, want)
+	}
+}
+
+func TestStartContainer_SetsPortBinding(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.StartContainer(context.Background(), Spec{Image: "example/engine:latest", Port: 8000})
+	if err != nil {
+		t.Fatalf("StartContainer() error: %v", err)
+	}
+
+	port := network.MustParsePort("8000/tcp")
+	if _, ok := captured.Config.ExposedPorts[port]; !ok {
+		t.Errorf("ExposedPorts = %v, want an entry for %v", captured.Config.ExposedPorts, port)
+	}
+	bindings := captured.HostConfig.PortBindings[port]
+	if len(bindings) != 1 || bindings[0].HostPort != "8000" {
+		t.Errorf("PortBindings[%v] = %v, want a single binding with HostPort=8000", port, bindings)
+	}
+}
+
+func TestStartContainer_NoPort_NoPortBinding(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	if err != nil {
+		t.Fatalf("StartContainer() error: %v", err)
+	}
+	if len(captured.Config.ExposedPorts) != 0 {
+		t.Errorf("ExposedPorts = %v, want empty when Spec.Port is zero", captured.Config.ExposedPorts)
+	}
+	if len(captured.HostConfig.PortBindings) != 0 {
+		t.Errorf("PortBindings = %v, want empty when Spec.Port is zero", captured.HostConfig.PortBindings)
+	}
+}
+
+func TestStartContainer_SetsMounts(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.StartContainer(context.Background(), Spec{
+		Image:  "example/engine:latest",
+		Mounts: []string{"/srv/models:/srv/models:ro"},
+	})
+	if err != nil {
+		t.Fatalf("StartContainer() error: %v", err)
+	}
+	want := []string{"/srv/models:/srv/models:ro"}
+	if !reflect.DeepEqual(captured.HostConfig.Binds, want) {
+		t.Errorf("Binds = %v, want %v", captured.HostConfig.Binds, want)
+	}
+}
+
+func TestInstanceContainerName(t *testing.T) {
+	got := InstanceContainerName("instance-1")
+	want := "sparky-instance-instance-1"
+	if got != want {
+		t.Errorf("InstanceContainerName() = %q, want %q", got, want)
 	}
 }
 

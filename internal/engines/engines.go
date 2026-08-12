@@ -4,13 +4,17 @@
 // CLAUDE.md's repository layout ("engines/ - Pluggable adapters: vllm,
 // aphrodite, llamacpp") and ARCHITECTURE.md's Extension and Integration
 // Points ("adding another engine is implementing the adapter interface,
-// not a schema change"). Phase 2 of the Model profiles work
-// (PLANNING.md): an adapter validates a profile's engine_params
-// (SCHEMA.md Model profiles) and reports whether its engine requires
-// full GPU residency. It deliberately does not translate a profile into
-// an actual launch command - that's the Model Lifecycle Orchestrator's
-// job (ARCHITECTURE.md Component Breakdown), which belongs to the
-// separate, not-yet-built "Running instances" work, not this package.
+// not a schema change"). An adapter validates a profile's engine_params
+// (SCHEMA.md Model profiles), reports whether its engine requires full
+// GPU residency, and (as of the Running instances work) translates
+// engine_params into an image and command-line arguments - see
+// Adapter.BuildLaunchSpec. It does not resolve a model's local path or
+// know anything about ports/volumes/GPU passthrough - that's
+// agent-local, filesystem- and runtime-specific knowledge the central app
+// does not have; see internal/lifecycle (the Model Lifecycle
+// Orchestrator, ARCHITECTURE.md Component Breakdown) and
+// agent/connection's load_instance dispatch, which combine this
+// package's output with what only the agent knows.
 package engines
 
 import (
@@ -31,8 +35,29 @@ var ErrInvalidParams = errors.New("invalid engine params")
 // today, since it has no adapter until v0.3.0.
 var ErrUnknownEngineType = errors.New("unknown engine type")
 
-// Adapter validates a profile's engine-specific launch parameters and
-// reports a fixed capability of its engine.
+// LaunchSpec is an engine adapter's translation of engine_params into how
+// to actually run the engine - the image to run and the command-line
+// arguments derived from the recognized subset of engine_params. It
+// deliberately excludes anything agent-local: no --model path (only the
+// agent knows its own SPARKY_MODEL_STORAGE_PATH layout - see
+// agent/connection's load_instance dispatch, which resolves ModelRef to
+// a local path itself) and no --port/--host binding (Service fills that
+// in from the profile's own Port field, the same value for every engine
+// type, so there is nothing engine-specific about it).
+type LaunchSpec struct {
+	// Image is the container image to run this engine from.
+	Image string
+
+	// Args are additional command-line flags derived from the recognized
+	// subset of engine_params - e.g. llama.cpp's --ctx-size, vLLM's
+	// --tensor-parallel-size. Does not include --model or --port/--host;
+	// see LaunchSpec's doc comment.
+	Args []string
+}
+
+// Adapter validates a profile's engine-specific launch parameters,
+// reports a fixed capability of its engine, and translates engine_params
+// into a LaunchSpec.
 type Adapter interface {
 	// RequiresFullGPUResidency reports whether this engine type requires
 	// the whole model to fit in GPU memory - see SCHEMA.md Model
@@ -47,6 +72,12 @@ type Adapter interface {
 	// Sparky recognizes, when present, and otherwise passes the rest
 	// through. Returns an error wrapping ErrInvalidParams if not.
 	ValidateParams(params json.RawMessage) error
+
+	// BuildLaunchSpec translates params into a LaunchSpec. Callers are
+	// expected to have already called ValidateParams successfully -
+	// BuildLaunchSpec does not re-validate ranges/types, only re-parses
+	// the same recognized keys ValidateParams already checked.
+	BuildLaunchSpec(params json.RawMessage) (LaunchSpec, error)
 }
 
 // Registry maps a db.ProfileEngineType to its Adapter.

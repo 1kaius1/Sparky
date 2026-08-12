@@ -5,6 +5,7 @@ package engines
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -43,5 +44,39 @@ func TestLlamaCPPAdapter_ValidateParams_Invalid(t *testing.T) {
 				t.Errorf("ValidateParams(%s) error = %v, want ErrInvalidParams", params, err)
 			}
 		})
+	}
+}
+
+func TestLlamaCPPAdapter_BuildLaunchSpec(t *testing.T) {
+	tests := map[string]struct {
+		params string
+		want   []string
+	}{
+		"empty object, no flags":       {`{}`, nil},
+		"all known fields":             {`{"n_gpu_layers":20,"ctx_size":4096,"threads":8}`, []string{"--gpu-layers", "20", "--ctx-size", "4096", "--threads", "8"}},
+		"n_gpu_layers zero (CPU only)": {`{"n_gpu_layers":0}`, []string{"--gpu-layers", "0"}},
+		"unknown fields ignored":       {`{"rope_freq_base":10000,"threads":4}`, []string{"--threads", "4"}},
+	}
+	a := llamaCPPAdapter{}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			spec, err := a.BuildLaunchSpec(json.RawMessage(tt.params))
+			if err != nil {
+				t.Fatalf("BuildLaunchSpec(%s) error: %v", tt.params, err)
+			}
+			if spec.Image != llamaCPPImage {
+				t.Errorf("Image = %q, want %q", spec.Image, llamaCPPImage)
+			}
+			if !reflect.DeepEqual(spec.Args, tt.want) {
+				t.Errorf("Args = %v, want %v", spec.Args, tt.want)
+			}
+		})
+	}
+}
+
+func TestLlamaCPPAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
+	a := llamaCPPAdapter{}
+	if _, err := a.BuildLaunchSpec(json.RawMessage(``)); !errors.Is(err, ErrInvalidParams) {
+		t.Errorf("BuildLaunchSpec(empty) error = %v, want ErrInvalidParams", err)
 	}
 }

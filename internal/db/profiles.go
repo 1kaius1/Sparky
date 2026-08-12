@@ -161,9 +161,14 @@ func (r *ProfileRepository) Update(ctx context.Context, id, name, modelRef strin
 }
 
 // Delete removes a profile by ID. Returns ErrProfileNotFound if no row
-// matches - a hard delete, since nothing references model_profiles yet
-// (Running instances, a later v0.1.0 item, does not exist at this
-// point).
+// matches - a hard delete. As of Running instances (migration 000010),
+// running_instances.profile_id now references this table with no ON
+// DELETE clause, so deleting a profile with any running_instances row
+// (even a long-stopped historical one) fails with a raw Postgres
+// foreign-key-violation error, not a clean domain error - a known gap,
+// left unhandled since nothing calls Delete from a scenario that hits it
+// yet (no HTTP handler exists for either resource - see PLANNING.md Known
+// Issues and Technical Debt).
 func (r *ProfileRepository) Delete(ctx context.Context, id string) error {
 	tag, err := r.pool.Exec(ctx, `DELETE FROM model_profiles WHERE id = $1`, id)
 	if err != nil {

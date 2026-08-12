@@ -123,6 +123,25 @@ No config-reload signal is defined - a config change requires a restart. Nothing
 the design calls for hot-reloading agent config, so this stays simple rather than
 adding a SIGHUP handler for a need that hasn't come up.
 
+"Stop managed engine processes cleanly" means different things per runtime backend.
+For the Docker/Podman backend (`agent/runtime/containers`, built for the Docker/Podman
+runtime backend work), a Running instance's container is managed by the container
+runtime daemon via its API, not spawned as a child process of the agent - the
+container keeps running fine independent of the agent's own process lifetime, the
+same way it survives any other API client disconnecting. Sparky deliberately leaves
+it running across an agent restart rather than tearing it down: a plain agent restart
+(a deploy, a crash-restart) is not the same event as an operator-initiated unload, and
+treating them the same would make a routine agent bounce needlessly disruptive to an
+already-loaded model that may be serving real requests and took real time to load.
+Graceful shutdown for this backend is limited to what Run's `sync.WaitGroup`s already
+cover: letting an in-flight `load_instance`/`unload_instance`/transfer goroutine reach
+a safe stopping point, then closing the WebSocket connection - see
+`agent/connection.Conn.Run`. The bare-metal backend (v0.2.0, direct process exec) is
+where this row's literal meaning applies: an exec'd engine process is a real child of
+the agent, so an unclean agent exit risks orphaning or corrupting it - that backend
+does not exist yet, so this is a statement of intent for it, not something already
+implemented.
+
 ---
 
 ## Configuration and Data Storage

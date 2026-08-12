@@ -5,6 +5,7 @@ package engines
 import (
 	"encoding/json"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -45,5 +46,41 @@ func TestVLLMAdapter_ValidateParams_Invalid(t *testing.T) {
 				t.Errorf("ValidateParams(%s) error = %v, want ErrInvalidParams", params, err)
 			}
 		})
+	}
+}
+
+func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
+	tests := map[string]struct {
+		params string
+		want   []string
+	}{
+		"empty object, no flags": {`{}`, nil},
+		"all known fields": {
+			`{"tensor_parallel_size":2,"gpu_memory_utilization":0.9,"dtype":"bfloat16","quantization":"awq","max_model_len":4096}`,
+			[]string{"--tensor-parallel-size", "2", "--gpu-memory-utilization", "0.9", "--dtype", "bfloat16", "--quantization", "awq", "--max-model-len", "4096"},
+		},
+		"unknown fields ignored": {`{"unknown_flag":"whatever","tensor_parallel_size":1}`, []string{"--tensor-parallel-size", "1"}},
+	}
+	a := vllmAdapter{}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			spec, err := a.BuildLaunchSpec(json.RawMessage(tt.params))
+			if err != nil {
+				t.Fatalf("BuildLaunchSpec(%s) error: %v", tt.params, err)
+			}
+			if spec.Image != vllmImage {
+				t.Errorf("Image = %q, want %q", spec.Image, vllmImage)
+			}
+			if !reflect.DeepEqual(spec.Args, tt.want) {
+				t.Errorf("Args = %v, want %v", spec.Args, tt.want)
+			}
+		})
+	}
+}
+
+func TestVLLMAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
+	a := vllmAdapter{}
+	if _, err := a.BuildLaunchSpec(json.RawMessage(``)); !errors.Is(err, ErrInvalidParams) {
+		t.Errorf("BuildLaunchSpec(empty) error = %v, want ErrInvalidParams", err)
 	}
 }

@@ -342,6 +342,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   profiles. 17 unit tests against fakes, covering RBAC denial (including the
   PowerDev-with/without-override split), an offline destination node, and
   the happy path through to a completed transfer; `go test -race` clean.
+- Running instances: single-node load/unload, completing that v0.1.0
+  milestone item - the Model Lifecycle Orchestrator (ARCHITECTURE.md
+  Component Breakdown). Migration `000010_create_running_instances` and
+  `internal/db.RunningInstanceRepository` (Create, FindByID,
+  FindActiveByProfileID, SetStatus - COALESCE-preserves `actual_port`
+  across a status transition with nothing new to report).
+  `internal/engines.Adapter` gained `BuildLaunchSpec(params)
+  (LaunchSpec, error)`, translating each engine's recognized
+  `engine_params` into an image and command-line flags (`--gpu-layers`/
+  `--ctx-size`/`--threads` for llama.cpp; `--tensor-parallel-size`/
+  `--gpu-memory-utilization`/`--dtype`/`--quantization`/`--max-model-len`
+  for vLLM) - deliberately excludes `--model`/`--port`, which only the
+  agent (local storage layout) and the profile itself (a fixed value, not
+  engine-specific) can supply. `agentproto` gained
+  `TypeLoadInstance`/`TypeUnloadInstance` (central to agent) and
+  `TypeInstanceResult` (agent to central). `agent/connection.Conn.dispatch`
+  gained matching cases (a new `instanceWG`, separate from `transferWG`),
+  `resolveModelPath` (the model's whole directory for a full-GPU-residency
+  engine, a single `.gguf` file for a partial-offload one - see
+  PLANNING.md's Known Issues for the multi-quantization gap this creates),
+  and `sendInstanceResult`. `agent/runtime/containers.Spec` gained
+  `Cmd`/`Port`/`Mounts`, wired into `container.Config`/`HostConfig` -
+  `Port` publishes the identical port number on host and container;
+  `Mounts` bind-mounts the agent's model storage root read-only at the
+  same path inside the container, so a resolved `--model` path needs no
+  translation. `InstanceContainerName` (`sparky-instance-{id}`) is a new
+  deterministic container-naming helper, letting `UnloadInstance`'s wire
+  payload carry only an instance ID rather than the central app tracking
+  a live container ID of its own. `rbac.CanLaunchInstances` (Developer,
+  PowerDev, Admin, or SuperAdmin - CLAUDE.md's already-documented
+  "Developer launch" sidebar tier) guards both load and unload, the same
+  one-function-covers-both shape as `CanManageModelStore`.
+  `internal/lifecycle.Service` ties it together: `LoadInstance` refuses a
+  second concurrent load for the same profile (`ErrAlreadyRunning`) and an
+  offline target node (`ErrTargetNodeOffline`) before persisting anything,
+  resolves the launch spec, creates the `running_instances` row,
+  dispatches, and audits (`loaded_model` - SCHEMA.md's own audit log
+  example); `UnloadInstance` requires the instance to currently be
+  `running` (`ErrInstanceNotRunning`), transitions it to `stopping`,
+  dispatches, and audits (`unloaded_model`); `HandleInstanceResult` is the
+  `agentconn.OnMessageFunc` that updates `running_instances` from whatever
+  the agent reports. No `running_instance_nodes` table, Green/Blue/Red
+  eligibility, or reduced-capacity launch handling - all v0.3.0 clustering
+  scope. No HTTP handler yet, same precedent as the node registry, Model
+  profiles, and Model transfers. Verified with real integration tests
+  against Postgres (including a migration up/down/up cycle) and unit
+  tests against fakes across every touched package; `go test -race`
+  clean.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

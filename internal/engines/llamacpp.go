@@ -5,7 +5,15 @@ package engines
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 )
+
+// llamaCPPImage is the container image llama.cpp-style profiles launch -
+// confirmed against a real `llama-server --help` (the same image
+// agent/runtime/containers was verified against, and the same one a real
+// CPU-only inference smoke test used - see PLANNING.md's 2026-08-11
+// Decisions Log), not guessed.
+const llamaCPPImage = "ghcr.io/ggml-org/llama.cpp:server"
 
 // llamaCPPAdapter is the Adapter for db.ProfileEngineLlamaCPP.
 type llamaCPPAdapter struct{}
@@ -46,4 +54,29 @@ func (llamaCPPAdapter) ValidateParams(params json.RawMessage) error {
 		return fmt.Errorf("%w: threads must be positive, got %d", ErrInvalidParams, *p.Threads)
 	}
 	return nil
+}
+
+// BuildLaunchSpec translates the recognized llama.cpp keys into
+// llama-server flags - --gpu-layers, --ctx-size, --threads, per the same
+// real `llama-server --help` this adapter's params were confirmed
+// against. A key left unset in params is simply omitted, letting
+// llama-server fall back to its own default rather than Sparky
+// hardcoding one.
+func (llamaCPPAdapter) BuildLaunchSpec(params json.RawMessage) (LaunchSpec, error) {
+	var p llamaCPPParams
+	if err := unmarshalParamsObject(params, &p); err != nil {
+		return LaunchSpec{}, err
+	}
+
+	var args []string
+	if p.NGPULayers != nil {
+		args = append(args, "--gpu-layers", strconv.Itoa(*p.NGPULayers))
+	}
+	if p.CtxSize != nil {
+		args = append(args, "--ctx-size", strconv.Itoa(*p.CtxSize))
+	}
+	if p.Threads != nil {
+		args = append(args, "--threads", strconv.Itoa(*p.Threads))
+	}
+	return LaunchSpec{Image: llamaCPPImage, Args: args}, nil
 }
