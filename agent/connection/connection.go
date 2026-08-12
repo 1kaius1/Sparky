@@ -17,11 +17,14 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"path/filepath"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
 
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	"github.com/1kaius1/Sparky/agent/transfer"
 	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
@@ -54,6 +57,12 @@ type runtimeBackend interface {
 	StopContainer(ctx context.Context, containerID string) error
 }
 
+// transferExecutor is the subset of *transfer.Executor this package
+// needs - narrow enough to fake in tests without a real HTTP download.
+type transferExecutor interface {
+	Download(ctx context.Context, modelRef, destDir string, progress transfer.ProgressFunc) error
+}
+
 // Config is what Conn needs to dial and authenticate - the subset of
 // agent/config.Config relevant to this package, so it doesn't depend on
 // the whole agent's environment surface.
@@ -61,24 +70,40 @@ type Config struct {
 	CentralURL  string
 	BearerToken string
 	NodeName    string
+
+	// ModelStoragePath is where a TypeStartTransfer download lands -
+	// SPARKY_MODEL_STORAGE_PATH, per docs/AGENT.md Configuration. Not
+	// defaulted here or anywhere in this package - CLAUDE.md's rule
+	// against hardcoding platform-specific paths applies to this value
+	// like any other, so an empty one is passed straight through to
+	// filepath.Join rather than silently substituted.
+	ModelStoragePath string
 }
 
 // Conn owns the agent's single persistent WebSocket connection to the
 // central app.
 type Conn struct {
-	cfg     Config
-	runtime runtimeBackend
-	logger  *log.Logger
+	cfg      Config
+	runtime  runtimeBackend
+	transfer transferExecutor
+	logger   *log.Logger
 
 	minBackoff time.Duration
 	maxBackoff time.Duration
+
+	// transferWG tracks in-flight transfer goroutines so Run can wait for
+	// them to reach a safe stopping point on shutdown rather than the
+	// process exiting mid-write - see docs/AGENT.md Service Architecture
+	// Notes.
+	transferWG sync.WaitGroup
 }
 
 // New constructs a Conn.
-func New(cfg Config, runtime runtimeBackend, logger *log.Logger) *Conn {
+func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, logger *log.Logger) *Conn {
 	return &Conn{
 		cfg:        cfg,
 		runtime:    runtime,
+		transfer:   transferExec,
 		logger:     logger,
 		minBackoff: defaultMinBackoff,
 		maxBackoff: defaultMaxBackoff,
@@ -92,9 +117,20 @@ func New(cfg Config, runtime runtimeBackend, logger *log.Logger) *Conn {
 // outbound message this agent sends goes over the connection this
 // method owns, per docs/AGENT.md: "Every other goroutine sends outbound
 // messages through this one rather than managing the socket itself" -
-// there are no other goroutines yet to do so, but this is the one
-// connection point they'll use once there are.
+// heartbeats and transfer progress are the two senders that do today.
+//
+// Before returning, Run waits for every in-flight transfer goroutine
+// (dispatch's TypeStartTransfer case) to reach a safe stopping point -
+// see docs/AGENT.md Service Architecture Notes: "sync.WaitGroup tracks
+// in-flight transfers so graceful shutdown can wait for them ... rather
+// than killing a transfer mid-write." A transfer goroutine is spawned
+// with this method's ctx, not a per-connection one, so it keeps running
+// (and gets a chance to finish or fail cleanly) across a mere WebSocket
+// reconnect - only this method's own cancellation (agent shutdown) stops
+// it.
 func (c *Conn) Run(ctx context.Context) {
+	defer c.transferWG.Wait()
+
 	backoff := c.minBackoff
 	for ctx.Err() == nil {
 		connected, err := c.runOnce(ctx)
@@ -243,14 +279,14 @@ func (c *Conn) readLoop(ctx context.Context, conn *websocket.Conn) error {
 			c.logger.Printf("agent connection: received malformed message: %v", err)
 			continue
 		}
-		c.dispatch(env)
+		c.dispatch(ctx, conn, env)
 	}
 }
 
 // dispatch routes a received message. c.runtime is already wired in,
 // ready for a real command type to call into - see runtimeBackend's doc
 // comment for why there isn't one yet.
-func (c *Conn) dispatch(env agentproto.Envelope) {
+func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentproto.Envelope) {
 	switch env.Type {
 	case agentproto.TypeHeartbeat:
 		// A heartbeat from the central app is itself just a keepalive -
@@ -262,8 +298,72 @@ func (c *Conn) dispatch(env agentproto.Envelope) {
 			return
 		}
 		c.logger.Printf("agent connection: central app reported an error: %s (code %s)", errPayload.Message, errPayload.Code)
+	case agentproto.TypeStartTransfer:
+		var start agentproto.StartTransfer
+		if err := env.DecodePayload(&start); err != nil {
+			c.logger.Printf("agent connection: received malformed start_transfer payload: %v", err)
+			return
+		}
+		c.transferWG.Add(1)
+		go func() {
+			defer c.transferWG.Done()
+			c.runTransfer(ctx, conn, start)
+		}()
 	default:
 		c.logger.Printf("agent connection: received unhandled message type %q", env.Type)
+	}
+}
+
+// runTransfer runs one transfer to completion - one goroutine per active
+// transfer, per docs/AGENT.md Service Architecture Notes, so a
+// long-running download never blocks readLoop's command handling.
+// Progress is pushed back to the central app as TypeTransferProgress
+// messages via c.transfer's throttled callback (agent/transfer.Executor's
+// ProgressFunc); c.transfer.Download itself already reports a final
+// StatusCompleted/StatusFailed call, so the only thing left to do with a
+// returned error here is log it for local operator visibility
+// (journalctl).
+//
+// conn is the connection this transfer was dispatched on. ctx is this
+// method's caller's ctx (ultimately Run's) - see Run's doc comment for
+// why a transfer keeps running across a mere WebSocket reconnect rather
+// than being tied to the connection that happened to dispatch it: if conn
+// drops mid-transfer, progress pushes over it start failing silently
+// (logged, not fatal to the download) until the transfer finishes on its
+// own timeline - a known, accepted v0.1.0 gap, since nothing yet
+// redirects an in-flight transfer's progress reporting to a newer
+// connection after a reconnect.
+func (c *Conn) runTransfer(ctx context.Context, conn *websocket.Conn, start agentproto.StartTransfer) {
+	destDir := filepath.Join(c.cfg.ModelStoragePath, filepath.FromSlash(start.ModelRef))
+
+	progress := func(bytesTransferred, bytesTotal int64, status, errMsg string) {
+		env, err := agentproto.NewEnvelope(agentproto.TypeTransferProgress, "", agentproto.TransferProgress{
+			TransferID:       start.TransferID,
+			BytesTransferred: bytesTransferred,
+			BytesTotal:       bytesTotal,
+			Status:           status,
+			ErrorMessage:     errMsg,
+		})
+		if err != nil {
+			c.logger.Printf("agent connection: build transfer_progress for %s: %v", start.TransferID, err)
+			return
+		}
+		raw, err := json.Marshal(env)
+		if err != nil {
+			c.logger.Printf("agent connection: marshal transfer_progress for %s: %v", start.TransferID, err)
+			return
+		}
+		// conn.Write is safe for concurrent use (coder/websocket - see
+		// internal/agentconn.Registry.Send's doc comment for the same
+		// claim, confirmed against the library itself) - sendHeartbeats
+		// may be writing to this same connection concurrently.
+		if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+			c.logger.Printf("agent connection: send transfer_progress for %s: %v", start.TransferID, err)
+		}
+	}
+
+	if err := c.transfer.Download(ctx, start.ModelRef, destDir, progress); err != nil {
+		c.logger.Printf("agent connection: transfer %s failed: %v", start.TransferID, err)
 	}
 }
 

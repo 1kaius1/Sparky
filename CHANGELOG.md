@@ -290,6 +290,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   dispatches a real command until Phase 3 exists. Pure types/plumbing,
   covered by unit tests using real `coder/websocket` connections, no actual
   download involved.
+- `agent/transfer.Executor` - Model transfers Phase 3, the agent-side
+  Transfer Executor. Downloads a Hugging Face model repository over plain
+  `net/http` - no `huggingface_hub`/Python, no `git`/`git-lfs` on the
+  agent host, see PLANNING.md's Decisions Log. Lists a repo's files via
+  `GET /api/models/{repo}`, HEAD-requests each file's size up front so
+  `BytesTotal` is accurate from the first progress report, then downloads
+  each via `GET /{repo}/resolve/{revision}/{file}`. A file already present
+  at its full remote size is skipped; a partial file is resumed via a
+  `Range` request when the server honors it - a `200` response to a
+  resumed request (some small, non-LFS Hugging Face files silently ignore
+  `Range` despite advertising `Accept-Ranges: bytes`, confirmed against a
+  real repo) is treated as "start this file over," never appended to
+  blindly. Progress is throttled by a byte threshold (4 MiB default), not
+  wall-clock time. Wired into `agent/connection.Conn`'s dispatch on
+  `TypeStartTransfer`: one goroutine per active transfer, pushing
+  `TypeTransferProgress` back over the connection via Phase 2's plumbing.
+  `Conn` gained a `sync.WaitGroup` around transfer goroutines and `Run`
+  now waits on it before returning, so a graceful shutdown lets an
+  in-flight transfer reach a safe stopping point instead of killing it
+  mid-write - the behavior docs/AGENT.md already documented but nothing
+  built until now. 9 new unit tests in `agent/transfer` (full download,
+  periodic progress, real resume, a server that ignores `Range`,
+  skip-if-complete, list/download error handling, a canceled context, a
+  nested file path) plus 2 new tests in `agent/connection`. Manually
+  verified end to end against the real Hugging Face Hub
+  (`hf-internal-testing/tiny-random-bert`): a full download landed
+  byte-correct files, a re-run skipped every file, and resuming a
+  truncated file produced output `md5sum`-identical to a fresh
+  independent download.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

@@ -14,6 +14,7 @@ import (
 	"github.com/1kaius1/Sparky/agent/config"
 	"github.com/1kaius1/Sparky/agent/connection"
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	"github.com/1kaius1/Sparky/agent/transfer"
 )
 
 func main() {
@@ -34,10 +35,11 @@ func main() {
 	defer runtimeBackend.Close()
 
 	conn := connection.New(connection.Config{
-		CentralURL:  cfg.CentralURL,
-		BearerToken: cfg.BearerToken,
-		NodeName:    cfg.NodeName,
-	}, runtimeBackend, logger)
+		CentralURL:       cfg.CentralURL,
+		BearerToken:      cfg.BearerToken,
+		NodeName:         cfg.NodeName,
+		ModelStoragePath: cfg.ModelStoragePath,
+	}, runtimeBackend, transfer.New(), logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
