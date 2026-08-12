@@ -14,10 +14,14 @@ import (
 	"github.com/1kaius1/Sparky/internal/session"
 )
 
-func newTestServer(idp auth.IdentityProvider, store *fakeUserStore) (*httptest.Server, *API) {
+func newTestServer(t *testing.T, idp auth.IdentityProvider, store *fakeUserStore) (*httptest.Server, *API) {
+	t.Helper()
 	svc := NewLoginService(idp, store, testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil)
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
 	srv := httptest.NewServer(api.Router())
 	return srv, api
 }
@@ -55,7 +59,7 @@ func TestLoginLogout_FullBrowserRoundTrip(t *testing.T) {
 		DisplayName:   "Jane Smith",
 		InAccessGroup: true,
 	}}
-	srv, _ := newTestServer(idp, newFakeUserStore())
+	srv, _ := newTestServer(t, idp, newFakeUserStore())
 	defer srv.Close()
 	client := newBrowserClient(t)
 
@@ -139,7 +143,7 @@ func TestLoginLogout_FullBrowserRoundTrip(t *testing.T) {
 
 func TestHandleLogin_WrongPassword(t *testing.T) {
 	idp := &fakeIdentityProvider{err: auth.ErrInvalidCredentials}
-	srv, _ := newTestServer(idp, newFakeUserStore())
+	srv, _ := newTestServer(t, idp, newFakeUserStore())
 	defer srv.Close()
 	client := newBrowserClient(t)
 
@@ -165,7 +169,7 @@ func TestHandleLogin_AccessDenied(t *testing.T) {
 	idp := &fakeIdentityProvider{user: &auth.AuthenticatedUser{
 		ADSID: "S-1-5-21-1", DisplayName: "Jane Smith", InAccessGroup: false,
 	}}
-	srv, _ := newTestServer(idp, newFakeUserStore())
+	srv, _ := newTestServer(t, idp, newFakeUserStore())
 	defer srv.Close()
 	client := newBrowserClient(t)
 
@@ -178,7 +182,7 @@ func TestHandleLogin_AccessDenied(t *testing.T) {
 
 func TestHandleLogin_MissingFields(t *testing.T) {
 	idp := &fakeIdentityProvider{}
-	srv, _ := newTestServer(idp, newFakeUserStore())
+	srv, _ := newTestServer(t, idp, newFakeUserStore())
 	defer srv.Close()
 	client := newBrowserClient(t)
 
@@ -191,7 +195,7 @@ func TestHandleLogin_MissingFields(t *testing.T) {
 
 func TestHandleLogin_MalformedBody(t *testing.T) {
 	idp := &fakeIdentityProvider{}
-	srv, _ := newTestServer(idp, newFakeUserStore())
+	srv, _ := newTestServer(t, idp, newFakeUserStore())
 	defer srv.Close()
 	client := newBrowserClient(t)
 
@@ -211,7 +215,10 @@ func TestRequireSession(t *testing.T) {
 	}}
 	svc := NewLoginService(idp, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil)
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, testLogger())
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
 
 	var gotIdentity Identity
 	protected := api.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

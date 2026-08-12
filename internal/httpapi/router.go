@@ -4,12 +4,17 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
+	"html/template"
+	"io/fs"
+	"log"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
 	"github.com/1kaius1/Sparky/internal/session"
+	"github.com/1kaius1/Sparky/web"
 )
 
 // API holds the dependencies HTTP handlers need.
@@ -19,6 +24,13 @@ type API struct {
 	setupGate              *setupGate
 	sessionSecret          string
 	agentConn              http.Handler
+
+	nodes     nodeLister
+	profiles  profileLister
+	instances instanceLister
+	templates map[string]*template.Template
+	static    http.Handler
+	logger    *log.Logger
 }
 
 // New constructs an API. sessionSecret is used to verify session cookies
@@ -29,22 +41,45 @@ type API struct {
 // internal/agentconn's WebSocket endpoint (ARCHITECTURE.md's
 // Agent-Communication Layer) - it is a plain http.Handler here, not a
 // concrete type, so this package doesn't need to depend on
-// internal/agentconn's other exports.
-func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler) *API {
+// internal/agentconn's other exports. nodes/profiles/instances back the
+// Dashboard UI's read-only pages (Dashboard, Nodes, Model profiles - see
+// PLANNING.md's Dashboard UI milestone item); logger is used for
+// rendering/query failures a handler can't turn into a useful HTTP
+// response on its own. Returns an error if the embedded templates
+// (web.FS) fail to parse - a template syntax error is a build-time bug,
+// caught here rather than surfacing as a broken page on first request.
+func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
+	nodes nodeLister, profiles profileLister, instances instanceLister, logger *log.Logger) (*API, error) {
+	templates, err := loadPageTemplates()
+	if err != nil {
+		return nil, fmt.Errorf("load page templates: %w", err)
+	}
+	staticFS, err := fs.Sub(web.FS, "static")
+	if err != nil {
+		return nil, fmt.Errorf("sub static FS: %w", err)
+	}
+
 	return &API{
 		loginService:           loginService,
 		breakGlassLoginService: breakGlassLoginService,
 		setupGate:              newSetupGate(breakGlassStore),
 		sessionSecret:          sessionSecret,
 		agentConn:              agentConn,
-	}
+		nodes:                  nodes,
+		profiles:               profiles,
+		instances:              instances,
+		templates:              templates,
+		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
+		logger:                 logger,
+	}, nil
 }
 
 // Router builds the full route tree. Per ARCHITECTURE.md Application
 // Lifecycle, request ID, logging, recovery, the Setup Check, auth, and
-// audit middleware are registered here; logging and audit middleware, and
-// every route beyond login/logout, are later v0.1.0 work (RBAC, Dashboard
-// UI).
+// audit middleware are registered here; logging and audit middleware
+// beyond login/logout are later v0.1.0 work (RBAC-gated write actions -
+// see PLANNING.md's Dashboard UI milestone item for what this phase
+// covers: three read-only pages, no write/action routes yet).
 func (a *API) Router() http.Handler {
 	r := chi.NewRouter()
 
@@ -67,7 +102,32 @@ func (a *API) Router() http.Handler {
 	// otherwise panic building the router at all, not just on a request.
 	r.Method(http.MethodGet, "/agent/connect", a.agentConn)
 
+	// Dashboard UI - server-rendered pages, not /api/v1 REST/JSON (CLAUDE.md
+	// API Conventions reserves that base path for actions; these render
+	// HTML). Read-only for every authenticated session regardless of tier
+	// (CLAUDE.md Frontend Conventions: Dashboard/Nodes/Model profiles all
+	// have "Read-only" as their minimum visible tier), so RequireSession is
+	// the only gate - no RBAC check, matching internal/nodes.Service.ListNodes
+	// et al.'s own "unguarded by RBAC" reasoning. There is no HTML login
+	// page yet (PLANNING.md Known Issues) - an unauthenticated request here
+	// gets RequireSession's existing JSON 401, not a redirect; a real login
+	// page is a later phase.
+	r.Get("/", handleIndex)
+	r.With(a.RequireSession).Get("/dashboard", a.handleDashboard)
+	r.With(a.RequireSession).Get("/nodes", a.handleNodes)
+	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
+
+	// Static assets (CSS, vendored htmx) - public, no session required,
+	// same reasoning a login page's own assets would need if one existed.
+	r.Method(http.MethodGet, "/static/*", a.static)
+
 	return r
+}
+
+// handleIndex redirects the site root to the Dashboard - there is nothing
+// else to show at "/".
+func handleIndex(w http.ResponseWriter, r *http.Request) {
+	http.Redirect(w, r, "/dashboard", http.StatusFound)
 }
 
 // setRequestIDHeader writes chi's per-request ID as the X-Request-ID
@@ -94,8 +154,8 @@ type Identity struct {
 
 // RequireSession verifies the session cookie and stores the authenticated
 // Identity in the request context, responding 401 if it is missing or
-// invalid. Not yet used by any route in this package - future protected
-// routes (RBAC-gated actions, the Dashboard UI) will register through it.
+// invalid. Used by the Dashboard UI's read-only pages; future RBAC-gated
+// write actions will register through it too.
 func (a *API) RequireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)

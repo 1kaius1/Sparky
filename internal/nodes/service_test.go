@@ -23,6 +23,16 @@ type fakeNodeStore struct {
 	// NodeRepository.Create deliberately never returns the hash - see
 	// internal/db/nodes.go.
 	bearerTokenHashes []string
+
+	listResult []*db.Node
+	listErr    error
+}
+
+func (f *fakeNodeStore) List(_ context.Context) ([]*db.Node, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
 }
 
 func (f *fakeNodeStore) Create(_ context.Context, name, hostname, ipAddress string, nodeType db.NodeType, containerRuntime *db.ContainerRuntime, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string, bearerTokenHash string) (*db.Node, error) {
@@ -219,5 +229,28 @@ func TestService_RegisterNode_AuditFailurePropagates(t *testing.T) {
 	// Issues and Technical Debt.
 	if len(store.created) != 1 {
 		t.Error("nodeStore.Create was not called, want the node to have been persisted before the audit write was attempted")
+	}
+}
+
+func TestService_ListNodes(t *testing.T) {
+	want := []*db.Node{{ID: "node-1", Name: "spark-1"}, {ID: "node-2", Name: "spark-2"}}
+	store := &fakeNodeStore{listResult: want}
+	svc := NewService(store, &fakeAuditRecorder{})
+
+	got, err := svc.ListNodes(context.Background())
+	if err != nil {
+		t.Fatalf("ListNodes() error: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "node-1" || got[1].ID != "node-2" {
+		t.Errorf("ListNodes() = %+v, want %+v", got, want)
+	}
+}
+
+func TestService_ListNodes_StoreError(t *testing.T) {
+	store := &fakeNodeStore{listErr: errors.New("database unreachable")}
+	svc := NewService(store, &fakeAuditRecorder{})
+
+	if _, err := svc.ListNodes(context.Background()); err == nil {
+		t.Fatal("ListNodes() succeeded despite a store failure")
 	}
 }

@@ -1,0 +1,36 @@
+{{define "base"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} - Sparky</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+  <script src="/static/js/htmx.min.js"></script>
+</head>
+<body>
+  <div class="layout">
+    <nav class="sidebar">
+      <div class="sidebar-brand">Sparky</div>
+      <ul class="sidebar-nav">
+        <li>
+          <a href="/dashboard" hx-get="/dashboard" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "dashboard"}}active{{end}}">Dashboard</a>
+        </li>
+        <li>
+          <a href="/nodes" hx-get="/nodes" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "nodes"}}active{{end}}">Nodes</a>
+        </li>
+        <li>
+          <a href="/profiles" hx-get="/profiles" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "profiles"}}active{{end}}">Model profiles</a>
+        </li>
+      </ul>
+    </nav>
+    <main id="main-content" class="main">
+      {{template "content" .}}
+    </main>
+  </div>
+</body>
+</html>
+{{end}}

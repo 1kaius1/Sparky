@@ -17,11 +17,15 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/1kaius1/Sparky/internal/agentconn"
+	"github.com/1kaius1/Sparky/internal/audit"
 	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/config"
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/engines"
 	"github.com/1kaius1/Sparky/internal/httpapi"
+	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/nodes"
+	"github.com/1kaius1/Sparky/internal/profiles"
 )
 
 // shutdownTimeout bounds how long graceful shutdown waits for in-flight
@@ -74,15 +78,31 @@ func main() {
 	nodeRepo := db.NewNodeRepository(pool)
 	nodeAuth := nodes.NewAuthService(nodeRepo)
 	agentRegistry := agentconn.NewRegistry()
-	// onMessage is nil - nothing dispatches a real command yet. Model
-	// transfers Phase 3+ (PLANNING.md) is expected to wire a real
-	// callback in once there's a transfer service to hand
-	// TypeTransferProgress messages to.
+	// onMessage is nil - nothing dispatches a real command yet.
+	// internal/transfers, internal/lifecycle, and internal/metrics each
+	// have their own OnMessageFunc-shaped handler
+	// (HandleTransferProgress/HandleInstanceResult/HandleTelemetry) but
+	// agentconn.Handler only accepts one callback - combining the three
+	// into a single dispatching OnMessageFunc is left for whichever of
+	// them lands an HTTP-facing caller first (PLANNING.md).
 	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, nil)
+
+	auditRecorder := audit.NewRecorder(db.NewAuditRepository(pool), os.Stdout)
+	engineRegistry := engines.NewRegistry()
+	profileRepo := db.NewProfileRepository(pool)
+	instanceRepo := db.NewRunningInstanceRepository(pool)
+
+	nodeService := nodes.NewService(nodeRepo, auditRecorder)
+	profileService := profiles.NewService(profileRepo, nodeRepo, engineRegistry, auditRecorder)
+	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
-	api := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler)
+	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
+		nodeService, profileService, lifecycleService, logger)
+	if err != nil {
+		logger.Fatalf("httpapi: %v", err)
+	}
 
 	srv := &http.Server{
 		Addr:    ":" + cfg.ListenPort,

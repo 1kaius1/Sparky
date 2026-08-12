@@ -60,9 +60,11 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI and the bare-metal install script have not been started -
-Dashboard UI is the current active work, see Current Sprint / Active Work
-below.
+Dashboard UI Phase 1 is done (base layout/sidebar shell, session-gated routing,
+three working read-only pages - Dashboard overview, Nodes, Model profiles; no
+write forms or login page yet). The bare-metal install script has not been
+started - Dashboard UI Phase 2 (the remaining sidebar sections and write
+forms) is the current active work, see Current Sprint / Active Work below.
 
 ---
 
@@ -806,6 +808,82 @@ below.
         real `/proc` fixtures across every touched package; `go test
         -race` clean.
   - [ ] Dashboard UI (htmx), sidebar nav, Read-only through Admin views
+    - [x] Phase 1: base layout/sidebar shell, session-gated routing, and
+          three working read-only pages (Dashboard overview, Nodes,
+          Model profiles) - establishing the htmx/template/handler
+          pattern end to end, per the user's chosen scope (shell + core
+          read views first, remaining sections as later phases, same
+          phased-delivery precedent as Model transfers/Model profiles).
+          No write/action forms yet (no launch/create/edit routes exist)
+          and no HTML login page - see this phase's Known Issues rows.
+          Complete when the compiled binary, driven with real HTTP
+          requests against a real Postgres instance, serves all three
+          pages with real data and correctly gates them behind a session.
+          Done - new `web` package (`web.FS`, `//go:embed
+          templates static`) holds `web/templates/layouts/base.html`
+          (sidebar + main pane, per CLAUDE.md Frontend Conventions),
+          `web/templates/pages/{dashboard,nodes,profiles}.html`, and
+          `web/static/{css/main.css,js/htmx.min.js}` - htmx 2.0.10
+          vendored (not CDN-loaded, matching the single-binary
+          `embed.FS` deployment story), plain CSS as CLAUDE.md's Tech
+          Stack table already defaulted to.
+          `internal/httpapi.loadPageTemplates` parses each page together
+          with the base layout into its *own* isolated
+          `*template.Template` (base+one-page per entry, not one
+          combined `ParseGlob`) - every page defines a block also named
+          `"content"`, so parsing them all into one shared template set
+          would make the last-parsed page's content block silently win
+          for every page. `render` picks `"base"` (full document) or
+          `"content"` (just the inner block) depending on whether the
+          request carries htmx's own `HX-Request` header - one page
+          template serves both the full-page load and the
+          `hx-get`/`hx-target="#main-content"` partial swap, no
+          duplicate markup between a `pages/` and `partials/` file for
+          content that's identical either way.
+          `internal/nodes.Service`/`internal/profiles.Service`/
+          `internal/lifecycle.Service` each gained a `List*` method
+          (`ListNodes`/`ListProfiles`/`ListInstances`) - unguarded by
+          RBAC, since viewing is available at the lowest tier
+          (CLAUDE.md Frontend Conventions) and read/view actions are
+          never audited (ARCHITECTURE.md Audit Log). `httpapi.New` now
+          also takes `nodeLister`/`profileLister`/`instanceLister`
+          (narrow interfaces over those three `List*` methods) and a
+          `*log.Logger`, and returns `(*API, error)` - a template parse
+          failure is a build-time bug, caught at startup rather than
+          surfacing as a broken page on first request. This is also the
+          first time `internal/nodes.Service`, `internal/profiles.Service`,
+          and `internal/lifecycle.Service` are wired into
+          `cmd/sparky-server/main.go` at all - every prior phase that
+          built one left it unwired pending exactly this. `RequireSession`
+          (defined back in the AD/LDAP auth work, unused until now) gates
+          `/dashboard`, `/nodes`, `/profiles`; `/`, redirecting to
+          `/dashboard`, and `/static/*` stay public.
+          `RunningInstanceRepository` gained `List` (Dashboard's fleet
+          summary needed one; nothing had before). Verified two ways: unit
+          tests against fakes for every new handler (full page vs. htmx
+          partial, RBAC/session gating, list-failure handling, target-node
+          name resolution), and a genuine end-to-end pass through the
+          actual compiled `sparky-server` binary - real Postgres, a real
+          `set-superadmin-password` run over a real pty, a real
+          `POST /login/break-glass`, then `curl`+cookiejar against
+          `/`, `/dashboard`, `/nodes`, `/profiles`, an `HX-Request: true`
+          partial fetch, both static assets, and an unauthenticated
+          request confirming the existing JSON 401 - not just asserted,
+          actually run. No visual/browser check was possible in this
+          environment (no display) - see this phase's Known Issues row.
+    - [ ] Phase 2 and beyond (not started): the remaining five sidebar
+          sections (Transfers, Metrics, Users & permissions, Audit log,
+          Settings), write/action forms for the three Phase 1 pages
+          (profile create/edit, node registration, instance load/unload -
+          `internal/profiles.Service`/`internal/nodes.Service`/
+          `internal/lifecycle.Service` already have the RBAC-gated
+          mutation methods these forms would call), a real HTML login
+          page, SSE wiring for live telemetry/transfer progress, and
+          combining `internal/transfers.Service.HandleTransferProgress`/
+          `internal/lifecycle.Service.HandleInstanceResult`/
+          `internal/metrics.Service.HandleTelemetry` into the single
+          `agentconn.OnMessageFunc` `cmd/sparky-server/main.go` currently
+          passes `nil` for.
   - [ ] Bare-metal install script (apt + dnf)
 
 - [ ] **v0.2.0** - Spark bare-metal support
@@ -857,9 +935,10 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI (htmx), sidebar nav, Read-only through Admin views -
-  Metrics (live telemetry collection, no historical retention yet) is now
-  done; the dashboard itself is what will actually consume that data.
+- Next up: Dashboard UI Phase 2 - the remaining sidebar sections (Transfers,
+  Metrics, Users & permissions, Audit log, Settings), write/action forms for
+  the three Phase 1 pages, and a real HTML login page. Phase 1 (base layout,
+  session-gated routing, Dashboard/Nodes/Model profiles read views) is done.
 
 ---
 
@@ -946,6 +1025,11 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | CPU utilization is computed as a stateful delta between successive `agent/telemetry.Collector.Read` calls, not a single instantaneous read; the very first reading after agent startup is always 0 | `/proc/stat` exposes cumulative tick counters since boot, not a point-in-time percentage - a single sample cannot yield a utilization figure, only a rate computed from two samples separated by known time. Keeping the previous sample as `Collector` state (rather than sleeping between two reads inside one `Read` call) avoids blocking the telemetry goroutine's tick for the poll interval's duration just to answer one question | Sleeping briefly inside `Read` to take two samples per call (rejected: blocks the telemetry goroutine, and duplicates state `Collector` can just keep between ticks instead - the poll interval itself is already the natural sampling window) |
 | 2026-08-12 | `agentproto.Telemetry` carries no node or Running-instance identity - `internal/metrics.Service.HandleTelemetry` resolves `running_instance_id` server-side via the new `RunningInstanceRepository.FindActiveByNode`, using the connection's own authenticated node identity, not a value in the payload | Same trust boundary already established for `HandleTransferProgress`/`HandleInstanceResult`: the agent-communication layer's authenticated `nodeID` is the source of truth for which node sent a message, never a client-supplied field. The agent has no reason to track its own Running-instance state - only the central app's `running_instances` table knows what's currently loaded where, so asking the agent to duplicate that bookkeeping just to echo an ID back would be redundant, error-prone state to keep in sync | Sending `running_instance_id` from the agent, tracked locally in `agent/connection.Conn` from the `load_instance`/`unload_instance` commands it has already handled (rejected: duplicates state the central app already has authoritatively, and diverges the moment a reconnect or restart loses the agent's own copy) |
 | 2026-08-12 | `internal/metrics.Service.HandleTelemetry` has no RBAC check and writes no audit record, unlike `internal/transfers.Service`/`internal/lifecycle.Service` | A telemetry push is agent-initiated observational data collection, not a human actor's state-changing action - SCHEMA.md Audit log's own action examples (`loaded_model`, `elevated_user`, `deleted_model_copy`) are all administrative actions on domain objects, the same reasoning PLANNING.md's audit-log entry already used to exclude authentication/session bookkeeping from the audit trail. There is also no actor to RBAC-check against - the caller is the node itself over an already-authenticated connection, the same situation `nodes.AuthService.Authenticate` (not RBAC-gated either) is already in | Auditing every telemetry write anyway for consistency with other services (rejected: would flood the audit log with a few-second-interval, non-actor-attributable event stream that SCHEMA.md's own audit log framing was never meant to hold) |
+| 2026-08-12 | Dashboard UI Phase 1 scoped to a base layout/sidebar shell plus three read-only pages (Dashboard, Nodes, Model profiles) - confirmed with the user rather than assumed, given how much larger this milestone item is than any prior one (the first real frontend code in the repo, and the first HTTP wiring for four previously-unwired services at once) | Explicit user choice between "full 8-section dashboard in one pass" and "shell + core read views first, remaining sections as later phases" - the latter, matching the phased-delivery precedent Model transfers/Model profiles already established for large items, and keeping each phase's own verification bar (real end-to-end run against the compiled binary) achievable in one sitting | Building all 8 sidebar sections and every write/action form in one pass (user declined - too large to verify thoroughly in one sitting, and several genuinely open design questions - login page UX, SSE wiring shape - would have been guessed rather than confirmed) |
+| 2026-08-12 | UI verification for Dashboard UI Phase 1 used the real compiled `sparky-server` binary driven by `curl`+cookiejar against a real Postgres instance (page markup inspected directly), not a browser - confirmed with the user, since this sandboxed environment has no display | CLAUDE.md's "start the dev server and use the feature in a browser" bar cannot be literally met here - no headless browser tooling is available either. `curl` against the real running binary (real session cookie from a real `POST /login/break-glass`, real DB-backed data) verifies the actual HTTP/template/data pipeline end to end; only visual rendering (CSS layout, real browser DOM behavior) is unverified | Claiming a browser check happened anyway (rejected outright - misrepresenting verification that didn't occur); skipping end-to-end verification entirely and relying on `httptest` unit tests alone (rejected: unit tests use fakes, never proving the real binary/real Postgres/real template files actually work together) |
+| 2026-08-12 | Each Dashboard UI page is parsed as base-layout-plus-that-one-page into its own isolated `*template.Template` (`internal/httpapi.loadPageTemplates`), not one `template.ParseGlob` across every page | Every page template defines a block named `"content"` (the htmx-swappable inner region) - `html/template` keeps one flat namespace per `*template.Template`, not a per-source-file one, so combining all pages into one parsed set would make every page's `"content"` block collide, with whichever was parsed last silently winning for every page. This was caught by reasoning through the mechanism before writing it, not discovered as a bug afterward | One shared `*template.Template` with a per-page-uniquely-named content block (e.g. `"dashboard-content"`, `"nodes-content"`) referenced dynamically from `base.html` (rejected: `html/template` has no clean way to parameterize *which* named template `{{template "X" .}}` invokes from within the template language itself - it would need Go-side string-building of template source, uglier than just parsing per-page) |
+| 2026-08-12 | The sidebar (`web/templates/layouts/base.html`) lists only the three sections Phase 1 actually built (Dashboard, Nodes, Model profiles), not all eight CLAUDE.md's Frontend Conventions table names | A static nav link to a route that doesn't exist yet is a dead 404 link - real UX regression for a real user, not a cosmetic gap. Trivial to extend: each later phase adds its own `<li>` alongside its new route, in the same commit that adds the route | Rendering all eight now, with five pointing nowhere (rejected: shipping known-broken links to "look complete" is worse than an honest, incrementally-growing nav) |
+| 2026-08-12 | `internal/nodes.Service`/`internal/profiles.Service`/`internal/lifecycle.Service` each gained a `List*` read method directly, rather than a separate new query-only service/package | These are the same `Service` types that already own each domain's RBAC-gated mutations (`RegisterNode`, `CreateProfile`, `LoadInstance`, ...) - adding an unguarded read method alongside them (no RBAC check needed, since viewing is available at the lowest tier) reuses the exact repository dependency each `Service` already holds, rather than standing up a second orchestration layer with its own copy of the same `nodeStore`/`profileStore`/`instanceStore` interface. `internal/db`'s own doc comments on `NodeRepository.List`/`ProfileRepository.List` already anticipated this exact call site ("for the future Nodes dashboard page") | A dedicated read-only query package per domain (rejected: doubles the interface surface for a one-method pass-through, and CLAUDE.md's Handler -> Service Layer -> Repository pattern doesn't distinguish "read service" from "write service" - it's one Service per domain) |
 
 ---
 
@@ -961,6 +1045,9 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
 | `agent/telemetry.Collector`'s `nvidia-smi` integration (CSV parsing, multi-GPU aggregation) is unverified against a real `nvidia-smi` binary or real GPU hardware - this dev environment has neither (same gap already on record for CDI GPU passthrough). The CSV query shape (`--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is well-documented, stable `nvidia-smi` behavior, not guessed, but has never actually been run here | Medium | Requires real GPU hardware with `nvidia-smi` installed to close, same blocker already tracked for CDI verification; the parsing logic itself is unit-tested against a fake command runner exercising realistic CSV shapes (single GPU, multiple GPUs, malformed lines), so the gap is specifically "does the real binary's output match the documented format," not "is the parser correct for the format it's given" |
+| No HTML login page exists yet - a real browser user cannot reach the Dashboard UI at all today, only `curl`/an API client hitting `POST /login` or `POST /login/break-glass` directly and carrying the resulting cookie itself. An unauthenticated request to `/dashboard`/`/nodes`/`/profiles` gets `RequireSession`'s existing JSON 401, not a redirect to a login page | Medium | Deliberately deferred to Dashboard UI Phase 2 (PLANNING.md Decisions Log) - Phase 1's approved scope was the shell plus three read-only pages; a login page is real, separate design surface (a form, `POST /login`'s JSON response shape vs. what a plain HTML form post expects, a post-login redirect target) rather than a natural extension of what Phase 1 already built |
+| Dashboard UI Phase 1 has no logout control in the rendered UI (the base layout's sidebar has no logout link/button) - `POST /logout` itself still works, only the page has nothing wired to call it | Low | Same root cause as the login-page gap directly above: a logout control that lands the user somewhere coherent needs a login page to land on, which doesn't exist yet. Adding a logout button now would either do nothing useful (no page to redirect to) or need htmx response-header redirect wiring for a destination Phase 2 will build anyway |
+| Dashboard UI Phase 1's pages were verified via `curl`+cookiejar against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
 
 ---
 

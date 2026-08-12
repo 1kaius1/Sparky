@@ -28,6 +28,7 @@ type instanceStore interface {
 	FindByID(ctx context.Context, id string) (*db.RunningInstance, error)
 	FindActiveByProfileID(ctx context.Context, profileID string) (*db.RunningInstance, error)
 	SetStatus(ctx context.Context, id string, status db.RunningInstanceStatus, actualPort *int, errorMessage *string) error
+	List(ctx context.Context) ([]*db.RunningInstance, error)
 }
 
 // adapterRegistry is the subset of *engines.Registry this package needs -
@@ -265,4 +266,17 @@ func (s *Service) HandleInstanceResult(nodeID string, env agentproto.Envelope) {
 	if err := s.instances.SetStatus(ctx, result.InstanceID, status, actualPort, errMsg); err != nil {
 		s.logger.Printf("lifecycle: set status for running instance %s: %v", result.InstanceID, err)
 	}
+}
+
+// ListInstances returns every running instance - unguarded by RBAC, since
+// viewing them is available at the lowest tier (the Dashboard overview
+// page's fleet summary, CLAUDE.md Frontend Conventions' Dashboard sidebar
+// tier "Read-only"). Read/view actions are also never audited - see
+// ARCHITECTURE.md Audit Log.
+func (s *Service) ListInstances(ctx context.Context) ([]*db.RunningInstance, error) {
+	instances, err := s.instances.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list running instances: %w", err)
+	}
+	return instances, nil
 }

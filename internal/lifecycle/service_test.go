@@ -46,6 +46,16 @@ type fakeInstanceStore struct {
 
 	statusCalls  []statusCall
 	setStatusErr error
+
+	listResult []*db.RunningInstance
+	listErr    error
+}
+
+func (f *fakeInstanceStore) List(_ context.Context) ([]*db.RunningInstance, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
 }
 
 type statusCall struct {
@@ -609,5 +619,28 @@ func TestService_HandleInstanceResult_UnknownStatus_Ignored(t *testing.T) {
 
 	if len(instances.statusCalls) != 0 {
 		t.Error("HandleInstanceResult acted on an unrecognized status")
+	}
+}
+
+func TestService_ListInstances(t *testing.T) {
+	want := []*db.RunningInstance{{ID: "instance-1"}, {ID: "instance-2"}}
+	instances := &fakeInstanceStore{listResult: want}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	got, err := svc.ListInstances(context.Background())
+	if err != nil {
+		t.Fatalf("ListInstances() error: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "instance-1" || got[1].ID != "instance-2" {
+		t.Errorf("ListInstances() = %+v, want %+v", got, want)
+	}
+}
+
+func TestService_ListInstances_StoreError(t *testing.T) {
+	instances := &fakeInstanceStore{listErr: errors.New("database unreachable")}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	if _, err := svc.ListInstances(context.Background()); err == nil {
+		t.Fatal("ListInstances() succeeded despite a store failure")
 	}
 }

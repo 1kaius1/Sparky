@@ -429,6 +429,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Verified with real integration tests against Postgres (including a
   migration up/down/up cycle) and unit tests against fakes/real `/proc`
   fixtures across every touched package; `go test -race` clean.
+- Dashboard UI Phase 1: base layout/sidebar shell, session-gated routing,
+  and three working read-only pages (Dashboard overview, Nodes, Model
+  profiles) - the first real frontend code in the repo, and the first
+  HTTP wiring for `internal/nodes.Service`/`internal/profiles.Service`/
+  `internal/lifecycle.Service`. New `web` package (`web.FS`,
+  `//go:embed templates static`) holds the templates and static assets
+  (htmx 2.0.10 vendored, plain CSS - CLAUDE.md Tech Stack). Each page is
+  parsed together with the base layout into its own isolated
+  `*template.Template` (`internal/httpapi.loadPageTemplates`) rather than
+  one combined `ParseGlob`, since every page defines a block also named
+  `"content"` and a shared template set would make the last-parsed page
+  silently win for all of them. `render` serves the full document or just
+  the `"content"` block depending on htmx's own `HX-Request` header - one
+  template serves both a full page load and an
+  `hx-get`/`hx-target="#main-content"` partial swap. `internal/nodes.Service`,
+  `internal/profiles.Service`, and `internal/lifecycle.Service` each
+  gained an unguarded `List*` method (viewing is available at the lowest
+  RBAC tier and is never audited); `httpapi.New` now also takes
+  `nodeLister`/`profileLister`/`instanceLister` and a `*log.Logger`, and
+  returns `(*API, error)` - a template parse failure is now a
+  startup-time failure, not a broken page on first request.
+  `RunningInstanceRepository` gained `List` for the Dashboard's fleet
+  summary. `RequireSession` (defined during the AD/LDAP auth work, unused
+  until now) gates the three new routes; `/` redirects to `/dashboard`,
+  `/static/*` stays public. No write/action forms and no HTML login page
+  yet - both are Dashboard UI Phase 2, along with the remaining five
+  sidebar sections (Transfers, Metrics, Users & permissions, Audit log,
+  Settings). Verified with unit tests against fakes for every new
+  handler, and a genuine end-to-end pass against the actual compiled
+  `sparky-server` binary: real Postgres, a real `set-superadmin-password`
+  run over a real pty, a real `POST /login/break-glass`, then
+  `curl`+cookiejar against every new route, an `HX-Request: true` partial
+  fetch, both static assets, and an unauthenticated request confirming
+  the existing JSON 401 - not just asserted, actually run. No visual
+  browser check was possible in this sandboxed environment (no display) -
+  confirmed with the user as the verification approach for this phase.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
