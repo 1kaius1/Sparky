@@ -292,7 +292,7 @@ in source.
 | `source_node_id` | uuid, nullable, FK -> Nodes.id | Populated only when `source_type = peer_node` |
 | `status` | enum | `queued` / `transferring` / `completed` / `failed` / `cancelled` |
 | `bytes_transferred` / `bytes_total` | bigint | |
-| `requested_by` | uuid, FK -> Users.id | |
+| `requested_by` | uuid, nullable, FK -> Users.id | Null when the break-glass SuperAdmin initiated the transfer - same reasoning as Nodes' `registered_by`, since the SuperAdmin is not a `Users` row |
 | `requested_at` / `completed_at` | timestamptz | |
 | `error_message` | text, nullable | |
 
