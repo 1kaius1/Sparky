@@ -48,11 +48,12 @@ server-side Agent-Communication Layer, and the agent-side connection goroutine -
 all five phases done, though the top-level checklist item stays unchecked pending
 real-hardware CDI GPU passthrough verification, a known gap, not an oversight); and
 Model profiles (schema, engine adapters, RBAC-gated CRUD service). Model transfers
-has Phase 1 done (`model_transfers` + `node_model_inventory` schema and
-repositories); Phases 2-4 (protocol extension, agent-side transfer executor, HTTP
-wiring) are not started yet - that's the current active work, see Current Sprint /
-Active Work below. Running instances, Metrics, Dashboard UI, and the bare-metal
-install script have not been started.
+has Phases 1-2 done (`model_transfers` + `node_model_inventory` schema and
+repositories; `internal/agentproto`'s `TypeStartTransfer`/`TypeTransferProgress`
+and `internal/agentconn`'s `Registry.Send`/`Handler.OnMessage`); Phases 3-4
+(agent-side transfer executor, HTTP wiring) are not started yet - that's the
+current active work, see Current Sprint / Active Work below. Running instances,
+Metrics, Dashboard UI, and the bare-metal install script have not been started.
 
 ---
 
@@ -507,7 +508,7 @@ install script have not been started.
           transfers table updated in the same change to mark
           `requested_by` nullable, matching what this phase actually
           built.
-    - [ ] Phase 2: Protocol extension + dispatch capability -
+    - [x] Phase 2: Protocol extension + dispatch capability -
           `internal/agentproto` gains `TypeStartTransfer` (central -> agent:
           transfer ID, model ref) and `TypeTransferProgress` (agent ->
           central: bytes transferred/total, status, error message).
@@ -524,6 +525,23 @@ install script have not been started.
           types/plumbing, testable the same way Phase 2 and Phase 4 of the
           agent runtime work were - real `coder/websocket` test
           connections, no actual download involved.
+          Done - `TransferProgress.Status` is a plain string, not
+          `db.TransferStatus`, since `agentproto` has no dependency on
+          `internal/db` (it's shared by both binaries, and
+          `sparky-agent` has no database access at all).
+          `Registry.Send` only holds its mutex for the map lookup, not
+          the network write - `coder/websocket` supports concurrent
+          writes on one connection (confirmed against its own doc
+          comments and `AGENTS.md`, not assumed), and holding the lock
+          across a write would block every other node's `Send`/
+          `Register`/`Unregister` on it. `NewHandler` takes the new
+          `OnMessageFunc` as a required (but nil-able) parameter, same
+          as its other dependencies - `cmd/sparky-server` currently
+          passes `nil`, since nothing dispatches a real command until
+          Phase 3+ exists. `readLoop` now decodes every message instead
+          of discarding it unread; `hello`/`hello_ack`/`heartbeat` stay
+          silently internal, `error` is logged, everything else goes to
+          `onMessage`.
     - [ ] Phase 3: Agent-side Transfer Executor (`agent/transfer`) - a
           native Go Hugging Face downloader, no external tool dependency
           (no Python/`huggingface_hub`, no `git`/`git-lfs`) - see this
@@ -619,9 +637,10 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Model transfers, Phase 2 (protocol extension + dispatch capability -
-  `internal/agentproto` `TypeStartTransfer`/`TypeTransferProgress`,
-  `internal/agentconn` `Registry.Send` and `Handler.OnMessage`) - Phase 1 is done.
+- Next up: Model transfers, Phase 3 (`agent/transfer`, the agent-side
+  Transfer Executor - a native Go Hugging Face downloader wired into
+  `agent/connection.Conn`'s dispatch on `TypeStartTransfer`) - Phases 1 and
+  2 are done.
 
 ---
 

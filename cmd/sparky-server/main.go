@@ -74,7 +74,11 @@ func main() {
 	nodeRepo := db.NewNodeRepository(pool)
 	nodeAuth := nodes.NewAuthService(nodeRepo)
 	agentRegistry := agentconn.NewRegistry()
-	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger)
+	// onMessage is nil - nothing dispatches a real command yet. Model
+	// transfers Phase 3+ (PLANNING.md) is expected to wire a real
+	// callback in once there's a transfer service to hand
+	// TypeTransferProgress messages to.
+	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, nil)
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
