@@ -24,6 +24,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
 	"github.com/1kaius1/Sparky/internal/agentproto"
 )
@@ -35,8 +36,9 @@ const handshakeTimeout = 10 * time.Second
 
 // heartbeatInterval is how often Conn sends a keepalive heartbeat over an
 // established connection - see agentproto.Heartbeat's doc comment: this
-// is distinct from telemetry (a separate, not-yet-built goroutine, per
-// docs/AGENT.md). No SPARKY_* env var controls this - docs/AGENT.md
+// is distinct from telemetry (a separate goroutine, on its own
+// operator-configurable interval - see Config.TelemetryPollInterval). No
+// SPARKY_* env var controls the heartbeat interval - docs/AGENT.md
 // doesn't define one, and there's no case yet for making it
 // operator-tunable.
 const heartbeatInterval = 30 * time.Second
@@ -60,6 +62,13 @@ type transferExecutor interface {
 	Download(ctx context.Context, modelRef, destDir string, progress transfer.ProgressFunc) error
 }
 
+// telemetryCollector is the subset of *telemetry.Collector this package
+// needs - narrow enough to fake in tests without shelling out to
+// nvidia-smi or reading the real /proc.
+type telemetryCollector interface {
+	Read(ctx context.Context) (telemetry.Reading, error)
+}
+
 // Config is what Conn needs to dial and authenticate - the subset of
 // agent/config.Config relevant to this package, so it doesn't depend on
 // the whole agent's environment surface.
@@ -75,15 +84,27 @@ type Config struct {
 	// like any other, so an empty one is passed straight through to
 	// filepath.Join rather than silently substituted.
 	ModelStoragePath string
+
+	// TelemetryPollInterval is how often the telemetry goroutine takes
+	// and pushes a reading - SPARKY_TELEMETRY_POLL_INTERVAL, per
+	// docs/AGENT.md Configuration. Parsed by cmd/sparky-agent from
+	// agent/config.Config's string form, which fails fast on an
+	// unparseable duration - but a zero value parses successfully
+	// (e.g. "0s"), so sendTelemetry still guards against a non-positive
+	// value itself rather than trusting the caller blindly: a
+	// time.NewTicker panic here would be unrecovered and take the whole
+	// agent process down over what should only ever disable telemetry.
+	TelemetryPollInterval time.Duration
 }
 
 // Conn owns the agent's single persistent WebSocket connection to the
 // central app.
 type Conn struct {
-	cfg      Config
-	runtime  runtimeBackend
-	transfer transferExecutor
-	logger   *log.Logger
+	cfg       Config
+	runtime   runtimeBackend
+	transfer  transferExecutor
+	telemetry telemetryCollector
+	logger    *log.Logger
 
 	minBackoff time.Duration
 	maxBackoff time.Duration
@@ -102,11 +123,12 @@ type Conn struct {
 }
 
 // New constructs a Conn.
-func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, logger *log.Logger) *Conn {
+func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, collector telemetryCollector, logger *log.Logger) *Conn {
 	return &Conn{
 		cfg:        cfg,
 		runtime:    runtime,
 		transfer:   transferExec,
+		telemetry:  collector,
 		logger:     logger,
 		minBackoff: defaultMinBackoff,
 		maxBackoff: defaultMaxBackoff,
@@ -184,9 +206,10 @@ func (c *Conn) runOnce(ctx context.Context) (connected bool, err error) {
 	}
 	c.logger.Printf("agent connection: connected to %s as %q", c.cfg.CentralURL, c.cfg.NodeName)
 
-	readCtx, cancelHeartbeat := context.WithCancel(ctx)
-	defer cancelHeartbeat()
+	readCtx, cancelBackgroundSenders := context.WithCancel(ctx)
+	defer cancelBackgroundSenders()
 	go c.sendHeartbeats(readCtx, conn)
+	go c.sendTelemetry(readCtx, conn)
 
 	return true, c.readLoop(ctx, conn)
 }
@@ -254,6 +277,62 @@ func (c *Conn) sendHeartbeats(ctx context.Context, conn *websocket.Conn) {
 			raw, err := json.Marshal(env)
 			if err != nil {
 				c.logger.Printf("agent connection: marshal heartbeat: %v", err)
+				continue
+			}
+			if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+				return
+			}
+		}
+	}
+}
+
+// sendTelemetry runs until ctx is canceled, taking one hardware reading
+// every Config.TelemetryPollInterval and pushing it as telemetry - see
+// docs/AGENT.md Service Architecture Notes' Telemetry goroutine: "does
+// not wait on the command loop." A read or send failure is logged and
+// that tick is skipped, same reasoning as sendHeartbeats' write-failure
+// handling - one missed reading isn't worth tearing down the connection
+// over, and the next tick tries again.
+func (c *Conn) sendTelemetry(ctx context.Context, conn *websocket.Conn) {
+	// time.NewTicker panics on a non-positive interval - guarded here
+	// rather than trusted blindly from Config, since a goroutine panic is
+	// unrecovered and takes the whole agent process down over what should
+	// only ever disable telemetry for this connection's lifetime.
+	if c.cfg.TelemetryPollInterval <= 0 {
+		c.logger.Printf("agent connection: telemetry disabled (non-positive TelemetryPollInterval)")
+		return
+	}
+
+	ticker := time.NewTicker(c.cfg.TelemetryPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			reading, err := c.telemetry.Read(ctx)
+			if err != nil {
+				c.logger.Printf("agent connection: read telemetry: %v", err)
+				continue
+			}
+
+			env, err := agentproto.NewEnvelope(agentproto.TypeTelemetry, "", agentproto.Telemetry{
+				RecordedAt:          time.Now(),
+				GPUUtilizationPct:   reading.GPUUtilizationPct,
+				GPUMemoryUsedMB:     reading.GPUMemoryUsedMB,
+				GPUMemoryTotalMB:    reading.GPUMemoryTotalMB,
+				CPUUtilizationPct:   reading.CPUUtilizationPct,
+				SystemMemoryUsedMB:  reading.SystemMemoryUsedMB,
+				SystemMemoryTotalMB: reading.SystemMemoryTotalMB,
+			})
+			if err != nil {
+				c.logger.Printf("agent connection: build telemetry: %v", err)
+				continue
+			}
+			raw, err := json.Marshal(env)
+			if err != nil {
+				c.logger.Printf("agent connection: marshal telemetry: %v", err)
 				continue
 			}
 			if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
