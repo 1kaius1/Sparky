@@ -479,7 +479,7 @@ install script have not been started.
     a working adapter, not a missing capability the checklist item
     actually claims.
   - [ ] Model transfers: Hugging Face download only (no peer replication yet)
-    - [ ] Phase 1: `model_transfers` + `node_model_inventory` schema and
+    - [x] Phase 1: `model_transfers` + `node_model_inventory` schema and
           repositories - matching SCHEMA.md Model transfers and Node model
           inventory. `source_type`/`source_node_id` gets the same CHECK
           pairing as `nodes.container_runtime`/`node_type`
