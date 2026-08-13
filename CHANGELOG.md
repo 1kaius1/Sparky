@@ -646,6 +646,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   20-minute window inserted directly via SQL. The chart's actual visual
   rendering in a real browser remains unverified - see PLANNING.md Known
   Issues.
+- Dashboard UI Phase 8: the Users & permissions tier-change form, the
+  Dashboard UI's first write/action form. No changes needed in
+  `internal/rbac` - `rbac.CanElevate` and `rbac.Service.ElevateTier` were
+  both already fully built and tested before this milestone started; this
+  phase only gave `ElevateTier` its first HTTP caller. New
+  `internal/httpapi`: `userElevator` interface, satisfied by the same
+  `*rbac.Service` value as `userRoster` (now passed twice into
+  `httpapi.New`); `reachableTiers`, which derives the tier-change
+  dropdown's offered options by calling `rbac.CanElevate` per candidate
+  rather than a hand-written approximation, so the UI can never offer an
+  option the server-side check would then refuse; `handleElevateUser`
+  (`POST /users/{id}/tier`), validating the posted tier against the four
+  known values before calling `ElevateTier`, and responding with
+  `HX-Redirect: /users` on success - the same pattern `handleLogout`
+  already established. `users.html` gained a per-row tier `<select>` +
+  submit button, shown only when a row has at least one reachable tier
+  (an Admin viewing another Admin's row, or their own, correctly gets no
+  form). This is also the first new state-changing endpoint added since
+  the app-wide CSRF gap was documented - deliberately left unprotected
+  consistent with every other write route, rather than retrofitted for
+  one endpoint in isolation; see PLANNING.md Known Issues, now corrected
+  to accurately list which write routes actually exist. Verified with new
+  unit tests (`reachableTiers`'s tier-matrix coverage mirroring
+  `rbac.CanElevate`'s own exhaustive test, `handleElevateUser`'s
+  success/forbidden/not-found/invalid-tier/missing-tier/generic-failure/
+  unauthenticated paths) and a genuine end-to-end pass against the actual
+  compiled `sparky-server` binary against a real Postgres instance - a
+  real Admin elevating a real Developer to PowerDev (confirmed in the
+  database and via a real `elevated_user` audit row), that Admin then
+  correctly refused a skip-a-step promotion to Admin, a Developer session
+  refused any elevation at all, an unknown target user ID getting 404, an
+  invalid tier value getting 400, and finally the break-glass SuperAdmin
+  session successfully performing the exact skip-a-step promotion the
+  regular Admin had just been refused.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

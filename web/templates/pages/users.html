@@ -9,6 +9,7 @@
       <th>Last login</th>
       <th>Elevated by</th>
       <th>Elevated at</th>
+      <th>Change tier</th>
     </tr>
   </thead>
   <tbody>
@@ -19,9 +20,19 @@
       <td>{{.LastLoginAt}}</td>
       <td>{{.ElevatedBy}}</td>
       <td>{{.ElevatedAt}}</td>
+      <td>
+        {{if .ReachableTiers}}
+        <form hx-post="/users/{{.ID}}/tier" hx-swap="none">
+          <select name="tier">
+            {{range .ReachableTiers}}<option value="{{.}}">{{.}}</option>{{end}}
+          </select>
+          <button type="submit">Change</button>
+        </form>
+        {{end}}
+      </td>
     </tr>
     {{else}}
-    <tr><td colspan="5" class="empty">No users yet.</td></tr>
+    <tr><td colspan="6" class="empty">No users yet.</td></tr>
     {{end}}
   </tbody>
 </table>

@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -130,6 +131,27 @@ func (f *fakeUserRoster) ListUsers(context.Context, rbac.Actor) ([]*db.User, err
 	return f.users, nil
 }
 
+// fakeUserElevator implements userElevator for tests, recording every
+// call.
+type fakeUserElevator struct {
+	err   error
+	calls []elevateCall
+}
+
+type elevateCall struct {
+	actor        rbac.Actor
+	targetUserID string
+	toTier       db.Tier
+}
+
+func (f *fakeUserElevator) ElevateTier(_ context.Context, actor rbac.Actor, targetUserID string, toTier db.Tier) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, elevateCall{actor, targetUserID, toTier})
+	return nil
+}
+
 // fakeSettingsViewer implements settingsViewer for tests.
 type fakeSettingsViewer struct {
 	metricsExport *db.MetricsExportConfig
@@ -217,15 +239,25 @@ func newTestDashboardAPIWithSettings(t *testing.T, nodes *fakeNodeLister, profil
 	return newTestDashboardAPIWithMetrics(t, nodes, profiles, instances, transfers, users, auditLog, roster, settingsSvc, &fakeMetricsLister{})
 }
 
-// newTestDashboardAPIWithMetrics is the innermost test constructor,
-// adding control over metricsLister (the Metrics page's unguarded read)
-// on top of newTestDashboardAPIWithSettings's parameters - same
-// "kept separate" reasoning as that function's own doc comment.
+// newTestDashboardAPIWithMetrics adds control over metricsLister (the
+// Metrics page's unguarded read) on top of
+// newTestDashboardAPIWithSettings's parameters - same "kept separate"
+// reasoning as that function's own doc comment.
 func newTestDashboardAPIWithMetrics(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
+	t.Helper()
+	return newTestDashboardAPIWithElevator(t, nodes, profiles, instances, transfers, users, auditLog, roster, &fakeUserElevator{}, settingsSvc, metricsSvc)
+}
+
+// newTestDashboardAPIWithElevator is the innermost test constructor,
+// adding control over userElevator (the Users & permissions page's
+// tier-change form) on top of newTestDashboardAPIWithMetrics's
+// parameters - same "kept separate" reasoning as that function's own doc
+// comment.
+func newTestDashboardAPIWithElevator(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
 	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, settingsSvc, metricsSvc, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -1017,5 +1049,180 @@ func TestHandleMetrics_HXRequest_ReturnsPartialOnly(t *testing.T) {
 	}
 	if !strings.Contains(body, "spark-1") {
 		t.Errorf("response does not mention the node's name: %s", body)
+	}
+}
+
+func TestReachableTiers(t *testing.T) {
+	tests := []struct {
+		name  string
+		actor rbac.Actor
+		from  db.Tier
+		want  []string
+	}{
+		{"admin from read_only", rbac.Actor{Tier: db.TierAdmin}, db.TierReadOnly, []string{"developer"}},
+		{"admin from developer", rbac.Actor{Tier: db.TierAdmin}, db.TierDeveloper, []string{"read_only", "power_dev"}},
+		{"admin from power_dev", rbac.Actor{Tier: db.TierAdmin}, db.TierPowerDev, []string{"developer"}},
+		{"admin from admin - no authority over another Admin", rbac.Actor{Tier: db.TierAdmin}, db.TierAdmin, nil},
+		{"developer actor has no elevation authority at all", rbac.Actor{Tier: db.TierDeveloper}, db.TierReadOnly, nil},
+		{"superadmin from developer - every other tier reachable", rbac.Actor{IsSuperAdmin: true}, db.TierDeveloper, []string{"read_only", "power_dev", "admin"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := reachableTiers(tt.actor, tt.from)
+			if len(got) != len(tt.want) {
+				t.Fatalf("reachableTiers() = %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("reachableTiers()[%d] = %q, want %q", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestIsKnownTier(t *testing.T) {
+	for _, tier := range allTiers {
+		if !isKnownTier(tier) {
+			t.Errorf("isKnownTier(%q) = false, want true", tier)
+		}
+	}
+	if isKnownTier(db.Tier("not_a_real_tier")) {
+		t.Error("isKnownTier(\"not_a_real_tier\") = true, want false")
+	}
+}
+
+// newAuthenticatedFormRequest builds a POST request with a
+// form-urlencoded body and a valid session cookie for userID - the
+// tier-change form's own submission shape (a real <form>, not JSON).
+func newAuthenticatedFormRequest(t *testing.T, target, userID string, form url.Values) *http.Request {
+	t.Helper()
+	cookieValue, err := session.Sign(testSessionSecret, session.New(userID, sessionDuration))
+	if err != nil {
+		t.Fatalf("session.Sign() error: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+	return req
+}
+
+func TestHandleElevateUser_Success(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	elevator := &fakeUserElevator{}
+	api := newTestDashboardAPIWithElevator(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, elevator, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/users/target-1/tier", "admin-1", url.Values{"tier": {"developer"}})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusNoContent, rec.Body.String())
+	}
+	if got := rec.Header().Get("HX-Redirect"); got != "/users" {
+		t.Errorf("HX-Redirect header = %q, want %q", got, "/users")
+	}
+	if len(elevator.calls) != 1 {
+		t.Fatalf("ElevateTier called %d times, want 1", len(elevator.calls))
+	}
+	call := elevator.calls[0]
+	if call.targetUserID != "target-1" || call.toTier != db.TierDeveloper {
+		t.Errorf("ElevateTier call = %+v, want targetUserID=target-1 toTier=developer", call)
+	}
+	if call.actor.UserID != "admin-1" || call.actor.Tier != db.TierAdmin {
+		t.Errorf("ElevateTier actor = %+v, want the resolved viewer's own actor", call.actor)
+	}
+}
+
+func TestHandleElevateUser_Forbidden(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	elevator := &fakeUserElevator{err: rbac.ErrNotPermitted}
+	api := newTestDashboardAPIWithElevator(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, elevator, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/users/target-1/tier", "dev-1", url.Values{"tier": {"power_dev"}})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleElevateUser_UserNotFound(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	elevator := &fakeUserElevator{err: db.ErrUserNotFound}
+	api := newTestDashboardAPIWithElevator(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, elevator, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/users/does-not-exist/tier", "admin-1", url.Values{"tier": {"developer"}})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleElevateUser_InvalidTier(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	elevator := &fakeUserElevator{}
+	api := newTestDashboardAPIWithElevator(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, elevator, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/users/target-1/tier", "admin-1", url.Values{"tier": {"super_ultra_admin"}})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if len(elevator.calls) != 0 {
+		t.Error("ElevateTier was called despite an invalid tier value - input must be validated before the Service call")
+	}
+}
+
+func TestHandleElevateUser_MissingTier(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	elevator := &fakeUserElevator{}
+	api := newTestDashboardAPIWithElevator(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, elevator, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/users/target-1/tier", "admin-1", url.Values{})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+}
+
+func TestHandleElevateUser_GenericFailure(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	elevator := &fakeUserElevator{err: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithElevator(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, elevator, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/users/target-1/tier", "admin-1", url.Values{"tier": {"developer"}})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleElevateUser_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodPost, "/users/target-1/tier", strings.NewReader(url.Values{"tier": {"developer"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
 }
