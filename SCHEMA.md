@@ -189,13 +189,18 @@ configurable additional retention period (default not yet decided - see
 
 Singleton settings row, editable via the UI (Admin only). Backend-specific
 connection details live in a flexible JSON blob for the same reason
-`engine_params` does - NFS and S3 need genuinely different fields.
+`engine_params` does - NFS and S3 need genuinely different fields. Unlike
+Break-glass credential below, this row is seeded at migration time
+(`backend_type = 'none'`) rather than left absent until first configured -
+the app always has an effective setting to read, never a "not configured
+yet" state distinct from "configured to export nothing".
 
 | Field | Type | Notes |
 |---|---|---|
-| `backend_type` | enum | `none` / `nfs` / `s3` |
+| `backend_type` | enum | `none` / `nfs` / `s3`. Defaults to `none` on the seeded row |
 | `config` | jsonb | Non-secret connection details only - bucket, endpoint, region, export path. Credentials are never stored here; see Security Considerations in `ARCHITECTURE.md` |
-| `updated_by` / `updated_at` | uuid, timestamptz | |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row (never yet configured), and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
 
 ---
 
@@ -224,16 +229,22 @@ Retention and forwarding are governed by Audit settings below, not hardcoded.
 
 Singleton settings row, editable via the UI (Admin only). Only governs the optional
 active network-push path - the stdout JSON stream that Filebeat (or any shipper)
-picks up automatically is always on and needs no row here.
+picks up automatically is always on and needs no row here. Same seeded-at-migration-
+time reasoning as Metrics export config above - `retention_months` defaults to 12 on
+the seeded row (PLANNING.md Decisions Log, 2026-08-12; no default had been decided
+before that), a middle value between the Metrics table's own 6-month raw-resolution
+retention window and this column's 24-month ceiling, which is enforced with a CHECK
+constraint at the database level, not just application-level validation.
 
 | Field | Type | Notes |
 |---|---|---|
-| `retention_months` | integer | Configurable, up to 24. Governs local Postgres retention only - has no effect on what a shipper has already exported |
-| `forwarding_enabled` | boolean | Enables the optional active push, on top of the always-on stdout stream |
+| `retention_months` | integer | Configurable, up to 24 (enforced by a CHECK constraint). Governs local Postgres retention only - has no effect on what a shipper has already exported. Defaults to 12 on the seeded row |
+| `forwarding_enabled` | boolean | Enables the optional active push, on top of the always-on stdout stream. Defaults to `false` on the seeded row |
 | `forwarding_protocol` | enum | `syslog` (default) / `gelf` |
 | `forwarding_host` / `forwarding_port` | text / integer | |
 | `forwarding_tls_enabled` | boolean | |
-| `updated_by` / `updated_at` | uuid, timestamptz | |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row (never yet configured), and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
 
 Works with Graylog's syslog input, or any other syslog/GELF-compatible aggregator -
 see `ARCHITECTURE.md` Audit Log for the reasoning behind the protocol-neutral

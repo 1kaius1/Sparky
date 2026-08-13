@@ -27,6 +27,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
 	"github.com/1kaius1/Sparky/internal/rbac"
+	"github.com/1kaius1/Sparky/internal/settings"
 	"github.com/1kaius1/Sparky/internal/transfers"
 )
 
@@ -114,10 +115,16 @@ func main() {
 	// (Phase 5 and beyond, PLANNING.md).
 	rbacService := rbac.NewService(users, auditRecorder)
 
+	// settingsService backs the Settings page's read-only view of the two
+	// singleton config rows - no write path exists yet in the Dashboard
+	// UI (Phase 6 and beyond, PLANNING.md), so nothing has ever called
+	// either repository's Set beyond what migrations 000012/000013 seed.
+	settingsService := settings.NewService(db.NewMetricsExportConfigRepository(pool), db.NewAuditSettingsRepository(pool))
+
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
-		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, logger)
+		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, settingsService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

@@ -130,6 +130,20 @@ func (f *fakeUserRoster) ListUsers(context.Context, rbac.Actor) ([]*db.User, err
 	return f.users, nil
 }
 
+// fakeSettingsViewer implements settingsViewer for tests.
+type fakeSettingsViewer struct {
+	metricsExport *db.MetricsExportConfig
+	auditSettings *db.AuditSettings
+	err           error
+}
+
+func (f *fakeSettingsViewer) Get(context.Context, rbac.Actor) (*db.MetricsExportConfig, *db.AuditSettings, error) {
+	if f.err != nil {
+		return nil, nil, f.err
+	}
+	return f.metricsExport, f.auditSettings, nil
+}
+
 // newAuthenticatedRequest builds a GET request carrying a valid session
 // cookie for userID, so RequireSession-gated handlers can be exercised
 // directly (via httptest.NewRecorder + api.Router()) without a full
@@ -155,17 +169,27 @@ func newTestDashboardAPIWithAdmin(t *testing.T, nodes *fakeNodeLister, profiles 
 	return newTestDashboardAPIWithRoster(t, nodes, profiles, instances, transfers, users, auditLog, &fakeUserRoster{})
 }
 
-// newTestDashboardAPIWithRoster is the innermost test constructor, adding
-// control over userRoster (the Users & permissions page's RBAC-gated
-// roster read) on top of newTestDashboardAPIWithAdmin's parameters - kept
-// separate rather than widening that function's own signature, so the
-// existing eleven newTestDashboardAPI/newTestDashboardAPIWithAdmin call
-// sites (none of which touch the Users page) don't need updating.
+// newTestDashboardAPIWithRoster adds control over userRoster (the Users &
+// permissions page's RBAC-gated roster read) on top of
+// newTestDashboardAPIWithAdmin's parameters - kept separate rather than
+// widening that function's own signature, so the existing eleven
+// newTestDashboardAPI/newTestDashboardAPIWithAdmin call sites (none of
+// which touch the Users page) don't need updating.
 func newTestDashboardAPIWithRoster(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster) *API {
+	t.Helper()
+	return newTestDashboardAPIWithSettings(t, nodes, profiles, instances, transfers, users, auditLog, roster, &fakeSettingsViewer{})
+}
+
+// newTestDashboardAPIWithSettings is the innermost test constructor,
+// adding control over settingsViewer (the Settings page's RBAC-gated
+// config read) on top of newTestDashboardAPIWithRoster's parameters -
+// same reasoning as that function's own doc comment: kept separate so
+// the existing Users-page test call sites don't need updating either.
+func newTestDashboardAPIWithSettings(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, settingsSvc *fakeSettingsViewer) *API {
 	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, settingsSvc, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -693,5 +717,157 @@ func TestHandleUsers_HXRequest_ReturnsPartialOnly(t *testing.T) {
 	}
 	if !strings.Contains(body, "Jane Admin") {
 		t.Errorf("response does not mention the roster's own user: %s", body)
+	}
+}
+
+func TestHandleSettings_AdminAccess_ResolvesUpdatedByName(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin}
+	updatedByID := "user-1"
+	settingsSvc := &fakeSettingsViewer{
+		metricsExport: &db.MetricsExportConfig{BackendType: db.MetricsExportBackendNFS, UpdatedBy: &updatedByID},
+		auditSettings: &db.AuditSettings{RetentionMonths: 12, ForwardingProtocol: db.AuditForwardingSyslog},
+	}
+	api := newTestDashboardAPIWithSettings(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, settingsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/settings", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "nfs") {
+		t.Errorf("response does not mention the nfs backend: %s", body)
+	}
+	if !strings.Contains(body, "Jane Admin") {
+		t.Errorf("response does not resolve metrics export updated_by to the user's display name: %s", body)
+	}
+	if !strings.Contains(body, "12") {
+		t.Errorf("response does not mention the retention_months value: %s", body)
+	}
+	if !strings.Contains(body, "syslog") {
+		t.Errorf("response does not mention the forwarding protocol: %s", body)
+	}
+}
+
+func TestHandleSettings_SuperAdminSession_Access(t *testing.T) {
+	settingsSvc := &fakeSettingsViewer{
+		metricsExport: &db.MetricsExportConfig{BackendType: db.MetricsExportBackendNone},
+		auditSettings: &db.AuditSettings{RetentionMonths: 12},
+	}
+	api := newTestDashboardAPIWithSettings(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, settingsSvc)
+
+	cookieValue, err := session.Sign(testSessionSecret, session.NewSuperAdmin(sessionDuration))
+	if err != nil {
+		t.Fatalf("session.Sign() error: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d - a SuperAdmin session must not need a FindByID tier lookup to pass", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleSettings_NonAdmin_Forbidden(t *testing.T) {
+	// The real RBAC decision (which tiers may view Settings) is
+	// settings.Service.Get's own responsibility, fully covered by that
+	// package's tests (TestService_Get_NotPermittedBelowAdmin).
+	// fakeSettingsViewer doesn't reimplement that decision - it directly
+	// returns rbac.ErrNotPermitted here to test handleSettings's own job:
+	// translating that error into a 403 response.
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", DisplayName: "Regular Dev", Tier: db.TierDeveloper}
+	settingsSvc := &fakeSettingsViewer{err: rbac.ErrNotPermitted}
+	api := newTestDashboardAPIWithSettings(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, settingsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/settings", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleSettings_GetFails(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	settingsSvc := &fakeSettingsViewer{err: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithSettings(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, settingsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/settings", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleSettings_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleSettings_NoUpdatesYet_ShowsPlaceholder(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	settingsSvc := &fakeSettingsViewer{
+		metricsExport: &db.MetricsExportConfig{BackendType: db.MetricsExportBackendNone},
+		auditSettings: &db.AuditSettings{RetentionMonths: 12, ForwardingProtocol: db.AuditForwardingSyslog},
+	}
+	api := newTestDashboardAPIWithSettings(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, settingsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/settings", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if strings.Count(body, "<td>-</td>") < 2 {
+		t.Errorf("response does not show the empty-updated-by placeholder for either config row: %s", body)
+	}
+}
+
+func TestHandleSettings_HXRequest_ReturnsPartialOnly(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	settingsSvc := &fakeSettingsViewer{
+		metricsExport: &db.MetricsExportConfig{BackendType: db.MetricsExportBackendS3},
+		auditSettings: &db.AuditSettings{RetentionMonths: 12, ForwardingProtocol: db.AuditForwardingGELF},
+	}
+	api := newTestDashboardAPIWithSettings(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, settingsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/settings", "user-1")
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<!doctype html>") {
+		t.Error("HX-Request response includes the full base layout, want partial content only")
+	}
+	if strings.Contains(body, "sidebar-nav") {
+		t.Error("HX-Request response includes the sidebar, want it omitted")
+	}
+	if !strings.Contains(body, "s3") {
+		t.Errorf("response does not mention the s3 backend: %s", body)
 	}
 }

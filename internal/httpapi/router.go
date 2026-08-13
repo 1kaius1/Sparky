@@ -32,6 +32,7 @@ type API struct {
 	users      userLister
 	audit      auditLister
 	userRoster userRoster
+	settings   settingsViewer
 	templates  map[string]*template.Template
 	static     http.Handler
 	logger     *log.Logger
@@ -55,13 +56,16 @@ type API struct {
 // Users & permissions page (same Admin floor as Audit log) via
 // rbac.Service.ListUsers - a distinct, RBAC-gated dependency from users,
 // since that page exposes the full roster itself rather than resolving an
-// already-permitted record's actor_id; logger is used for
+// already-permitted record's actor_id; settingsSvc backs the Settings
+// page (same Admin floor) via internal/settings.Service.Get, covering the
+// two singleton config rows neither internal/metrics nor internal/audit
+// owns - see that package's doc comment; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. Returns an error if the embedded templates
 // (web.FS) fail to parse - a template syntax error is a build-time bug,
 // caught here rather than surfacing as a broken page on first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, logger *log.Logger) (*API, error) {
+	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, settingsSvc settingsViewer, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -84,6 +88,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		users:                  users,
 		audit:                  auditLog,
 		userRoster:             roster,
+		settings:               settingsSvc,
 		templates:              templates,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
@@ -151,6 +156,10 @@ func (a *API) Router() http.Handler {
 	// /users' floor is also Admin, same reasoning as /audit-log - the tier
 	// check happens inside handleUsers via rbac.Service.ListUsers.
 	r.With(a.RequireSession).Get("/users", a.handleUsers)
+	// /settings' floor is also Admin, same reasoning as /audit-log and
+	// /users - the tier check happens inside handleSettings via
+	// settings.Service.Get.
+	r.With(a.RequireSession).Get("/settings", a.handleSettings)
 
 	// Static assets (CSS, vendored htmx) - public, no session required,
 	// same reasoning a login page's own assets would need if one existed.
