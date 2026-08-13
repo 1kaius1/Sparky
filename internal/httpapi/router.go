@@ -88,6 +88,11 @@ func (a *API) Router() http.Handler {
 	r.Use(middleware.Recoverer)
 	r.Use(a.setupGate.middleware)
 
+	// GET /login serves the HTML login form (Dashboard UI Phase 2);
+	// POST /login itself now serves two callers - the JSON API/htmx
+	// contract (unchanged) and this form's own browser submission - see
+	// isFormRequest in login_page.go.
+	r.Get("/login", a.handleLoginPage)
 	r.Post("/login", a.handleLogin)
 	r.Post("/login/break-glass", a.handleBreakGlassLogin)
 	r.Post("/logout", a.handleLogout)
@@ -108,10 +113,14 @@ func (a *API) Router() http.Handler {
 	// (CLAUDE.md Frontend Conventions: Dashboard/Nodes/Model profiles all
 	// have "Read-only" as their minimum visible tier), so RequireSession is
 	// the only gate - no RBAC check, matching internal/nodes.Service.ListNodes
-	// et al.'s own "unguarded by RBAC" reasoning. There is no HTML login
-	// page yet (PLANNING.md Known Issues) - an unauthenticated request here
-	// gets RequireSession's existing JSON 401, not a redirect; a real login
-	// page is a later phase.
+	// et al.'s own "unguarded by RBAC" reasoning. An unauthenticated request
+	// here still gets RequireSession's existing JSON 401, not a redirect to
+	// /login - deliberately unchanged by the login page's own addition,
+	// since an htmx partial (HX-Request) fetch following a redirect would
+	// swap login.html's full standalone document into #main-content rather
+	// than showing it as a real page. Wiring a real unauthenticated ->
+	// /login redirect (full-page navigations only, not htmx partials) is
+	// left to a later phase - see PLANNING.md Known Issues.
 	r.Get("/", handleIndex)
 	r.With(a.RequireSession).Get("/dashboard", a.handleDashboard)
 	r.With(a.RequireSession).Get("/nodes", a.handleNodes)

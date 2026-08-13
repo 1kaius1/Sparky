@@ -65,6 +65,11 @@ func setSessionCookie(w http.ResponseWriter, r *http.Request, value string, maxA
 }
 
 func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if isFormRequest(r) {
+		a.handleLoginFormSubmit(w, r)
+		return
+	}
+
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "request body must be valid JSON")
@@ -100,6 +105,11 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 	setSessionCookie(w, r, "", -1)
+	// Inert for a plain API/curl caller - only htmx (the sidebar's logout
+	// control) reads this header, and does a full client-side navigation
+	// to /login in response. htmx's own noSwapStatusCodes default already
+	// skips attempting to swap a 204's (empty) body.
+	w.Header().Set("HX-Redirect", "/login")
 	w.WriteHeader(http.StatusNoContent)
 }
 

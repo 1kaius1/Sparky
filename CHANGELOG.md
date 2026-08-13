@@ -465,6 +465,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the existing JSON 401 - not just asserted, actually run. No visual
   browser check was possible in this sandboxed environment (no display) -
   confirmed with the user as the verification approach for this phase.
+- Dashboard UI Phase 2: a real HTML login page (`GET /login`,
+  `web/templates/pages/login.html`) and a logout control in the sidebar.
+  `POST /login` now serves both the existing JSON API contract and the
+  login page's own `application/x-www-form-urlencoded` submission,
+  branching on `Content-Type` (`isFormRequest`/`handleLoginFormSubmit` in
+  the new `login_page.go`) - ordinary content negotiation, not a second
+  endpoint, since it's the same identity source and login flow as the
+  JSON contract, just two response formats. A failed submission
+  re-renders the login page in place with an error message (no
+  flash-message mechanism exists to carry one across a redirect); a
+  successful one redirects to `/dashboard`. `GET /login` redirects an
+  already-authenticated request straight to `/dashboard`. `handleLogout`
+  now sets `HX-Redirect: /login` so the sidebar's new logout control (an
+  `hx-post` to `/logout`) drives a full client-side navigation back to
+  the login page. `RequireSession`'s unauthenticated response is
+  deliberately left as its existing JSON 401, not changed to redirect -
+  an htmx partial fetch following a redirect would land the login page's
+  full standalone document inside `#main-content`. Neither CSRF
+  protection nor auth-endpoint rate limiting was added - both are
+  pre-existing, app-wide gaps spanning every POST route already built,
+  not specific to this page - see PLANNING.md Known Issues. Verified with
+  8 new unit tests and a genuine end-to-end pass against the actual
+  compiled `sparky-server` binary: the unauthenticated form, a failed
+  submission against a real (dial-failing, no AD server in this
+  environment) LDAP provider, a real break-glass session, the
+  already-authenticated redirect, the sidebar's real logout markup,
+  `POST /logout` clearing the cookie and setting `HX-Redirect`, and a
+  post-logout request actually getting 401 again.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
