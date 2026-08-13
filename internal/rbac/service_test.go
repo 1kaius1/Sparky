@@ -42,6 +42,7 @@ type fakeUserStore struct {
 
 	findErr       error
 	updateTierErr error
+	listErr       error
 }
 
 func newFakeUserStore(users ...*db.User) *fakeUserStore {
@@ -75,6 +76,17 @@ func (f *fakeUserStore) UpdateTier(_ context.Context, id string, tier db.Tier, e
 	u.ElevatedBy = elevatedBy
 	u.ElevatedAt = &at
 	return nil
+}
+
+func (f *fakeUserStore) List(_ context.Context) ([]*db.User, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	users := make([]*db.User, 0, len(f.byID))
+	for _, u := range f.byID {
+		users = append(users, u)
+	}
+	return users, nil
 }
 
 func TestService_ElevateTier_PermittedByAdmin(t *testing.T) {
@@ -217,5 +229,62 @@ func TestService_ElevateTier_AuditFailurePropagates(t *testing.T) {
 	// and PLANNING.md Known Issues and Technical Debt.
 	if target.Tier != db.TierDeveloper {
 		t.Errorf("Tier = %q, want %q (persisted before the audit write was attempted)", target.Tier, db.TierDeveloper)
+	}
+}
+
+func TestService_ListUsers_PermittedForAdmin(t *testing.T) {
+	store := newFakeUserStore(
+		&db.User{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin},
+		&db.User{ID: "user-2", DisplayName: "Sam Developer", Tier: db.TierDeveloper},
+	)
+	svc := NewService(store, &fakeAuditRecorder{})
+	actor := Actor{Tier: db.TierAdmin, UserID: "user-1"}
+
+	users, err := svc.ListUsers(context.Background(), actor)
+	if err != nil {
+		t.Fatalf("ListUsers() error: %v", err)
+	}
+	if len(users) != 2 {
+		t.Fatalf("len(users) = %d, want 2", len(users))
+	}
+}
+
+func TestService_ListUsers_PermittedForSuperAdmin(t *testing.T) {
+	store := newFakeUserStore(&db.User{ID: "user-1", Tier: db.TierReadOnly})
+	svc := NewService(store, &fakeAuditRecorder{})
+	actor := Actor{IsSuperAdmin: true}
+
+	users, err := svc.ListUsers(context.Background(), actor)
+	if err != nil {
+		t.Fatalf("ListUsers() error: %v", err)
+	}
+	if len(users) != 1 {
+		t.Fatalf("len(users) = %d, want 1", len(users))
+	}
+}
+
+func TestService_ListUsers_NotPermittedBelowAdmin(t *testing.T) {
+	store := newFakeUserStore(&db.User{ID: "user-1", Tier: db.TierPowerDev})
+	svc := NewService(store, &fakeAuditRecorder{})
+	actor := Actor{Tier: db.TierPowerDev, UserID: "user-1"}
+
+	_, err := svc.ListUsers(context.Background(), actor)
+	if !errors.Is(err, ErrNotPermitted) {
+		t.Errorf("ListUsers() error = %v, want ErrNotPermitted", err)
+	}
+}
+
+func TestService_ListUsers_StoreFailurePropagates(t *testing.T) {
+	store := newFakeUserStore()
+	store.listErr = errors.New("database unreachable")
+	svc := NewService(store, &fakeAuditRecorder{})
+	actor := Actor{IsSuperAdmin: true}
+
+	_, err := svc.ListUsers(context.Background(), actor)
+	if err == nil {
+		t.Fatal("ListUsers() succeeded despite a store List failure")
+	}
+	if errors.Is(err, ErrNotPermitted) {
+		t.Error("ListUsers() returned ErrNotPermitted for an infrastructure failure")
 	}
 }

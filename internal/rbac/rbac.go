@@ -85,6 +85,17 @@ func CanViewAuditLog(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanViewUsers reports whether actor may view the Users & permissions
+// roster - see CLAUDE.md Frontend Conventions, Users & permissions'
+// sidebar tier ("Admin"). Same unconditional-by-tier shape as
+// CanViewAuditLog: no permission-override path, Admin/SuperAdmin only.
+func CanViewUsers(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanManageModelStore reports whether actor has the manage_model_store
 // capability (download and delete models) - see SCHEMA.md Permission
 // overrides. Admin and SuperAdmin always have it implicitly. PowerDev has

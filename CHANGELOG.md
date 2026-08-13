@@ -543,6 +543,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   end-to-end pass against the actual compiled `sparky-server` binary with
   a real Admin user, a real Developer (non-Admin) user, and a real audit
   record inserted directly via SQL.
+- Dashboard UI Phase 5: the Users & permissions sidebar section as a sixth
+  read-only page, same Admin sidebar tier floor as Audit log.
+  `rbac.CanViewUsers` (Admin/SuperAdmin only, no override path, same shape
+  as `CanViewAuditLog`). Unlike Audit log, this page exposes the full
+  roster itself rather than resolving an already-permitted record's
+  `actor_id`, so the RBAC check lives in `rbac.Service.ListUsers` instead
+  of a new package - `rbac.Service` already wraps `UserRepository` via its
+  `userStore` interface (widened with `List`) for `ElevateTier`, so this
+  keeps every RBAC-gated `Users` action in one place. `rbac.Service` is
+  constructed in `cmd/sparky-server/main.go` for the first time this
+  phase, ahead of `ElevateTier` having any HTTP caller. New
+  `internal/httpapi/users.go` reuses the existing `actorFromIdentity`
+  helper and maps `rbac.ErrNotPermitted` to a 403; each row's
+  `elevated_by` resolves to a display name via the same map-of-names
+  pattern already used for Audit log's actor names. The sidebar's `Users &
+  permissions` link is shown to every authenticated viewer regardless of
+  tier, same known gap as the `Audit log` link - see PLANNING.md Known
+  Issues. Verified with new unit tests across `internal/rbac` and
+  `internal/httpapi` (permit/deny, elevated-by-name resolution, empty
+  state, list failure, forbidden, unauthenticated, HX-Request partial),
+  and a genuine end-to-end pass against the actual compiled
+  `sparky-server` binary with a real Admin user, a real Developer
+  (non-Admin) user with `elevated_by`/`elevated_at` set, and the
+  break-glass SuperAdmin session, against a real Postgres instance.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

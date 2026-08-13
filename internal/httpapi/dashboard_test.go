@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -116,6 +117,19 @@ func (f *fakeAuditLister) List(context.Context, rbac.Actor) ([]*db.AuditRecord, 
 	return f.records, nil
 }
 
+// fakeUserRoster implements userRoster for tests.
+type fakeUserRoster struct {
+	users []*db.User
+	err   error
+}
+
+func (f *fakeUserRoster) ListUsers(context.Context, rbac.Actor) ([]*db.User, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.users, nil
+}
+
 // newAuthenticatedRequest builds a GET request carrying a valid session
 // cookie for userID, so RequireSession-gated handlers can be exercised
 // directly (via httptest.NewRecorder + api.Router()) without a full
@@ -138,9 +152,20 @@ func newTestDashboardAPI(t *testing.T, nodes *fakeNodeLister, profiles *fakeProf
 
 func newTestDashboardAPIWithAdmin(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister) *API {
 	t.Helper()
+	return newTestDashboardAPIWithRoster(t, nodes, profiles, instances, transfers, users, auditLog, &fakeUserRoster{})
+}
+
+// newTestDashboardAPIWithRoster is the innermost test constructor, adding
+// control over userRoster (the Users & permissions page's RBAC-gated
+// roster read) on top of newTestDashboardAPIWithAdmin's parameters - kept
+// separate rather than widening that function's own signature, so the
+// existing eleven newTestDashboardAPI/newTestDashboardAPIWithAdmin call
+// sites (none of which touch the Users page) don't need updating.
+func newTestDashboardAPIWithRoster(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster) *API {
+	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -528,5 +553,145 @@ func TestHandleAuditLog_Unauthenticated(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleUsers_AdminAccess_ResolvesElevatedByName(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin}
+	elevatedBy := "user-1"
+	elevatedAt := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	lastLogin := time.Date(2026, 8, 12, 9, 30, 0, 0, time.UTC)
+	roster := &fakeUserRoster{users: []*db.User{
+		{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin},
+		{ID: "user-2", DisplayName: "Sam Developer", Tier: db.TierDeveloper, LastLoginAt: &lastLogin, ElevatedBy: &elevatedBy, ElevatedAt: &elevatedAt},
+	}}
+	api := newTestDashboardAPIWithRoster(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, roster)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/users", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Sam Developer") {
+		t.Errorf("response does not mention user Sam Developer: %s", body)
+	}
+	if !strings.Contains(body, "Jane Admin") {
+		t.Errorf("response does not resolve elevated_by to the elevator's display name: %s", body)
+	}
+	if !strings.Contains(body, "developer") {
+		t.Errorf("response does not show the developer tier: %s", body)
+	}
+}
+
+func TestHandleUsers_SuperAdminSession_Access(t *testing.T) {
+	roster := &fakeUserRoster{users: []*db.User{{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin}}}
+	api := newTestDashboardAPIWithRoster(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, roster)
+
+	cookieValue, err := session.Sign(testSessionSecret, session.NewSuperAdmin(sessionDuration))
+	if err != nil {
+		t.Fatalf("session.Sign() error: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d - a SuperAdmin session must not need a FindByID tier lookup to pass", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleUsers_NonAdmin_Forbidden(t *testing.T) {
+	// The real RBAC decision (which tiers may view the roster) is
+	// rbac.Service.ListUsers's own responsibility, fully covered by that
+	// package's tests (TestService_ListUsers_NotPermittedBelowAdmin).
+	// fakeUserRoster doesn't reimplement that decision - it directly
+	// returns rbac.ErrNotPermitted here to test handleUsers's own job:
+	// translating that error into a 403 response.
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", DisplayName: "Regular Dev", Tier: db.TierDeveloper}
+	roster := &fakeUserRoster{err: rbac.ErrNotPermitted}
+	api := newTestDashboardAPIWithRoster(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, roster)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/users", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleUsers_Empty(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	api := newTestDashboardAPIWithRoster(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/users", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "No users yet") {
+		t.Error("empty-state message missing from response")
+	}
+}
+
+func TestHandleUsers_ListFails(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	roster := &fakeUserRoster{err: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithRoster(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, roster)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/users", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleUsers_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/users", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleUsers_HXRequest_ReturnsPartialOnly(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	roster := &fakeUserRoster{users: []*db.User{{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin}}}
+	api := newTestDashboardAPIWithRoster(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, roster)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/users", "user-1")
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<!doctype html>") {
+		t.Error("HX-Request response includes the full base layout, want partial content only")
+	}
+	if strings.Contains(body, "sidebar-nav") {
+		t.Error("HX-Request response includes the sidebar, want it omitted")
+	}
+	if !strings.Contains(body, "Jane Admin") {
+		t.Errorf("response does not mention the roster's own user: %s", body)
 	}
 }

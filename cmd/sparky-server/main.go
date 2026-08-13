@@ -26,6 +26,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
+	"github.com/1kaius1/Sparky/internal/rbac"
 	"github.com/1kaius1/Sparky/internal/transfers"
 )
 
@@ -107,10 +108,16 @@ func main() {
 	// Transfers page's ListTransfers, not a real InitiateTransfer caller.
 	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
 
+	// rbacService is currently only wired for the Users & permissions
+	// page's RBAC-gated roster read (ListUsers) - ElevateTier has no HTTP
+	// caller yet, since no write/action forms exist in the Dashboard UI
+	// (Phase 5 and beyond, PLANNING.md).
+	rbacService := rbac.NewService(users, auditRecorder)
+
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
-		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, logger)
+		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
