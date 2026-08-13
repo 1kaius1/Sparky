@@ -235,6 +235,15 @@ table.data-table:not(.panel .data-table) {
   margin-bottom: 16px;
 }
 
+.form-error {
+  background: #fdecea;
+  color: var(--color-status-failed);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
 .login-form {
   display: flex;
   flex-direction: column;

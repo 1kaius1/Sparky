@@ -26,6 +26,7 @@ type API struct {
 	agentConn              http.Handler
 
 	nodes      nodeLister
+	registrar  nodeRegistrar
 	profiles   profileLister
 	instances  instanceLister
 	transfers  transferLister
@@ -50,20 +51,24 @@ type API struct {
 // concrete type, so this package doesn't need to depend on
 // internal/agentconn's other exports. nodes/profiles/instances/transfers
 // back the Dashboard UI's Read-only-tier pages (Dashboard, Nodes, Model
-// profiles, Transfers); users/audit back the Audit log page, the first
-// whose sidebar tier sits above Read-only (CLAUDE.md Frontend
-// Conventions: "Audit log (Admin)") - users resolves both the viewer's own
-// tier for that RBAC check and each audit record's actor_id to a display
-// name (see PLANNING.md's Dashboard UI milestone item); roster backs the
-// Users & permissions page (same Admin floor as Audit log) via
-// rbac.Service.ListUsers - a distinct, RBAC-gated dependency from users,
-// since that page exposes the full roster itself rather than resolving an
-// already-permitted record's actor_id; elevator backs that page's
-// tier-change form (PLANNING.md Dashboard UI Phase 8, the first
-// write/action form) via rbac.Service.ElevateTier - roster and elevator
-// are two narrow interfaces satisfied by the same *rbac.Service value in
-// production, not two different dependencies; settingsSvc backs the
-// Settings page (same Admin floor) via internal/settings.Service.Get,
+// profiles, Transfers); registrar backs the Nodes page's registration
+// form (PLANNING.md Dashboard UI Phase 9, the second write/action form)
+// via nodes.Service.RegisterNode - a distinct interface from nodes even
+// though the same *nodes.Service value satisfies both in production,
+// same pattern as roster/elevator below; users/audit back the Audit log
+// page, the first whose sidebar tier sits above Read-only (CLAUDE.md
+// Frontend Conventions: "Audit log (Admin)") - users resolves both the
+// viewer's own tier for that RBAC check and each audit record's
+// actor_id to a display name (see PLANNING.md's Dashboard UI milestone
+// item); roster backs the Users & permissions page (same Admin floor as
+// Audit log) via rbac.Service.ListUsers - a distinct, RBAC-gated
+// dependency from users, since that page exposes the full roster itself
+// rather than resolving an already-permitted record's actor_id; elevator
+// backs that page's tier-change form (PLANNING.md Dashboard UI Phase 8,
+// the first write/action form) via rbac.Service.ElevateTier - roster and
+// elevator are two narrow interfaces satisfied by the same *rbac.Service
+// value in production, not two different dependencies; settingsSvc backs
+// the Settings page (same Admin floor) via internal/settings.Service.Get,
 // covering the two singleton config rows neither internal/metrics nor
 // internal/audit owns - see that package's doc comment; metricsSvc backs
 // the Metrics page, back at the Read-only floor like nodes/profiles/
@@ -74,7 +79,7 @@ type API struct {
 // syntax error is a build-time bug, caught here rather than surfacing as
 // a broken page on first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -91,6 +96,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		sessionSecret:          sessionSecret,
 		agentConn:              agentConn,
 		nodes:                  nodes,
+		registrar:              registrar,
 		profiles:               profiles,
 		instances:              instances,
 		transfers:              transfers,
@@ -157,6 +163,12 @@ func (a *API) Router() http.Handler {
 	r.Get("/", handleIndex)
 	r.With(a.RequireSession).Get("/dashboard", a.handleDashboard)
 	r.With(a.RequireSession).Get("/nodes", a.handleNodes)
+	// The registration form's own RBAC gate (rbac.CanManageNodes) is
+	// checked directly in both handlers - GET to decide whether to show
+	// the form at all, POST (via nodes.Service.RegisterNode) as the real
+	// enforcement boundary that never trusts what the GET rendered.
+	r.With(a.RequireSession).Get("/nodes/register", a.handleRegisterNodeForm)
+	r.With(a.RequireSession).Post("/nodes/register", a.handleRegisterNode)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	r.With(a.RequireSession).Get("/metrics", a.handleMetrics)

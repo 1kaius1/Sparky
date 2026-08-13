@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/rbac"
 	"github.com/1kaius1/Sparky/internal/session"
 )
@@ -35,6 +36,32 @@ func (f *fakeNodeLister) ListNodes(context.Context) ([]*db.Node, error) {
 		return nil, f.err
 	}
 	return f.nodes, nil
+}
+
+// fakeNodeRegistrar implements nodeRegistrar for tests, recording every
+// call.
+type fakeNodeRegistrar struct {
+	node        *db.Node
+	bearerToken string
+	err         error
+	calls       []registerCall
+}
+
+type registerCall struct {
+	actor  rbac.Actor
+	params nodes.RegisterNodeParams
+}
+
+func (f *fakeNodeRegistrar) RegisterNode(_ context.Context, actor rbac.Actor, params nodes.RegisterNodeParams) (*db.Node, string, error) {
+	if f.err != nil {
+		return nil, "", f.err
+	}
+	f.calls = append(f.calls, registerCall{actor, params})
+	node := f.node
+	if node == nil {
+		node = &db.Node{Name: params.Name}
+	}
+	return node, f.bearerToken, nil
 }
 
 // fakeProfileLister implements profileLister for tests.
@@ -248,16 +275,24 @@ func newTestDashboardAPIWithMetrics(t *testing.T, nodes *fakeNodeLister, profile
 	return newTestDashboardAPIWithElevator(t, nodes, profiles, instances, transfers, users, auditLog, roster, &fakeUserElevator{}, settingsSvc, metricsSvc)
 }
 
-// newTestDashboardAPIWithElevator is the innermost test constructor,
-// adding control over userElevator (the Users & permissions page's
-// tier-change form) on top of newTestDashboardAPIWithMetrics's
-// parameters - same "kept separate" reasoning as that function's own doc
-// comment.
+// newTestDashboardAPIWithElevator adds control over userElevator (the
+// Users & permissions page's tier-change form) on top of
+// newTestDashboardAPIWithMetrics's parameters - same "kept separate"
+// reasoning as that function's own doc comment.
 func newTestDashboardAPIWithElevator(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
+	t.Helper()
+	return newTestDashboardAPIWithRegistrar(t, nodes, &fakeNodeRegistrar{}, profiles, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc)
+}
+
+// newTestDashboardAPIWithRegistrar is the innermost test constructor,
+// adding control over nodeRegistrar (the Nodes page's registration form)
+// on top of newTestDashboardAPIWithElevator's parameters - same "kept
+// separate" reasoning as that function's own doc comment.
+func newTestDashboardAPIWithRegistrar(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
 	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodeList, registrar, profiles, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -1218,6 +1253,221 @@ func TestHandleElevateUser_Unauthenticated(t *testing.T) {
 	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
 
 	req := httptest.NewRequest(http.MethodPost, "/users/target-1/tier", strings.NewReader(url.Values{"tier": {"developer"}}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleNodes_CanRegister_ShownForAdmin(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/nodes", "admin-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "/nodes/register") {
+		t.Errorf("response does not show a Register node link for an Admin viewer: %s", rec.Body.String())
+	}
+}
+
+func TestHandleNodes_CanRegister_HiddenForDeveloper(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/nodes", "dev-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "/nodes/register") {
+		t.Error("response shows a Register node link for a Developer viewer, want it hidden")
+	}
+}
+
+func TestHandleRegisterNodeForm_AdminAccess(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/nodes/register", "admin-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `name="gpu_memory_gb"`) {
+		t.Errorf("response does not show the registration form: %s", rec.Body.String())
+	}
+}
+
+func TestHandleRegisterNodeForm_Forbidden(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/nodes/register", "dev-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleRegisterNodeForm_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/nodes/register", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func registerNodeForm(overrides url.Values) url.Values {
+	form := url.Values{
+		"name":          {"spark-1"},
+		"hostname":      {"spark-1.internal"},
+		"ip_address":    {"10.0.0.11"},
+		"node_type":     {"spark"},
+		"gpu_memory_gb": {"128"},
+		"cpu_memory_gb": {"128"},
+	}
+	for k, v := range overrides {
+		form[k] = v
+	}
+	return form
+}
+
+func TestHandleRegisterNode_Success(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	registrar := &fakeNodeRegistrar{node: &db.Node{Name: "spark-1"}, bearerToken: "plaintext-token-shown-once"}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, registrar, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/nodes/register", "admin-1", registerNodeForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "plaintext-token-shown-once") {
+		t.Errorf("response does not show the bearer token: %s", body)
+	}
+	if len(registrar.calls) != 1 {
+		t.Fatalf("RegisterNode called %d times, want 1", len(registrar.calls))
+	}
+	params := registrar.calls[0].params
+	if params.Name != "spark-1" || params.Hostname != "spark-1.internal" || params.NodeType != db.NodeTypeSpark {
+		t.Errorf("RegisterNode params = %+v, want the submitted form values", params)
+	}
+	if params.GPUMemoryGB != 128 || params.CPUMemoryGB != 128 {
+		t.Errorf("RegisterNode params memory = %v/%v, want 128/128", params.GPUMemoryGB, params.CPUMemoryGB)
+	}
+	if params.ContainerRuntime != nil {
+		t.Errorf("ContainerRuntime = %v, want nil for a spark node with no container_runtime submitted", *params.ContainerRuntime)
+	}
+}
+
+func TestHandleRegisterNode_DockerGPUWithContainerRuntime(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	registrar := &fakeNodeRegistrar{node: &db.Node{Name: "workstation-1"}, bearerToken: "token"}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, registrar, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	form := registerNodeForm(url.Values{"node_type": {"docker-gpu"}, "container_runtime": {"podman"}})
+	req := newAuthenticatedFormRequest(t, "/nodes/register", "admin-1", form)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if len(registrar.calls) != 1 {
+		t.Fatalf("RegisterNode called %d times, want 1", len(registrar.calls))
+	}
+	params := registrar.calls[0].params
+	if params.ContainerRuntime == nil || *params.ContainerRuntime != db.ContainerRuntimePodman {
+		t.Errorf("ContainerRuntime = %v, want podman", params.ContainerRuntime)
+	}
+}
+
+func TestHandleRegisterNode_Forbidden(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	registrar := &fakeNodeRegistrar{err: rbac.ErrNotPermitted}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, registrar, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/nodes/register", "dev-1", registerNodeForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleRegisterNode_InvalidNode_RedisplaysFormWithError(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	registrar := &fakeNodeRegistrar{err: nodes.ErrInvalidNode}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, registrar, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/nodes/register", "admin-1", registerNodeForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "spark-1") {
+		t.Errorf("response does not preserve the submitted name value: %s", body)
+	}
+	if !strings.Contains(body, "form-error") {
+		t.Errorf("response does not show the error message: %s", body)
+	}
+}
+
+func TestHandleRegisterNode_NonNumericMemory_BadRequest(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
+	registrar := &fakeNodeRegistrar{}
+	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, registrar, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/nodes/register", "admin-1", registerNodeForm(url.Values{"gpu_memory_gb": {"not-a-number"}}))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if len(registrar.calls) != 0 {
+		t.Error("RegisterNode was called despite a non-numeric gpu_memory_gb - input must be validated before the Service call")
+	}
+}
+
+func TestHandleRegisterNode_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodPost, "/nodes/register", strings.NewReader(registerNodeForm(nil).Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)

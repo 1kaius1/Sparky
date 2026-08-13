@@ -1,0 +1,15 @@
+{{define "content"}}
+<h1>Node registered</h1>
+
+<p>Node <strong>{{.Data.NodeName}}</strong> was registered successfully.</p>
+
+<div class="form-error">
+  This bearer token is shown only once and cannot be retrieved again. Copy it
+  now into that node's <code>SPARKY_BEARER_TOKEN</code> (see docs/AGENT.md
+  Configuration) before leaving this page.
+</div>
+
+<p><code>{{.Data.BearerToken}}</code></p>
+
+<p><a href="/nodes">Back to Nodes</a></p>
+{{end}}

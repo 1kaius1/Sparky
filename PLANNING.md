@@ -60,22 +60,23 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-8 are done (base layout/sidebar shell, session-gated
+Dashboard UI Phases 1-9 are done (base layout/sidebar shell, session-gated
 routing, all eight sidebar sections have a working read-only page -
 Dashboard overview, Nodes, Model profiles, Transfers, Metrics, Audit log,
-Users & permissions, Settings; a real HTML login page and a logout control;
-one write/action form - Users & permissions tier changes - no SSE wiring
-yet). Two new singleton config tables (`metrics_export_config`,
-`audit_settings`) were migrated as part of Phase 6, closing a gap where
-SCHEMA.md had long documented their shape but neither had ever actually
-been created; Phase 7 similarly gave `internal/metrics.Service` its first
-real production caller (`Chart.js`, vendored per ARCHITECTURE.md's no-CDN
-policy, is the Metrics page's chart library); Phase 8 gave
-`rbac.Service.ElevateTier` - fully built and tested well before this
-Dashboard UI milestone started - its first HTTP caller. The bare-metal
-install script has not been started - Dashboard UI Phase 9 (the three
-remaining CRUD forms and SSE wiring) is the current active work, see
-Current Sprint / Active Work below.
+Users & permissions, Settings; a real HTML login page and a logout
+control; two write/action forms - Users & permissions tier changes, node
+registration - no SSE wiring yet). Two new singleton config tables
+(`metrics_export_config`, `audit_settings`) were migrated as part of
+Phase 6, closing a gap where SCHEMA.md had long documented their shape
+but neither had ever actually been created; Phase 7 similarly gave
+`internal/metrics.Service` its first real production caller (`Chart.js`,
+vendored per ARCHITECTURE.md's no-CDN policy, is the Metrics page's chart
+library); Phases 8 and 9 gave `rbac.Service.ElevateTier` and
+`nodes.Service.RegisterNode` - both fully built and tested well before
+this Dashboard UI milestone started - their first HTTP callers. The
+bare-metal install script has not been started - Dashboard UI Phase 10
+(the two remaining CRUD forms and SSE wiring) is the current active work,
+see Current Sprint / Active Work below.
 
 ---
 
@@ -1255,19 +1256,87 @@ Current Sprint / Active Work below.
           exact skip-a-step promotion the regular Admin had just been
           refused, with `elevated_by` correctly left `NULL` and the
           audit row correctly marked `is_superadmin_action`.
-    - [ ] Phase 9 and beyond (not started): write/action forms for the
-          three Phase 1 pages (profile create/edit, node registration,
-          instance load/unload - `internal/profiles.Service`/
-          `internal/nodes.Service`/`internal/lifecycle.Service` already
-          have the RBAC-gated mutation methods these forms would call),
-          SSE wiring for live telemetry/transfer progress, and combining
-          `internal/transfers.Service.HandleTransferProgress`/
+    - [x] Phase 9: the node registration form - the second write/action
+          form, the first slice of "Phase 9 and beyond", scoped down the
+          same way Phases 2-8 were (confirmed with the user via an
+          explicit multi-option choice - see this date's Decisions Log
+          entry). Complete when the compiled binary, driven with real
+          HTTP requests against a real Postgres instance, actually
+          registers a real node, persists only its bearer token's hash
+          (never the plaintext), writes a real audit record, and
+          correctly refuses a non-Admin's attempt. Done - no changes
+          needed to `internal/nodes` at all: `nodes.Service.RegisterNode`
+          and `RegisterNodeParams.validate()` were both already fully
+          built and tested well before this Dashboard UI milestone even
+          started (this phase only had to give `RegisterNode` its first
+          HTTP caller), same shape as Phase 8's `ElevateTier` discovery.
+          New `internal/httpapi`: `nodeRegistrar` interface
+          (`RegisterNode`), referencing `nodes.RegisterNodeParams`
+          directly rather than a primitives-only method signature -
+          unlike every other narrow interface in this package, this one
+          genuinely can't avoid importing a domain package's exported
+          type, since `*nodes.Service`'s real method takes that struct
+          and a differently-shaped interface method wouldn't be
+          structurally satisfied by it at all; `handleRegisterNodeForm`
+          (`GET /nodes/register`) and `handleRegisterNode` (`POST
+          /nodes/register`). Unlike Phase 8's tier-change form, this
+          POST's successful response cannot use the blunt
+          `HX-Redirect`-back-to-the-list pattern, since
+          `RegisterNode`'s plaintext bearer token is returned exactly
+          once and would be lost on an immediate redirect - success
+          instead renders a dedicated confirmation page
+          (`node_registered.html`) showing the token with an explicit
+          warning it will never be shown again, and the whole flow (form
+          submission included) deliberately uses a plain `<form
+          method="post">` full-page navigation rather than an
+          `hx-post` partial swap, avoiding any need to reason about
+          htmx's swap semantics for a page whose entire point is
+          something the user must actually read before navigating away.
+          A validation failure (`nodes.ErrInvalidNode`) re-renders the
+          form with the specific reason and every previously-typed field
+          value preserved, rather than a blank form or a raw JSON error.
+          The Nodes list page gained a `CanRegister`-gated "Register
+          node" link, resolved the same non-security-boundary way as the
+          Users page's per-row `ReachableTiers` - the real enforcement is
+          `rbac.CanManageNodes` inside both new handlers, checked
+          directly (not via a Service call, since a `GET` has no
+          mutation to gate through one) for the form's visibility and
+          indirectly via `RegisterNode` itself for the actual write.
+          This is the second new state-changing endpoint added since the
+          CSRF gap was documented, and joins it the same way Phase 8's
+          did - see that phase's own Decisions Log entry, extended here
+          rather than repeated. Verified two ways: new unit tests
+          (`CanRegister` shown/hidden by tier, the registration form's
+          own 403/401 gating, successful registration with correct
+          `RegisterNodeParams` construction including the
+          spark-vs-docker-gpu `ContainerRuntime` nil/non-nil cases,
+          forbidden, invalid-node re-display with preserved field
+          values, non-numeric memory input rejected before the Service
+          call, unauthenticated) and a genuine end-to-end pass through
+          the actual compiled `sparky-server` binary against a real
+          Postgres instance - a real Admin registering a real spark
+          node (confirmed in the database: only `bearer_token_hash`
+          persisted, never the plaintext token; `registered_by` set to
+          the Admin; a real `registered_node` audit row) with the
+          real plaintext token rendered on the confirmation page, a
+          Developer session correctly refused (403) both the form and
+          the submission, a missing-hostname submission correctly
+          re-shown with `"invalid node: hostname is required"`, a
+          docker-gpu submission missing `container_runtime` correctly
+          refused with the matching validation message, and an
+          unauthenticated request to the form getting 401.
+    - [ ] Phase 10 and beyond (not started): the two remaining CRUD
+          forms (profile create/edit, instance load/unload -
+          `internal/profiles.Service`/`internal/lifecycle.Service`
+          already have the RBAC-gated mutation methods these forms would
+          call), SSE wiring for live telemetry/transfer progress, and
+          combining `internal/transfers.Service.HandleTransferProgress`/
           `internal/lifecycle.Service.HandleInstanceResult`/
           `internal/metrics.Service.HandleTelemetry` into the single
           `agentconn.OnMessageFunc` `cmd/sparky-server/main.go` currently
-          passes `nil` for. Unlike the three remaining CRUD forms, the
-          instance load/unload form specifically has a real dependency on
-          the `OnMessage` consolidation slice - without it, a Load/Unload
+          passes `nil` for. Unlike profile create/edit, the instance
+          load/unload form specifically has a real dependency on the
+          `OnMessage` consolidation slice - without it, a Load/Unload
           click would leave a `running_instances` row stuck in
           `starting`/`stopping` forever, since nothing processes the
           agent's response.
@@ -1322,20 +1391,21 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 9 - the three remaining CRUD write/action
-  forms (profile create/edit, node registration, instance load/unload),
-  plus SSE wiring and the `OnMessage` dispatcher consolidation the
-  instance load/unload form specifically depends on. Phases 1 (base
-  layout, session-gated routing, Dashboard/Nodes/Model profiles read
-  views), 2 (login page, logout control), 3 (Transfers read view), 4
-  (Audit log read view, the first Admin-tier-gated page), 5 (Users &
-  permissions read view), 6 (Settings read view, which also migrated the
-  two singleton config tables SCHEMA.md had documented but never created),
-  7 (Metrics read view + chart, back at the Read-only floor, which also
-  gave `internal/metrics.Service` its first production caller), and 8
-  (the Users & permissions tier-change form, the Dashboard UI's first
-  write/action form, giving `rbac.Service.ElevateTier` its first HTTP
-  caller) are done.
+- Next up: Dashboard UI Phase 10 - the two remaining CRUD write/action
+  forms (profile create/edit, instance load/unload), plus SSE wiring and
+  the `OnMessage` dispatcher consolidation the instance load/unload form
+  specifically depends on. Phases 1 (base layout, session-gated routing,
+  Dashboard/Nodes/Model profiles read views), 2 (login page, logout
+  control), 3 (Transfers read view), 4 (Audit log read view, the first
+  Admin-tier-gated page), 5 (Users & permissions read view), 6 (Settings
+  read view, which also migrated the two singleton config tables
+  SCHEMA.md had documented but never created), 7 (Metrics read view +
+  chart, back at the Read-only floor, which also gave
+  `internal/metrics.Service` its first production caller), 8 (the Users
+  & permissions tier-change form, the Dashboard UI's first write/action
+  form, giving `rbac.Service.ElevateTier` its first HTTP caller), and 9
+  (the node registration form, giving `nodes.Service.RegisterNode` its
+  first HTTP caller) are done.
 
 ---
 
@@ -1449,6 +1519,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-13 | Dashboard UI's "Phase 8 and beyond" bundle (four write/action forms plus SSE wiring plus `OnMessage` dispatcher consolidation) was split, and only the Users & permissions tier-change form was built as Phase 8 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the six prior phase-scoping entries (now seven times): the bundle was several genuinely distinct pieces of work. The elevation form was offered as "smallest, most self-contained option... pure database write, no agent/WebSocket dependency at all" - `rbac.Service.ElevateTier` was already fully built and tested before this milestone even started, so this phase only had to wire an HTTP caller for it | Node registration or Model profile create/edit instead (both offered as CRUD alternatives with no agent dependency, but each with its own real wrinkle - node registration's once-only bearer token display, profile create/edit's free-form `engine_params` JSON); the `OnMessage` consolidation plus SSE wiring instead (offered too, explicitly flagged as a real prerequisite for the instance load/unload form specifically, not for this one; user chose the elevation form) |
 | 2026-08-13 | `reachableTiers` (a new `internal/httpapi` helper) computes the tier-change dropdown's offered options by calling `rbac.CanElevate` once per candidate tier, rather than any simpler rule like "always offer the two adjacent tiers" | The dropdown must never offer an option the server-side check would then refuse - deriving it from the exact same function `handleElevateUser`'s downstream `rbac.Service.ElevateTier` call ultimately depends on (rather than a hand-written approximation of `CanElevate`'s rules) makes that guarantee structural, not just a matter of the two staying in sync by convention. The current tier itself is excluded from the offered set - `CanElevate` doesn't special-case a same-tier transition (a `SuperAdmin` actor's unconditional `true` covers it too), so `ElevateTier` would accept and audit a semantically-empty change, but offering it in the UI serves no purpose | Precomputing a static allow-list per (actor tier, target tier) pair as a lookup table (rejected: would need to be manually kept in sync with `rbac.CanElevate`'s own logic instead of calling it directly - the same duplication risk `reachableTiers`'s actual design avoids) |
 | 2026-08-13 | The Users & permissions tier-change form (`POST /users/{id}/tier`) was added without any CSRF protection, same as every other write route in the app | This is the first new state-changing endpoint added since the app-wide CSRF gap was documented (PLANNING.md Known Issues, Dashboard UI Phase 2), which already reasoned that retrofitting CSRF protection needs a coordinated pass across every existing write route at once, not something bolted onto one form as a side effect of an unrelated task. That reasoning applies identically to a *new* write route: protecting this one form in isolation while every other POST endpoint (login, logout) stays unprotected would be an inconsistent half-measure, not a real fix. The existing Known Issues row is extended to name this endpoint explicitly rather than left silently exposed to a future reader of that row | Adding CSRF protection to just this one new endpoint (rejected: solves nothing security-wise while creating an inconsistent app where some POST routes are protected and others aren't, and still requires the same coordinated-pass work eventually) |
+| 2026-08-13 | Dashboard UI's "Phase 9 and beyond" bundle (two more write/action forms plus SSE wiring plus `OnMessage` dispatcher consolidation) was split, and only the node registration form was built as Phase 9 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the seven prior phase-scoping entries (now eight times): the bundle was several genuinely distinct pieces of work. Node registration was offered alongside profile create/edit and the `OnMessage`-plus-SSE slice, each with its own explicitly-named wrinkle (this one's once-only bearer token display; profile create/edit's free-form `engine_params` JSON; the `OnMessage` slice's real dependency for the *next* form, instance load/unload) rather than presented as uniformly simple options - `nodes.Service.RegisterNode` was, like `ElevateTier` before it, already fully built and tested before this milestone started | Model profile create/edit or the `OnMessage` consolidation plus SSE wiring instead (both offered as explicit alternatives; user chose node registration) |
+| 2026-08-13 | The node registration form's successful submission renders a dedicated confirmation page showing the plaintext bearer token, rather than reusing Phase 8's `HX-Redirect`-back-to-the-list pattern | `nodes.Service.RegisterNode`'s own doc comment is explicit: the token is "shown here only once" and never persisted anywhere but its hash. An `HX-Redirect` back to `/nodes` would discard it the instant the browser navigated - there would be no second chance to retrieve it, unlike every other write action in this app so far where redirecting to the updated list is harmless because the list itself reflects the new state. The whole registration flow (including the form submission) also deliberately uses a plain `<form method="post">` full-page navigation rather than an `hx-post` partial swap, sidestepping any need to reason about htmx's swap semantics for a page whose entire purpose is a value the Admin must actually read before navigating anywhere else | Showing the token in a toast/banner over the redirected `/nodes` page via query parameter or flash-message mechanism (rejected: no such mechanism exists in this app yet, and building one for a single one-time-secret display would be more machinery than the plain-confirmation-page alternative, for a form that isn't performance- or frequency-sensitive enough to need `hx-post`'s smoother partial swap) |
 
 ---
 
@@ -1465,7 +1537,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
 | `agent/telemetry.Collector`'s `nvidia-smi` integration (CSV parsing, multi-GPU aggregation) is unverified against a real `nvidia-smi` binary or real GPU hardware - this dev environment has neither (same gap already on record for CDI GPU passthrough). The CSV query shape (`--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is well-documented, stable `nvidia-smi` behavior, not guessed, but has never actually been run here | Medium | Requires real GPU hardware with `nvidia-smi` installed to close, same blocker already tracked for CDI verification; the parsing logic itself is unit-tested against a fake command runner exercising realistic CSV shapes (single GPU, multiple GPUs, malformed lines), so the gap is specifically "does the real binary's output match the documented format," not "is the parser correct for the format it's given" |
 | Dashboard UI's pages (Phase 1, Phase 2's login page, Phase 3's Transfers page) were verified via `curl` against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm. Phase 7's Metrics chart carries the same gap in a more consequential form: the server-generated chart series JSON and Chart.js/metrics.js's correct loading were confirmed structurally (curl, correct byte counts and content), but whether `initMetricsChart` actually renders a correct, readable chart in a real browser - and whether htmx's script-execution behavior holds exactly as read from source for this page's own script ordering - has never been visually confirmed | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
-| No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route actually built so far (`/login`, `/login/break-glass`, `/logout`, and as of Dashboard UI Phase 8 `/users/{id}/tier`) - not specific to Dashboard UI Phase 2's login form, and confirmed not to be closing on its own as new write routes get added (Phase 8 deliberately left this new one unprotected too, consistent with every prior one - see this date's Decisions Log entry). Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user). Profile create/edit, node registration, transfers-initiate, and instance load/unload remain Service-layer methods only - no HTTP route exists for any of them yet (PLANNING.md's Phase 9 and beyond) |
+| No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route actually built so far (`/login`, `/login/break-glass`, `/logout`, `/users/{id}/tier` as of Phase 8, and `/nodes/register` as of Phase 9) - not specific to Dashboard UI Phase 2's login form, and confirmed not to be closing on its own as new write routes get added (Phases 8 and 9 each deliberately left their own new route unprotected too, consistent with every prior one - see the respective Decisions Log entries). Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user). Profile create/edit and instance load/unload remain Service-layer methods only - no HTTP route exists for either yet (PLANNING.md's Phase 10 and beyond) |
 | No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
 | The sidebar's `Audit log`, `Users & permissions`, and `Settings` links are shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks any of them gets a raw JSON 403 (`handleAuditLog`/`handleUsers`/`handleSettings`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding these nav links by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just these three pages' own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case. Phases 5 and 6 (Users & permissions, Settings) each hit the identical gap Phase 4 (Audit log) already documented here rather than opening further near-duplicate rows |

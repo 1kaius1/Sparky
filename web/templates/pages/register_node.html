@@ -1,0 +1,46 @@
+{{define "content"}}
+<h1>Register node</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<form method="post" action="/nodes/register">
+  <p>
+    <label for="name">Name</label><br>
+    <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" required>
+  </p>
+  <p>
+    <label for="hostname">Hostname</label><br>
+    <input type="text" id="hostname" name="hostname" value="{{.Data.Form.Hostname}}" required>
+  </p>
+  <p>
+    <label for="ip_address">IP address</label><br>
+    <input type="text" id="ip_address" name="ip_address" value="{{.Data.Form.IPAddress}}" required>
+  </p>
+  <p>
+    <label for="node_type">Node type</label><br>
+    <select id="node_type" name="node_type">
+      <option value="spark" {{if eq .Data.Form.NodeType "spark"}}selected{{end}}>spark</option>
+      <option value="docker-gpu" {{if eq .Data.Form.NodeType "docker-gpu"}}selected{{end}}>docker-gpu</option>
+    </select>
+  </p>
+  <p>
+    <label for="container_runtime">Container runtime (docker-gpu only)</label><br>
+    <select id="container_runtime" name="container_runtime">
+      <option value="" {{if eq .Data.Form.ContainerRuntime ""}}selected{{end}}>(none - spark only)</option>
+      <option value="docker" {{if eq .Data.Form.ContainerRuntime "docker"}}selected{{end}}>docker</option>
+      <option value="podman" {{if eq .Data.Form.ContainerRuntime "podman"}}selected{{end}}>podman</option>
+    </select>
+  </p>
+  <p>
+    <label for="gpu_memory_gb">GPU memory (GB)</label><br>
+    <input type="text" id="gpu_memory_gb" name="gpu_memory_gb" value="{{.Data.Form.GPUMemoryGB}}" required>
+  </p>
+  <p>
+    <label for="cpu_memory_gb">CPU memory (GB)</label><br>
+    <input type="text" id="cpu_memory_gb" name="cpu_memory_gb" value="{{.Data.Form.CPUMemoryGB}}" required>
+  </p>
+  <p><button type="submit">Register</button></p>
+</form>
+{{end}}
