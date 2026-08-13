@@ -610,6 +610,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a real Admin user, a real Developer (non-Admin) user, the break-glass
   SuperAdmin, and both config rows updated directly via SQL to
   non-default values.
+- Dashboard UI Phase 7: the Metrics sidebar section as the eighth and
+  final sidebar page - every section now has a working read-only view.
+  Unlike every page since Phase 4, this one's floor is Read-only, same as
+  Dashboard/Nodes/Model profiles/Transfers - no RBAC check. `internal/db`'s
+  `MetricsRepository` (previously write-only) gains `LatestByNode` (one
+  most-recent row per node, via `DISTINCT ON`) and `Recent` (the 200 most
+  recent rows across every node combined, most-recently-recorded first -
+  a recent-window chart data source, not full historical retention, which
+  stays the separate v0.4.0 Historical metrics milestone).
+  `internal/metrics.Service` gains `ListLatestByNode`/`ListRecent`,
+  unguarded by RBAC like `nodes.Service.ListNodes`, and is constructed in
+  `cmd/sparky-server/main.go` for the first time - it existed as a type
+  before this phase but nothing had ever instantiated it in production.
+  Chart.js 4.4.4 (MIT license) vendored at
+  `web/static/js/chart.umd.min.js` per ARCHITECTURE.md's no-CDN
+  static-asset policy, loaded unconditionally in `base.html`'s `<head>`
+  alongside a new small `web/static/js/metrics.js`
+  (`initMetricsChart`) - loading both unconditionally, rather than only
+  from inside the Metrics page's own content block, sidesteps depending
+  on an unverifiable (no browser in this environment) assumption about
+  htmx's execution order for dynamically swapped external `<script src>`
+  tags. `internal/httpapi/metrics.go` builds the chart's series data as
+  JSON server-side and embeds it via `template.JS` inside an inline
+  `<script>` in `metrics.html`'s content block, relying on
+  `encoding/json`'s default HTML-safe escaping for safe embedding.
+  Verified with new unit tests across `internal/metrics` and
+  `internal/httpapi` (node-name resolution in both the table and the
+  embedded chart JSON, empty state, both list-failure paths,
+  unauthenticated, HX-Request partial), new
+  `MetricsRepository.LatestByNode`/`Recent` integration tests against a
+  real Postgres instance, and a genuine end-to-end pass against the
+  actual compiled `sparky-server` binary with a real Developer
+  (non-Admin) user, two real nodes, and nine real metrics rows across a
+  20-minute window inserted directly via SQL. The chart's actual visual
+  rendering in a real browser remains unverified - see PLANNING.md Known
+  Issues.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

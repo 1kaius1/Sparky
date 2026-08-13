@@ -33,6 +33,7 @@ type API struct {
 	audit      auditLister
 	userRoster userRoster
 	settings   settingsViewer
+	metrics    metricsLister
 	templates  map[string]*template.Template
 	static     http.Handler
 	logger     *log.Logger
@@ -59,13 +60,16 @@ type API struct {
 // already-permitted record's actor_id; settingsSvc backs the Settings
 // page (same Admin floor) via internal/settings.Service.Get, covering the
 // two singleton config rows neither internal/metrics nor internal/audit
-// owns - see that package's doc comment; logger is used for
-// rendering/query failures a handler can't turn into a useful HTTP
-// response on its own. Returns an error if the embedded templates
-// (web.FS) fail to parse - a template syntax error is a build-time bug,
-// caught here rather than surfacing as a broken page on first request.
+// owns - see that package's doc comment; metricsSvc backs the Metrics
+// page, back at the Read-only floor like nodes/profiles/instances/
+// transfers - unlike audit/roster/settingsSvc, no RBAC check is involved;
+// logger is used for rendering/query failures a handler can't turn into a
+// useful HTTP response on its own. Returns an error if the embedded
+// templates (web.FS) fail to parse - a template syntax error is a
+// build-time bug, caught here rather than surfacing as a broken page on
+// first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, settingsSvc settingsViewer, logger *log.Logger) (*API, error) {
+	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -89,6 +93,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		audit:                  auditLog,
 		userRoster:             roster,
 		settings:               settingsSvc,
+		metrics:                metricsSvc,
 		templates:              templates,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
@@ -148,6 +153,7 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Get("/nodes", a.handleNodes)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
+	r.With(a.RequireSession).Get("/metrics", a.handleMetrics)
 	// /audit-log's floor is Admin, not Read-only - RequireSession only
 	// confirms a session exists; the actual tier check happens inside
 	// handleAuditLog via audit.Recorder.List (see its own doc comment for

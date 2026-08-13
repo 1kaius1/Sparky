@@ -144,6 +144,28 @@ func (f *fakeSettingsViewer) Get(context.Context, rbac.Actor) (*db.MetricsExport
 	return f.metricsExport, f.auditSettings, nil
 }
 
+// fakeMetricsLister implements metricsLister for tests.
+type fakeMetricsLister struct {
+	latestByNode    []*db.Metric
+	latestByNodeErr error
+	recent          []*db.Metric
+	recentErr       error
+}
+
+func (f *fakeMetricsLister) ListLatestByNode(context.Context) ([]*db.Metric, error) {
+	if f.latestByNodeErr != nil {
+		return nil, f.latestByNodeErr
+	}
+	return f.latestByNode, nil
+}
+
+func (f *fakeMetricsLister) ListRecent(context.Context) ([]*db.Metric, error) {
+	if f.recentErr != nil {
+		return nil, f.recentErr
+	}
+	return f.recent, nil
+}
+
 // newAuthenticatedRequest builds a GET request carrying a valid session
 // cookie for userID, so RequireSession-gated handlers can be exercised
 // directly (via httptest.NewRecorder + api.Router()) without a full
@@ -185,11 +207,25 @@ func newTestDashboardAPIWithRoster(t *testing.T, nodes *fakeNodeLister, profiles
 // config read) on top of newTestDashboardAPIWithRoster's parameters -
 // same reasoning as that function's own doc comment: kept separate so
 // the existing Users-page test call sites don't need updating either.
+// newTestDashboardAPIWithSettings adds control over settingsViewer (the
+// Settings page's RBAC-gated config read) on top of
+// newTestDashboardAPIWithRoster's parameters - same reasoning as that
+// function's own doc comment: kept separate so existing Users-page test
+// call sites don't need updating either.
 func newTestDashboardAPIWithSettings(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, settingsSvc *fakeSettingsViewer) *API {
+	t.Helper()
+	return newTestDashboardAPIWithMetrics(t, nodes, profiles, instances, transfers, users, auditLog, roster, settingsSvc, &fakeMetricsLister{})
+}
+
+// newTestDashboardAPIWithMetrics is the innermost test constructor,
+// adding control over metricsLister (the Metrics page's unguarded read)
+// on top of newTestDashboardAPIWithSettings's parameters - same
+// "kept separate" reasoning as that function's own doc comment.
+func newTestDashboardAPIWithMetrics(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
 	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, settingsSvc, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, roster, settingsSvc, metricsSvc, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -869,5 +905,117 @@ func TestHandleSettings_HXRequest_ReturnsPartialOnly(t *testing.T) {
 	}
 	if !strings.Contains(body, "s3") {
 		t.Errorf("response does not mention the s3 backend: %s", body)
+	}
+}
+
+func TestHandleMetrics_FullPage_ShowsNodeSummaryAndChartData(t *testing.T) {
+	nodes := &fakeNodeLister{nodes: []*db.Node{{ID: "node-1", Name: "spark-1"}}}
+	recordedAt := time.Date(2026, 8, 12, 10, 30, 0, 0, time.UTC)
+	metricsSvc := &fakeMetricsLister{
+		latestByNode: []*db.Metric{{
+			NodeID: "node-1", RecordedAt: recordedAt,
+			GPUUtilizationPct: 42.5, GPUMemoryUsedMB: 8192, GPUMemoryTotalMB: 24576,
+			CPUUtilizationPct: 10, SystemMemoryUsedMB: 4096, SystemMemoryTotalMB: 16384,
+		}},
+		recent: []*db.Metric{{NodeID: "node-1", RecordedAt: recordedAt, GPUUtilizationPct: 42.5}},
+	}
+	api := newTestDashboardAPIWithMetrics(t, nodes, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "spark-1") {
+		t.Errorf("response does not resolve node_id to the node's name: %s", body)
+	}
+	if !strings.Contains(body, "42.5%") {
+		t.Errorf("response does not show the GPU utilization percentage: %s", body)
+	}
+	if !strings.Contains(body, `"nodeName":"spark-1"`) {
+		t.Errorf("response does not embed the chart series JSON with the resolved node name: %s", body)
+	}
+}
+
+func TestHandleMetrics_Empty(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "No telemetry reported yet") {
+		t.Error("empty-state message missing from response")
+	}
+}
+
+func TestHandleMetrics_ListLatestByNodeFails(t *testing.T) {
+	metricsSvc := &fakeMetricsLister{latestByNodeErr: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleMetrics_ListRecentFails(t *testing.T) {
+	metricsSvc := &fakeMetricsLister{recentErr: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleMetrics_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleMetrics_HXRequest_ReturnsPartialOnly(t *testing.T) {
+	nodes := &fakeNodeLister{nodes: []*db.Node{{ID: "node-1", Name: "spark-1"}}}
+	metricsSvc := &fakeMetricsLister{
+		latestByNode: []*db.Metric{{NodeID: "node-1", RecordedAt: time.Now()}},
+	}
+	api := newTestDashboardAPIWithMetrics(t, nodes, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
+	req.Header.Set("HX-Request", "true")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	if strings.Contains(body, "<!doctype html>") {
+		t.Error("HX-Request response includes the full base layout, want partial content only")
+	}
+	if strings.Contains(body, "sidebar-nav") {
+		t.Error("HX-Request response includes the sidebar, want it omitted")
+	}
+	if !strings.Contains(body, "spark-1") {
+		t.Errorf("response does not mention the node's name: %s", body)
 	}
 }

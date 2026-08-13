@@ -1,0 +1,42 @@
+{{define "content"}}
+<h1>Metrics</h1>
+
+<section class="panel">
+  <h2>GPU utilization (recent)</h2>
+  <canvas id="metrics-chart" height="90"></canvas>
+</section>
+
+<section class="panel">
+  <h2>Latest reading per node</h2>
+  <table class="data-table">
+    <thead>
+      <tr>
+        <th>Node</th>
+        <th>GPU</th>
+        <th>GPU memory</th>
+        <th>CPU</th>
+        <th>System memory</th>
+        <th>Recorded at</th>
+      </tr>
+    </thead>
+    <tbody>
+      {{range .Data.Nodes}}
+      <tr>
+        <td>{{.NodeName}}</td>
+        <td>{{.GPUUtilizationPct}}</td>
+        <td>{{.GPUMemory}}</td>
+        <td>{{.CPUUtilizationPct}}</td>
+        <td>{{.SystemMemory}}</td>
+        <td>{{.RecordedAt}}</td>
+      </tr>
+      {{else}}
+      <tr><td colspan="6" class="empty">No telemetry reported yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+</section>
+
+<script>
+  initMetricsChart("metrics-chart", {{.Data.ChartSeriesJSON}});
+</script>
+{{end}}

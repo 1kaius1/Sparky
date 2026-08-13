@@ -24,6 +24,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/engines"
 	"github.com/1kaius1/Sparky/internal/httpapi"
 	"github.com/1kaius1/Sparky/internal/lifecycle"
+	"github.com/1kaius1/Sparky/internal/metrics"
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -121,10 +122,19 @@ func main() {
 	// either repository's Set beyond what migrations 000012/000013 seed.
 	settingsService := settings.NewService(db.NewMetricsExportConfigRepository(pool), db.NewAuditSettingsRepository(pool))
 
+	// metricsService is constructed here for the first time - previously
+	// only referenced in the agentConnHandler comment above as a future
+	// OnMessageFunc caller. HandleTelemetry still isn't wired to that
+	// callback (onMessage stays nil, same reasoning as transferService),
+	// so in production this Service currently only backs the Metrics
+	// page's two read methods; nothing yet actually ingests a real
+	// telemetry reading end to end.
+	metricsService := metrics.NewService(db.NewMetricsRepository(pool), instanceRepo, logger)
+
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
-		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, settingsService, logger)
+		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, settingsService, metricsService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

@@ -60,16 +60,20 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-6 are done (base layout/sidebar shell, session-gated
-routing, seven working read-only pages - Dashboard overview, Nodes, Model
-profiles, Transfers, Audit log, Users & permissions, Settings; a real HTML
-login page and a logout control - no write/action forms, the Metrics
-sidebar section, or SSE wiring yet). Two new singleton config tables
-(`metrics_export_config`, `audit_settings`) were migrated as part of Phase
-6, closing a gap where SCHEMA.md had long documented their shape but
-neither had ever actually been created. The bare-metal install script has
-not been started - Dashboard UI Phase 7 (the Metrics section and write
-forms) is the current active work, see Current Sprint / Active Work below.
+Dashboard UI Phases 1-7 are done (base layout/sidebar shell, session-gated
+routing, all eight sidebar sections now have a working read-only page -
+Dashboard overview, Nodes, Model profiles, Transfers, Metrics, Audit log,
+Users & permissions, Settings; a real HTML login page and a logout control
+- no write/action forms or SSE wiring yet). Two new singleton config
+tables (`metrics_export_config`, `audit_settings`) were migrated as part
+of Phase 6, closing a gap where SCHEMA.md had long documented their shape
+but neither had ever actually been created; Phase 7 similarly gave
+`internal/metrics.Service` its first real production caller (`Chart.js`,
+vendored per ARCHITECTURE.md's no-CDN policy, is the Metrics page's chart
+library). The bare-metal install script has not been started - Dashboard
+UI Phase 8 (write/action forms and SSE wiring, now that every page has a
+read view) is the current active work, see Current Sprint / Active Work
+below.
 
 ---
 
@@ -1132,21 +1136,80 @@ forms) is the current active work, see Current Sprint / Active Work below.
           directly via SQL to non-default values (backend `nfs`,
           forwarding to a GELF host with TLS) to confirm the page reflects
           real data, not just the seeded defaults.
-    - [ ] Phase 7 and beyond (not started): the Metrics sidebar section
-          (the first page needing aggregation/charting - Chart.js, per
-          CLAUDE.md Tech Stack - rather than a plain table or singleton
-          view), write/action forms for the three Phase 1 pages (profile
-          create/edit, node registration, instance load/unload -
-          `internal/profiles.Service`/`internal/nodes.Service`/
-          `internal/lifecycle.Service` already have the RBAC-gated
-          mutation methods these forms would call, and
-          `rbac.Service.ElevateTier` for a Users & permissions edit form),
-          SSE wiring for live telemetry/transfer progress, and combining
-          `internal/transfers.Service.HandleTransferProgress`/
+    - [x] Phase 7: the Metrics sidebar section as the eighth and final
+          sidebar page - the first slice of "Phase 7 and beyond", scoped
+          down the same way Phases 2-6 were (confirmed with the user via
+          an explicit multi-option choice - see this date's Decisions Log
+          entry). Unlike every prior read-only page, this one's floor is
+          Read-only (CLAUDE.md Frontend Conventions, Metrics' sidebar
+          tier), same as Dashboard/Nodes/Model profiles/Transfers - no
+          RBAC check, only `RequireSession`. Complete when the compiled
+          binary, driven with real HTTP requests against a real Postgres
+          instance, serves both a per-node latest-reading table and a
+          GPU-utilization chart backed by real telemetry rows. Done -
+          `internal/db/metrics.go` (previously write-only, per its own
+          prior doc comment - "nothing yet reads metrics back") gained
+          `LatestByNode` (`SELECT DISTINCT ON (node_id) ... ORDER BY
+          node_id, recorded_at DESC`, one row per node) and `Recent`
+          (most recent `recentMetricsLimit` = 200 rows across every node
+          combined, most-recently-recorded first - a recent-window chart
+          data source, not full historical retention, which stays the
+          separate v0.4.0 Historical metrics milestone).
+          `internal/metrics.Service` gained `ListLatestByNode`/`ListRecent`,
+          unguarded by RBAC like `nodes.Service.ListNodes`, and is
+          constructed in `cmd/sparky-server/main.go` for the first time -
+          it existed as a type before this phase but nothing had ever
+          instantiated it in production. Chart.js 4.4.4 (MIT license)
+          vendored at `web/static/js/chart.umd.min.js` per
+          ARCHITECTURE.md's "no CDN" static-asset policy - loaded
+          unconditionally in `base.html`'s `<head>` alongside a new small
+          `web/static/js/metrics.js` (defines `initMetricsChart`,
+          CLAUDE.md's "minimal vanilla JS" allowance), so both are already
+          present by the time any page's content - including an htmx
+          partial swap into Metrics from elsewhere - needs them, without
+          depending on the relative execution order of dynamically
+          swapped `<script src>` tags (verified by reading the vendored
+          htmx source's `allowScriptTags:true` default, not assumed).
+          `internal/httpapi/metrics.go` builds the chart's series data as
+          JSON server-side (one series per node, points sorted
+          chronologically) and embeds it via `template.JS` inside an
+          inline `<script>` in `metrics.html`'s own content block -
+          `encoding/json`'s default HTML-safe escaping is what makes that
+          embedding safe without a separate sanitization step. Verified
+          two ways: new unit tests (`internal/metrics.Service`'s two new
+          read methods, `internal/httpapi` handler tests covering
+          node-name resolution in both the table and the embedded chart
+          JSON, empty state, both list-failure paths, unauthenticated,
+          HX-Request partial), new `MetricsRepository.LatestByNode`/
+          `Recent` integration tests against a real Postgres instance,
+          and a genuine end-to-end pass through the actual compiled
+          `sparky-server` binary - a real Developer (non-Admin) user (no
+          Admin needed, confirming the Read-only floor), two real nodes,
+          and nine real metrics rows across a 20-minute window inserted
+          directly via SQL, confirming the table shows the correct
+          latest-per-node values, the embedded chart JSON contains both
+          nodes' points in chronological order with correctly resolved
+          names, both vendored scripts serve with 200, an unauthenticated
+          request gets 401, and the `HX-Request` partial correctly omits
+          the sidebar. The chart's actual visual rendering in a real
+          browser remains unverified, same accepted gap as every other
+          Dashboard UI page's own CSS/layout/real-DOM behavior - see
+          PLANNING.md Known Issues.
+    - [ ] Phase 8 and beyond (not started): write/action forms for the
+          three Phase 1 pages (profile create/edit, node registration,
+          instance load/unload - `internal/profiles.Service`/
+          `internal/nodes.Service`/`internal/lifecycle.Service` already
+          have the RBAC-gated mutation methods these forms would call,
+          and `rbac.Service.ElevateTier` for a Users & permissions edit
+          form), SSE wiring for live telemetry/transfer progress, and
+          combining `internal/transfers.Service.HandleTransferProgress`/
           `internal/lifecycle.Service.HandleInstanceResult`/
           `internal/metrics.Service.HandleTelemetry` into the single
           `agentconn.OnMessageFunc` `cmd/sparky-server/main.go` currently
-          passes `nil` for.
+          passes `nil` for. With Metrics done, every sidebar section now
+          has a read-only view - this remaining bundle is all
+          cross-cutting work (mutation UI, live updates, message
+          dispatch), not new pages.
   - [ ] Bare-metal install script (apt + dnf)
 
 - [ ] **v0.2.0** - Spark bare-metal support
@@ -1198,14 +1261,17 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 7 - the remaining Metrics sidebar section
-  and write/action forms for the three Phase 1 pages. Phases 1 (base
-  layout, session-gated routing, Dashboard/Nodes/Model profiles read
+- Next up: Dashboard UI Phase 8 - write/action forms for the three Phase 1
+  pages, plus SSE wiring and the `OnMessage` dispatcher consolidation. No
+  new sidebar page remains - Phase 7 (Metrics) was the last one. Phases 1
+  (base layout, session-gated routing, Dashboard/Nodes/Model profiles read
   views), 2 (login page, logout control), 3 (Transfers read view), 4
   (Audit log read view, the first Admin-tier-gated page), 5 (Users &
-  permissions read view), and 6 (Settings read view, which also migrated
-  the two singleton config tables SCHEMA.md had documented but never
-  created) are done.
+  permissions read view), 6 (Settings read view, which also migrated the
+  two singleton config tables SCHEMA.md had documented but never created),
+  and 7 (Metrics read view + chart, back at the Read-only floor, which
+  also gave `internal/metrics.Service` its first production caller) are
+  done.
 
 ---
 
@@ -1313,6 +1379,9 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | `audit_settings.retention_months`'s seeded default is 12 months | SCHEMA.md had never stated a default for this column (unlike `forwarding_protocol`, whose `syslog` default it already documented) - discovered only once the migration was actually being written, since building the Settings page's read view required creating the table for the first time. Confirmed with the user rather than guessed: a middle value between the Metrics table's own 6-month raw-resolution retention window and this column's stated 24-month ceiling | 6 months, matching the Metrics table's window exactly (offered, not chosen - the two retention policies govern unrelated tables, so matching them isn't obviously more correct than a middle value); 24 months, the maximum (offered, not chosen - would mean nothing is ever pruned by default) |
 | 2026-08-12 | `metrics_export_config` and `audit_settings` (SCHEMA.md-documented tables that had never actually been migrated) are seeded with exactly one default row at migration time, using the same `id boolean PRIMARY KEY DEFAULT true` plus `CHECK (id)` singleton pattern as `break_glass_credential` - but, unlike that table, with an `INSERT` in the same migration rather than left absent until first configured | Break-glass credential legitimately has a "not set up yet" state before `sparky set-superadmin-password` ever runs - `BreakGlassRepository.Get` returning `ErrBreakGlassNotSet` is a real, meaningful signal. Metrics export config and Audit settings have no equivalent real-world unset state: the app (today, this page's read path; later, an actual export/forwarding job) needs an effective setting on every read, and "not configured" is indistinguishable in practice from "configured to do nothing" (`backend_type = 'none'`, `forwarding_enabled = false`) - so the schema states that explicitly as the seeded default rather than making every future caller handle a third, redundant empty state | Leaving both tables empty until an Admin visits a future write form and saves once (rejected: would make this phase's own read-only Settings page's `Get` calls handle a not-yet-configured error state that has no real meaning - the singleton is either configured to do something or configured to do nothing, never absent) |
 | 2026-08-12 | Neither `internal/metrics.Service` nor `internal/audit.Recorder` gained the Settings page's RBAC-gated read; a new `internal/settings` package was created instead, wrapping both `MetricsExportConfigRepository` and `AuditSettingsRepository` behind one `Service.Get(ctx, actor)` | `internal/metrics.Service`'s own doc comment already scopes it to telemetry ingestion only, explicitly deferring NFS/S3 export itself to the v0.4.0 Historical metrics milestone - bolting a config *read* onto it now would blur ingestion-only scope with a v0.4.0-scoped concern before that milestone exists. `internal/audit.Recorder` is scoped to the `audit_log` table specifically, not the separate `audit_settings` table that configures its optional forwarding - the two tables are related but distinct. Rather than split the one RBAC decision behind a single page's data across two unrelated packages, one new package owns it, matching the `internal/audit`/`rbac.Service` precedent of a Service-layer method taking `rbac.Actor` and returning `rbac.ErrNotPermitted` | Extending `internal/metrics.Service` and `internal/audit.Recorder` each with their own gated read, and having `handleSettings` call both separately (rejected: two RBAC checks for one page's one "may view Settings" decision, and neither package's existing scope actually fits the config-read concern being added) |
+| 2026-08-12 | Dashboard UI's "Phase 7 and beyond" bundle (the Metrics section, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Metrics section was built as Phase 7 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the five prior phase-scoping entries (2026-08-12, six times now): the bundle was several genuinely distinct pieces of work. Metrics was offered as "the eighth and final sidebar page - completes the full read-only Dashboard UI," the first page needing aggregation/charting rather than a plain table, explicitly flagged as a new UI shape rather than a continuation (the same framing that led to it being declined as an option in Phases 5 and 6's own scoping) | Write/action forms or the SSE-wiring-plus-`OnMessage`-consolidation slice instead (both offered as explicit alternatives; user chose Metrics) |
+| 2026-08-12 | Chart.js 4.4.4 was vendored at `web/static/js/chart.umd.min.js` (fetched once from a CDN during development, then committed as a static asset) rather than loaded from a CDN at runtime | ARCHITECTURE.md's Deployment Topology already settled this before this phase: "Static assets: embedded in the binary via `embed.FS`, served directly - no CDN." CLAUDE.md's Tech Stack table left "CDN or vendored" open for Chart.js specifically, but the more specific ARCHITECTURE.md policy governs runtime behavior; `htmx.min.js` was already vendored the same way, so this keeps every third-party frontend asset in the binary consistently. Chart.js 4.4.4 is MIT-licensed (confirmed via the npm registry before vendoring), compatible with this AGPLv3-or-later project | Loading it from `cdn.jsdelivr.net` at runtime (the option CLAUDE.md's own wording would have permitted) - not seriously considered once ARCHITECTURE.md's existing "no CDN" policy was checked, since the whole point of embedding every other asset is a single self-contained binary with no runtime dependency on external network reachability |
+| 2026-08-12 | `chart.umd.min.js` and `metrics.js` are loaded unconditionally in `base.html`'s `<head>`, on every page, not only when navigating to Metrics | The alternative - loading them only from inside `metrics.html`'s own content block, the same place its data script lives - depends on precisely how htmx executes multiple sequentially ordered `<script src>` tags injected into swapped content, a behavior this sandboxed environment has no browser to verify empirically (this project's own stated discipline: never assert third-party library behavior without testing it directly). Loading both scripts unconditionally in `<head>` sidesteps that uncertainty entirely: ordinary synchronous `<head>` scripts are guaranteed by basic HTML parsing (not htmx-specific behavior) to finish loading and executing before `<body>` is parsed, so `Chart` and `initMetricsChart` are always defined by the time any page's content - including an htmx-swapped Metrics page reached from elsewhere - needs them. The cost is an unconditional ~200KB load on every page view, accepted as a reasonable trade-off for a "handful of nodes, small internal team" scale application (CLAUDE.md Project Overview) | Loading both scripts only inside `metrics.html`'s content block, re-fetched (browser-cached, so cheap) and re-executed on every htmx navigation to that page (rejected: correctness would rest on an unverified assumption about htmx's script-execution ordering for dynamically inserted external scripts, not empirically confirmed given no browser is available here); a `{{if eq .ActiveSection "metrics"}}` conditional in `<head>` (rejected: `<head>` is never touched by an htmx partial swap, so a conditional there would only take effect on a full page load, not when navigating to Metrics via htmx from another page - it would work by accident on this phase's own manual curl-based verification, which always does a fresh full-page request, and only fail in the one case that actually matters, an in-app htmx navigation) |
 
 ---
 
@@ -1328,7 +1397,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
 | `agent/telemetry.Collector`'s `nvidia-smi` integration (CSV parsing, multi-GPU aggregation) is unverified against a real `nvidia-smi` binary or real GPU hardware - this dev environment has neither (same gap already on record for CDI GPU passthrough). The CSV query shape (`--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is well-documented, stable `nvidia-smi` behavior, not guessed, but has never actually been run here | Medium | Requires real GPU hardware with `nvidia-smi` installed to close, same blocker already tracked for CDI verification; the parsing logic itself is unit-tested against a fake command runner exercising realistic CSV shapes (single GPU, multiple GPUs, malformed lines), so the gap is specifically "does the real binary's output match the documented format," not "is the parser correct for the format it's given" |
-| Dashboard UI's pages (Phase 1, Phase 2's login page, Phase 3's Transfers page) were verified via `curl` against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
+| Dashboard UI's pages (Phase 1, Phase 2's login page, Phase 3's Transfers page) were verified via `curl` against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm. Phase 7's Metrics chart carries the same gap in a more consequential form: the server-generated chart series JSON and Chart.js/metrics.js's correct loading were confirmed structurally (curl, correct byte counts and content), but whether `initMetricsChart` actually renders a correct, readable chart in a real browser - and whether htmx's script-execution behavior holds exactly as read from source for this page's own script ordering - has never been visually confirmed | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
 | No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route already built (login, logout, profile create/edit, node registration, transfers, instance load/unload) - not specific to Dashboard UI Phase 2's login form. Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user) |
 | No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
