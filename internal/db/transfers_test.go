@@ -236,3 +236,34 @@ func TestModelTransferRepository_ListByDestNode(t *testing.T) {
 		t.Errorf("ListByDestNode(%s) = %+v, want exactly [%q]", destA.ID, got, trA.ID)
 	}
 }
+
+func TestModelTransferRepository_List(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	ctx := context.Background()
+
+	destA := createTestNode(t, nodes, fmt.Sprintf("node-a-%s", t.Name()))
+	destB := createTestNode(t, nodes, fmt.Sprintf("node-b-%s", t.Name()))
+
+	trA := createTestTransfer(t, transfers, destA.ID, nil)
+	trB := createTestTransfer(t, transfers, destB.ID, nil)
+
+	got, err := transfers.List(ctx)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	var foundA, foundB bool
+	for _, tr := range got {
+		if tr.ID == trA.ID {
+			foundA = true
+		}
+		if tr.ID == trB.ID {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("List() = %d transfers, missing one or both of the two just created (across different dest nodes)", len(got))
+	}
+}

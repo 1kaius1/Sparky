@@ -26,6 +26,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
+	"github.com/1kaius1/Sparky/internal/transfers"
 )
 
 // shutdownTimeout bounds how long graceful shutdown waits for in-flight
@@ -83,8 +84,10 @@ func main() {
 	// have their own OnMessageFunc-shaped handler
 	// (HandleTransferProgress/HandleInstanceResult/HandleTelemetry) but
 	// agentconn.Handler only accepts one callback - combining the three
-	// into a single dispatching OnMessageFunc is left for whichever of
-	// them lands an HTTP-facing caller first (PLANNING.md).
+	// into a single dispatching OnMessageFunc is Dashboard UI Phase 3's
+	// OnMessage-consolidation slice (PLANNING.md), deliberately not this
+	// one - the Transfers page below only reads via ListTransfers, it
+	// doesn't need this wired.
 	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, nil)
 
 	auditRecorder := audit.NewRecorder(db.NewAuditRepository(pool), os.Stdout)
@@ -92,14 +95,22 @@ func main() {
 	profileRepo := db.NewProfileRepository(pool)
 	instanceRepo := db.NewRunningInstanceRepository(pool)
 
+	transferRepo := db.NewModelTransferRepository(pool)
+	inventoryRepo := db.NewNodeModelInventoryRepository(pool)
+	overrideRepo := db.NewPermissionOverrideRepository(pool)
+
 	nodeService := nodes.NewService(nodeRepo, auditRecorder)
 	profileService := profiles.NewService(profileRepo, nodeRepo, engineRegistry, auditRecorder)
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
+	// onMessage stays nil (see agentConnHandler above) - HandleTransferProgress
+	// isn't wired in yet, so this Service currently only backs the read-only
+	// Transfers page's ListTransfers, not a real InitiateTransfer caller.
+	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
-		nodeService, profileService, lifecycleService, logger)
+		nodeService, profileService, lifecycleService, transferService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

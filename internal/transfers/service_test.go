@@ -26,6 +26,9 @@ type fakeTransferStore struct {
 
 	progressCalls []progressCall
 	statusCalls   []statusCall
+
+	listResult []*db.ModelTransfer
+	listErr    error
 }
 
 type progressCall struct {
@@ -73,6 +76,13 @@ func (f *fakeTransferStore) UpdateProgress(_ context.Context, id string, bytesTr
 func (f *fakeTransferStore) SetStatus(_ context.Context, id string, status db.TransferStatus, errorMessage *string) error {
 	f.statusCalls = append(f.statusCalls, statusCall{id, status, errorMessage})
 	return nil
+}
+
+func (f *fakeTransferStore) List(_ context.Context) ([]*db.ModelTransfer, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
 }
 
 // fakeInventoryStore implements inventoryStore for tests.
@@ -499,5 +509,31 @@ func TestService_HandleTransferProgress_MalformedPayload_Ignored(t *testing.T) {
 
 	if len(transferStore.progressCalls) != 0 || len(transferStore.statusCalls) != 0 {
 		t.Error("HandleTransferProgress acted on a malformed payload")
+	}
+}
+
+func TestService_ListTransfers(t *testing.T) {
+	want := []*db.ModelTransfer{
+		{ID: "transfer-1", ModelRef: "test-org/test-model"},
+		{ID: "transfer-2", ModelRef: "test-org/other-model"},
+	}
+	transferStore := &fakeTransferStore{listResult: want}
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	got, err := svc.ListTransfers(context.Background())
+	if err != nil {
+		t.Fatalf("ListTransfers() error: %v", err)
+	}
+	if len(got) != 2 || got[0].ID != "transfer-1" || got[1].ID != "transfer-2" {
+		t.Errorf("ListTransfers() = %+v, want %+v", got, want)
+	}
+}
+
+func TestService_ListTransfers_StoreError(t *testing.T) {
+	transferStore := &fakeTransferStore{listErr: errors.New("database unreachable")}
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	if _, err := svc.ListTransfers(context.Background()); err == nil {
+		t.Fatal("ListTransfers() succeeded despite a store error")
 	}
 }

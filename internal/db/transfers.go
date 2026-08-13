@@ -151,6 +151,30 @@ func (r *ModelTransferRepository) SetStatus(ctx context.Context, id string, stat
 	return nil
 }
 
+// List returns every transfer across every node, most recently requested
+// first - the Dashboard UI's fleet-wide Transfers page (unlike
+// ListByDestNode's per-node history view).
+func (r *ModelTransferRepository) List(ctx context.Context) ([]*ModelTransfer, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+modelTransferColumns+` FROM model_transfers ORDER BY requested_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list model transfers: %w", err)
+	}
+	defer rows.Close()
+
+	var transfers []*ModelTransfer
+	for rows.Next() {
+		t, err := scanModelTransfer(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list model transfers: %w", err)
+		}
+		transfers = append(transfers, t)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list model transfers: %w", err)
+	}
+	return transfers, nil
+}
+
 // ListByDestNode returns every transfer targeting a node, most recently
 // requested first - the Transfers dashboard's per-node history view.
 func (r *ModelTransferRepository) ListByDestNode(ctx context.Context, destNodeID string) ([]*ModelTransfer, error) {
