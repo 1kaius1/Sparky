@@ -64,6 +64,9 @@ func TestLoad_DefaultsApply(t *testing.T) {
 	if cfg.AuditForwardEnabled {
 		t.Errorf("AuditForwardEnabled = true, want false by default")
 	}
+	if cfg.BreakGlassAllowedIPs != "" {
+		t.Errorf("BreakGlassAllowedIPs = %q, want empty by default", cfg.BreakGlassAllowedIPs)
+	}
 }
 
 func TestLoad_OverridesDefaults(t *testing.T) {
@@ -72,6 +75,7 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	t.Setenv("LOG_LEVEL", "debug")
 	t.Setenv("LOG_FORMAT", "json")
 	t.Setenv("AUDIT_FORWARD_ENABLED", "true")
+	t.Setenv("BREAKGLASS_ALLOWED_IPS", "127.0.0.1,10.0.0.0/24")
 
 	cfg, err := Load()
 	if err != nil {
@@ -89,6 +93,9 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	}
 	if !cfg.AuditForwardEnabled {
 		t.Errorf("AuditForwardEnabled = false, want true")
+	}
+	if cfg.BreakGlassAllowedIPs != "127.0.0.1,10.0.0.0/24" {
+		t.Errorf("BreakGlassAllowedIPs = %q, want %q", cfg.BreakGlassAllowedIPs, "127.0.0.1,10.0.0.0/24")
 	}
 }
 

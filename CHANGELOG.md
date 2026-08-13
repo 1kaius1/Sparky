@@ -862,6 +862,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a subsequent Unload attempt against that non-running instance correctly
   got a real 409 `NOT_RUNNING`, and the Model profiles page correctly
   re-offered Load once the instance reached its terminal `failed` state.
+- A browser-usable break-glass (SuperAdmin) login page (`GET
+  /login/break-glass`, `web/templates/pages/breakglass_login.html`, a
+  single password field - no username, since the SuperAdmin is not an AD
+  identity), gated by a new `breakGlassIPWhitelist` middleware
+  (`internal/httpapi/breakglass_ip_whitelist.go`). `POST /login/break-glass`
+  now serves both the existing JSON API contract and the new form's own
+  submission, branching on `Content-Type` via the same `isFormRequest`/
+  `handleBreakGlassLoginFormSubmit` pattern the regular login page already
+  established. Both verbs sit behind the new middleware equally - the JSON
+  API path is gated the same as the browser form, since both check the
+  identical sensitive credential; `internal/config` gains an optional
+  `BREAKGLASS_ALLOWED_IPS` (comma-separated IPs/CIDR ranges, parsed once at
+  `httpapi.New()` construction time, empty means allow from anywhere, same
+  off-by-default shape as `AUDIT_FORWARD_ENABLED`). Client IP is
+  `r.RemoteAddr`, not `X-Forwarded-For` - see PLANNING.md's Decisions Log
+  for both of these confirmed design choices. A rejection gets the existing
+  JSON error envelope (403 `IP_NOT_ALLOWED`) regardless of caller type,
+  plus a plain log line - no DB audit write, since login events remain
+  outside `internal/audit`'s scope, unchanged from every prior login phase.
+  No CSRF or rate limiting added - both are pre-existing, app-wide gaps
+  affecting every form in this codebase equally, not specific to this page.
+  Verified with new unit tests across `internal/config` and
+  `internal/httpapi` (whitelist parsing/matching for a single IP, a CIDR
+  range, IPv6, a malformed-`RemoteAddr` fallback, and empty-allows-all; the
+  page's render/redirect/re-render paths; and that a wrong-password attempt
+  from a non-whitelisted IP gets 403 `IP_NOT_ALLOWED` before the credential
+  check ever runs, not 401).
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
