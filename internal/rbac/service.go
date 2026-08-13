@@ -21,6 +21,7 @@ var ErrNotPermitted = errors.New("not permitted")
 type userStore interface {
 	FindByID(ctx context.Context, id string) (*db.User, error)
 	UpdateTier(ctx context.Context, id string, tier db.Tier, elevatedBy *string, elevatedAt time.Time) error
+	List(ctx context.Context) ([]*db.User, error)
 }
 
 // auditRecorder is the subset of *audit.Recorder this package needs,
@@ -90,4 +91,25 @@ func (s *Service) ElevateTier(ctx context.Context, actor Actor, targetUserID str
 		return fmt.Errorf("record audit: %w", err)
 	}
 	return nil
+}
+
+// ListUsers returns every user, ordered by display name, if actor is
+// permitted to view the Users & permissions roster - see
+// rbac.CanViewUsers. The RBAC check lives here, not only at the HTTP
+// layer, matching audit.Recorder.List's own reasoning: the guarantee
+// travels with the method regardless of caller. Returns ErrNotPermitted
+// if actor is not permitted - this is a read of the full roster (AD SID,
+// tier, elevation history), not the narrower per-ID FindByID lookup every
+// RBAC-gated handler already does to resolve its own actor, so it gets
+// its own check rather than reusing CanManageNodes or CanViewAuditLog.
+func (s *Service) ListUsers(ctx context.Context, actor Actor) ([]*db.User, error) {
+	if !CanViewUsers(actor) {
+		return nil, ErrNotPermitted
+	}
+
+	users, err := s.users.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return users, nil
 }

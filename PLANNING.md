@@ -60,13 +60,13 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-4 are done (base layout/sidebar shell, session-gated
-routing, five working read-only pages - Dashboard overview, Nodes, Model
-profiles, Transfers, Audit log; a real HTML login page and a logout control -
-no write/action forms, the remaining three sidebar sections, or SSE wiring
-yet). The bare-metal install script has not been started - Dashboard UI Phase
-5 (the remaining sidebar sections and write forms) is the current active
-work, see Current Sprint / Active Work below.
+Dashboard UI Phases 1-5 are done (base layout/sidebar shell, session-gated
+routing, six working read-only pages - Dashboard overview, Nodes, Model
+profiles, Transfers, Audit log, Users & permissions; a real HTML login page
+and a logout control - no write/action forms, the remaining two sidebar
+sections, or SSE wiring yet). The bare-metal install script has not been
+started - Dashboard UI Phase 6 (the remaining sidebar sections and write
+forms) is the current active work, see Current Sprint / Active Work below.
 
 ---
 
@@ -1027,14 +1027,56 @@ work, see Current Sprint / Active Work below.
           the break-glass SuperAdmin session gets 200 without needing a
           tier lookup at all, an unauthenticated request gets 401, and
           the `HX-Request` partial correctly omits the sidebar.
-    - [ ] Phase 5 and beyond (not started): the remaining three sidebar
-          sections (Metrics, Users & permissions, Settings), write/action
-          forms for the three Phase 1 pages (profile create/edit, node
-          registration, instance load/unload -
-          `internal/profiles.Service`/`internal/nodes.Service`/
+    - [x] Phase 5: the Users & permissions sidebar section as a sixth
+          read-only page - the first slice of "Phase 5 and beyond", scoped
+          down the same way Phases 2-4 were (confirmed with the user via
+          an explicit multi-option choice - see this date's Decisions Log
+          entry). Same Admin sidebar floor as Audit log, so the second
+          Dashboard UI page needing a real RBAC check, not just a session
+          check. Complete when the compiled binary, driven with real HTTP
+          requests against a real Postgres instance, serves a real roster
+          gated by actual tier, not just session presence. Done -
+          `rbac.CanViewUsers` (Admin/SuperAdmin only, no override path,
+          same shape as `CanViewAuditLog`). Unlike Audit log, whose RBAC
+          check lives in `internal/audit.Recorder.List`, this page's full
+          roster is exposed (not just an already-permitted record's
+          `actor_id` resolved to a name), so the check lives in
+          `rbac.Service.ListUsers` instead - `rbac.Service` already wraps
+          `UserRepository` via its `userStore` interface (gained `List`)
+          for `ElevateTier`, so this is the natural home rather than a new
+          package. `rbac.Service` is wired into `cmd/sparky-server/main.go`
+          for the first time this phase - `ElevateTier` itself still has
+          no HTTP caller, since no write/action forms exist yet. New
+          `internal/httpapi/users.go` resolves the viewer's own tier via
+          the existing `actorFromIdentity` helper (shared with Audit log)
+          and maps `rbac.ErrNotPermitted` to a 403; each row's
+          `elevated_by` resolves to a display name via the same
+          map-of-names pattern already used for actor names on Audit log
+          and node names on Model profiles/Transfers - built from the
+          roster response itself, not a second query. Verified two ways:
+          new unit tests (RBAC permit/deny in `internal/rbac`,
+          elevated-by-name resolution/empty-state/list-failure/
+          forbidden/unauthenticated/HX-Request handling in
+          `internal/httpapi`) plus a genuine end-to-end pass through the
+          actual compiled `sparky-server` binary against a real Postgres
+          instance - a real Admin user, a real Developer (non-Admin) user
+          with `elevated_by`/`elevated_at` set to the Admin, and the
+          break-glass SuperAdmin, following the same session-cookie-signed-
+          out-of-band approach Phase 4 established (no write path exists
+          yet to produce a session through the app itself) - confirming
+          the Admin session gets a real 200 with both users and the
+          elevator's name resolved, the Developer session gets a real 403,
+          the SuperAdmin session gets 200 without a tier lookup, an
+          unauthenticated request gets 401, and the `HX-Request` partial
+          correctly omits the sidebar.
+    - [ ] Phase 6 and beyond (not started): the remaining two sidebar
+          sections (Metrics, Settings), write/action forms for the three
+          Phase 1 pages (profile create/edit, node registration, instance
+          load/unload - `internal/profiles.Service`/`internal/nodes.Service`/
           `internal/lifecycle.Service` already have the RBAC-gated
-          mutation methods these forms would call), SSE wiring for live
-          telemetry/transfer progress, and combining
+          mutation methods these forms would call, and
+          `rbac.Service.ElevateTier` for a Users & permissions edit form),
+          SSE wiring for live telemetry/transfer progress, and combining
           `internal/transfers.Service.HandleTransferProgress`/
           `internal/lifecycle.Service.HandleInstanceResult`/
           `internal/metrics.Service.HandleTelemetry` into the single
@@ -1091,12 +1133,12 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 5 - the remaining three sidebar sections
-  (Metrics, Users & permissions, Settings) and write/action forms for the
-  three Phase 1 pages. Phases 1 (base layout, session-gated routing,
-  Dashboard/Nodes/Model profiles read views), 2 (login page, logout
-  control), 3 (Transfers read view), and 4 (Audit log read view, the first
-  Admin-tier-gated page) are done.
+- Next up: Dashboard UI Phase 6 - the remaining two sidebar sections
+  (Metrics, Settings) and write/action forms for the three Phase 1 pages.
+  Phases 1 (base layout, session-gated routing, Dashboard/Nodes/Model
+  profiles read views), 2 (login page, logout control), 3 (Transfers read
+  view), 4 (Audit log read view, the first Admin-tier-gated page), and 5
+  (Users & permissions read view) are done.
 
 ---
 
@@ -1198,6 +1240,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | Dashboard UI's "Phase 4 and beyond" bundle (four remaining sidebar sections, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Audit log section was built as Phase 4 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the three prior phase-scoping entries (2026-08-12, three times now): the bundle was several genuinely distinct pieces of work. Audit log specifically was offered as "of the four remaining sections, most similar in shape to what's already built - a straightforward list, no aggregation or charting" (unlike Metrics or Settings) | Building all four remaining sections at once, write/action forms for the three Phase 1 pages, or the `OnMessage` dispatcher consolidation instead (all three offered as explicit alternatives; user chose Audit log) |
 | 2026-08-12 | Audit log's RBAC check (`rbac.CanViewAuditLog`) lives inside `audit.Recorder.List` itself, not in a separate HTTP middleware (`RequireAdmin` was considered and not built) | Matches this codebase's existing precedent for every write action already gated (`transfers.Service.InitiateTransfer`, `rbac.Service.ElevateTier`, etc.): the permission check happens inside the Service-layer method, which takes `rbac.Actor` as a real parameter and returns `rbac.ErrNotPermitted` on refusal, so the guarantee travels with the method regardless of caller - a CLI tool or a different code path calling `Recorder.List` directly gets the same protection an HTTP middleware would only enforce for requests that happen to pass through it | A dedicated `RequireAdmin` middleware chained after `RequireSession` (rejected: would duplicate the authorization decision in two places - the middleware and, eventually, any other caller of `Recorder.List` - for no benefit over checking once, in the one place that's always on the path) |
 | 2026-08-12 | `internal/audit`'s `writer` interface (and the `Recorder` field backing it) was renamed to `store`, widened to require both `Write` and `List` | `Recorder` is `audit_log`'s single sanctioned access point for both directions now, not writer-only - its own doc comment already framed it that way ("the only sanctioned path to the audit log," not "the only sanctioned way to write to it"). One interface matches that framing; `*db.AuditRepository` (the only real implementation) already satisfies both methods naturally, so no production call site changed, only the package's own test fake gained a `List` method | Two separate interfaces (a `writer` for `Record` and a distinct `reader` for `List`), composed via two fields on `Recorder` (rejected: `Recorder` has exactly one backing store either way - `*db.AuditRepository` - so two fields pointing at the same real value in production adds indirection with no actual decoupling benefit) |
+| 2026-08-12 | Dashboard UI's "Phase 5 and beyond" bundle (remaining three sidebar sections, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Users & permissions section was built as Phase 5 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the four prior phase-scoping entries (2026-08-12, four times now): the bundle was several genuinely distinct pieces of work. Users & permissions specifically was offered as "a straightforward list, same shape as every prior phase, smallest continuation of what's proven to work" - it also reuses `UserRepository.List`, already built for Phase 4's actor-name resolution | Building all three remaining sections at once, the Metrics section (rejected as an option too, since it needs Chart.js/aggregation - a new UI shape, not a continuation), write/action forms, or the `OnMessage` dispatcher consolidation instead (all offered as explicit alternatives; user chose Users & permissions) |
+| 2026-08-12 | Users & permissions' RBAC check (`rbac.CanViewUsers`) lives in `rbac.Service.ListUsers`, not `internal/audit`-style inside a new dedicated Service, and not reusing `audit.Recorder.List`'s own check | `rbac.Service` already exists and already wraps `UserRepository` via its `userStore` interface (for `ElevateTier`) - widening `userStore` with `List` and adding `ListUsers` alongside it keeps every RBAC-gated action on `Users` in one place, rather than splitting Users-related authorization across `rbac.Service` (writes) and a new package (reads). This also means `cmd/sparky-server/main.go` constructs a real `rbac.Service` for the first time, ahead of `ElevateTier` having any HTTP caller | A new `internal/users` package mirroring `internal/audit`'s shape (rejected: `rbac.Service` was already the RBAC-gated home for `Users` table access via `ElevateTier` - a second package covering the read side of the exact same table would split one concern in two for no benefit); reusing `rbac.CanViewAuditLog` for this page too (rejected: same tier floor today, but a distinct capability conceptually - Audit log and the user roster could diverge in who may view them later, and `CanViewAuditLog`'s own doc comment is specific to the Audit log) |
 
 ---
 
@@ -1217,7 +1261,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route already built (login, logout, profile create/edit, node registration, transfers, instance load/unload) - not specific to Dashboard UI Phase 2's login form. Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user) |
 | No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
-| The sidebar's `Audit log` link is shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks it gets a raw JSON 403 (`handleAuditLog`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding one nav link by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just Audit log's own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case |
+| The sidebar's `Audit log` and `Users & permissions` links are shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks either gets a raw JSON 403 (`handleAuditLog`/`handleUsers`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding these nav links by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just these two pages' own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case. Phase 5 (Users & permissions) hit the identical gap Phase 4 (Audit log) already documented here rather than opening a second, near-duplicate row |
 
 ---
 

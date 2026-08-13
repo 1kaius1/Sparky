@@ -1,0 +1,28 @@
+{{define "content"}}
+<h1>Users &amp; permissions</h1>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Display name</th>
+      <th>Tier</th>
+      <th>Last login</th>
+      <th>Elevated by</th>
+      <th>Elevated at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Users}}
+    <tr>
+      <td>{{.DisplayName}}</td>
+      <td>{{.Tier}}</td>
+      <td>{{.LastLoginAt}}</td>
+      <td>{{.ElevatedBy}}</td>
+      <td>{{.ElevatedAt}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="5" class="empty">No users yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

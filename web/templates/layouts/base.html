@@ -30,6 +30,10 @@
              class="{{if eq .ActiveSection "transfers"}}active{{end}}">Transfers</a>
         </li>
         <li>
+          <a href="/users" hx-get="/users" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "users"}}active{{end}}">Users &amp; permissions</a>
+        </li>
+        <li>
           <a href="/audit-log" hx-get="/audit-log" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "audit"}}active{{end}}">Audit log</a>
         </li>
