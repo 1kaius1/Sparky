@@ -189,7 +189,9 @@ any particular hardware class:
   system account for direct filesystem access to model storage. Used when GPU
   passthrough isn't viable - e.g. a single-GPU workstation already using that GPU
   for its own host session, not something specific to DGX Spark hardware. A
-  headless Spark can use the Docker/Podman backend below just as well.
+  Spark's GB10 GPU supports passthrough to a container without affecting a
+  display connected to it (NVIDIA's supported use case for that hardware), so a
+  Spark can use the Docker/Podman backend below just as well.
 - **Docker/Podman**: targets the standard Docker Engine API against either runtime's
   socket - Podman exposes a Docker-Engine-API-compatible socket, so one
   implementation serves both. GPU passthrough is standardized on CDI

@@ -45,7 +45,7 @@ One row per compute host - a Spark or a generic Docker/Podman GPU machine.
 | `id` | uuid, PK | |
 | `name` | text | Human label, e.g. `spark-1` |
 | `hostname` / `ip_address` | text | Where the agent's WebSocket connection originates from |
-| `runtime_backend` | enum | `docker` / `podman` / `bare-metal` - selects how the agent runs the inference engine: inside a container with GPU passthrough via CDI, or (`bare-metal`) as a direct child process when passthrough isn't viable (e.g. a single-GPU workstation already using that GPU for its own host session). Not tied to any particular hardware class - a headless DGX Spark can use any of the three depending on its own passthrough situation |
+| `runtime_backend` | enum | `docker` / `podman` / `bare-metal` - selects how the agent runs the inference engine: inside a container with GPU passthrough via CDI, or (`bare-metal`) as a direct child process when passthrough isn't viable (e.g. a single-GPU workstation already using that GPU for its own host session). Not tied to any particular hardware class - a DGX Spark's GB10 GPU supports passthrough to a container without affecting a display connected to it (NVIDIA's supported use case for that hardware), so a Spark can use any of the three depending on its own setup |
 | `gpu_memory_gb` | numeric | VRAM. Equal to `cpu_memory_gb` for a Spark's unified memory - a Spark is the degenerate case of this same model, not a special case |
 | `cpu_memory_gb` | numeric | System RAM |
 | `fabric_group_id` | uuid, nullable, FK -> Fabric groups.id | Physical cluster linkage, if any. Null for any node incapable of clustering. Not present until the v0.3.0 migration that introduces Fabric groups - there is nothing for it to reference before then |

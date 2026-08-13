@@ -8,11 +8,13 @@
 -- five combinations unrepresentable instead of merely rejected.
 --
 -- 'spark' also wrongly conflated a hardware label with a runtime choice:
--- a headless Spark can use Docker/Podman GPU passthrough fine; bare-metal
--- direct exec is actually needed for hardware without viable passthrough
--- (e.g. a single-GPU workstation already using that GPU for its own host
--- session), independent of whether the hardware happens to be a Spark.
--- See PLANNING.md's Decisions Log for the full correction.
+-- a DGX Spark's GB10 GPU supports passthrough to a container without
+-- affecting a display connected to it (NVIDIA's supported use case for
+-- that hardware), so Docker/Podman GPU passthrough works fine there;
+-- bare-metal direct exec is actually needed for hardware without viable
+-- passthrough (e.g. a single-GPU workstation already using that GPU for
+-- its own host session), independent of whether the hardware happens to
+-- be a Spark. See PLANNING.md's Decisions Log for the full correction.
 
 CREATE TYPE runtime_backend AS ENUM ('docker', 'podman', 'bare-metal');
 

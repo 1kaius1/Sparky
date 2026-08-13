@@ -900,7 +900,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`docker-gpu`+`container_runtime` -> the matching value, `spark` ->
   `bare-metal`) and verified up/down/up against a real Postgres instance.
   The original design conflated a hardware label with a runtime-mechanism
-  choice, backwards: Spark is headless, so CDI GPU passthrough into a
+  choice, backwards: a DGX Spark's GB10 GPU supports passthrough to a
+  container without affecting a display connected to it (NVIDIA's
+  supported use case for that hardware), so CDI GPU passthrough into a
   Docker/Podman container should work fine there, while a single-GPU
   workstation (e.g. this project's own RTX 4090 dev laptop) is the case
   that actually needs the bare-metal backend, since its GPU is already

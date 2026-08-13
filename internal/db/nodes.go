@@ -19,11 +19,12 @@ import (
 // (RuntimeBackendBareMetal) as a direct child process when passthrough
 // isn't viable - e.g. a single-GPU workstation already using that GPU
 // for its own host session. Not specific to any particular hardware
-// class (a headless DGX Spark, for instance, can use any of the three
-// depending on its own passthrough situation) - see PLANNING.md's
-// Decisions Log for the correction this replaced (node_type/
-// container_runtime previously conflated a hardware label with this
-// choice).
+// class - a DGX Spark's GB10 GPU, for instance, supports passthrough to
+// a container without affecting a display connected to it (NVIDIA's
+// supported use case for that hardware), so a Spark can use any of the
+// three depending on its own setup - see PLANNING.md's Decisions Log for
+// the correction this replaced (node_type/container_runtime previously
+// conflated a hardware label with this choice).
 type RuntimeBackend string
 
 const (
