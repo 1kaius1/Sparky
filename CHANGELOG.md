@@ -680,6 +680,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   invalid tier value getting 400, and finally the break-glass SuperAdmin
   session successfully performing the exact skip-a-step promotion the
   regular Admin had just been refused.
+- Dashboard UI Phase 9: the node registration form, the Dashboard UI's
+  second write/action form. No changes needed in `internal/nodes` -
+  `nodes.Service.RegisterNode` and `RegisterNodeParams.validate()` were
+  both already fully built and tested before this milestone started, same
+  shape as Phase 8's `ElevateTier` discovery; this phase only gave
+  `RegisterNode` its first HTTP caller. New `internal/httpapi`:
+  `nodeRegistrar` interface, referencing `nodes.RegisterNodeParams`
+  directly (the one interface in this package that can't avoid importing
+  a domain package's exported type, since that struct is
+  `RegisterNode`'s real parameter type); `handleRegisterNodeForm` (`GET
+  /nodes/register`) and `handleRegisterNode` (`POST /nodes/register`).
+  Unlike Phase 8's tier-change form, a successful submission here cannot
+  use the blunt `HX-Redirect`-to-the-list pattern - `RegisterNode`'s
+  plaintext bearer token is returned exactly once and would be lost on an
+  immediate redirect - so success instead renders a dedicated
+  confirmation page (`node_registered.html`) showing the token with an
+  explicit one-time warning, and the whole flow uses a plain `<form
+  method="post">` full-page navigation rather than an `hx-post` partial
+  swap. A validation failure (`nodes.ErrInvalidNode`) re-renders the form
+  with the specific reason and every previously-typed field preserved.
+  The Nodes list page gained a `CanRegister`-gated "Register node" link,
+  resolved the same non-security-boundary way as the Users page's
+  per-row `ReachableTiers`. This is the second new state-changing
+  endpoint added since the app-wide CSRF gap was documented - joins it
+  the same way Phase 8's did, not retrofitted in isolation; PLANNING.md
+  Known Issues extended accordingly. Verified with new unit tests
+  (`CanRegister` shown/hidden by tier, the form's own 403/401 gating,
+  successful registration with correct `RegisterNodeParams` construction
+  including the spark-vs-docker-gpu `ContainerRuntime` nil/non-nil cases,
+  forbidden, invalid-node re-display with preserved field values,
+  non-numeric memory input rejected before the Service call,
+  unauthenticated) and a genuine end-to-end pass against the actual
+  compiled `sparky-server` binary against a real Postgres instance - a
+  real Admin registering a real spark node (confirmed in the database:
+  only `bearer_token_hash` persisted, never the plaintext; `registered_by`
+  set to the Admin; a real `registered_node` audit row) with the real
+  plaintext token rendered on the confirmation page, a Developer session
+  correctly refused both the form and the submission, a missing-hostname
+  submission correctly re-shown with its specific validation message, a
+  docker-gpu submission missing `container_runtime` correctly refused
+  with the matching message, and an unauthenticated request getting 401.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

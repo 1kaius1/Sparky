@@ -1,6 +1,10 @@
 {{define "content"}}
 <h1>Nodes</h1>
 
+{{if .Data.CanRegister}}
+<p><a href="/nodes/register">Register node</a></p>
+{{end}}
+
 <table class="data-table">
   <thead>
     <tr>
