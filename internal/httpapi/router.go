@@ -21,6 +21,7 @@ import (
 type API struct {
 	loginService           *LoginService
 	breakGlassLoginService *BreakGlassLoginService
+	breakGlassIPWhitelist  *breakGlassIPWhitelist
 	setupGate              *setupGate
 	sessionSecret          string
 	agentConn              http.Handler
@@ -88,14 +89,21 @@ type API struct {
 // endpoint (also Phase 11) via events.Broker.Subscribe - ARCHITECTURE.md's
 // committed live-telemetry/transfer-progress channel; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
-// response on its own. Returns an error if the embedded templates
+// response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
+// parsed once here into breakGlassIPWhitelist, gating both GET and POST
+// /login/break-glass - empty means allow from anywhere, see
+// breakglass_ip_whitelist.go. Returns an error if the embedded templates
 // (web.FS) fail to parse - a template syntax error is a build-time bug,
 // caught here rather than surfacing as a broken page on first request.
-func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
+func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, sessionSecret string, agentConn http.Handler,
 	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
+	}
+	ipWhitelist, err := newBreakGlassIPWhitelist(breakGlassAllowedIPs, logger)
+	if err != nil {
+		return nil, fmt.Errorf("parse BREAKGLASS_ALLOWED_IPS: %w", err)
 	}
 	staticFS, err := fs.Sub(web.FS, "static")
 	if err != nil {
@@ -105,6 +113,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 	return &API{
 		loginService:           loginService,
 		breakGlassLoginService: breakGlassLoginService,
+		breakGlassIPWhitelist:  ipWhitelist,
 		setupGate:              newSetupGate(breakGlassStore),
 		sessionSecret:          sessionSecret,
 		agentConn:              agentConn,
@@ -148,7 +157,16 @@ func (a *API) Router() http.Handler {
 	// isFormRequest in login_page.go.
 	r.Get("/login", a.handleLoginPage)
 	r.Post("/login", a.handleLogin)
-	r.Post("/login/break-glass", a.handleBreakGlassLogin)
+	// GET serves the break-glass sign-in form; POST serves both that
+	// form's own submission and the existing JSON API contract - same
+	// isFormRequest branch handleLogin already established. Both verbs
+	// sit behind a.breakGlassIPWhitelist - the credential being protected
+	// is identical either way, so a curl/API caller gets the same IP gate
+	// a browser does (BREAKGLASS_ALLOWED_IPS - empty means allow from
+	// anywhere, see breakglass_ip_whitelist.go and PLANNING.md's
+	// Decisions Log).
+	r.With(a.breakGlassIPWhitelist.middleware).Get("/login/break-glass", a.handleBreakGlassLoginPage)
+	r.With(a.breakGlassIPWhitelist.middleware).Post("/login/break-glass", a.handleBreakGlassLogin)
 	r.Post("/logout", a.handleLogout)
 
 	// Outside /api/v1: this isn't a REST endpoint (CLAUDE.md API

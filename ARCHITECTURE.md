@@ -299,6 +299,10 @@ Service Layer -> Agent-Communication Layer -> WebSocket message (JSON, request I
 - SuperAdmin (break-glass) credential is isolated - stored so only the application
   process can read or validate it, set via an interactive CLI subcommand
   (`sparky set-superadmin-password`), never through the web UI
+- `/login/break-glass` (both its browser form and its JSON API contract) can
+  optionally be restricted to a configured IP/CIDR allowlist
+  (`BREAKGLASS_ALLOWED_IPS`) - off by default, allowing from anywhere, same as every
+  other optional security control in this project
 - Every state-changing action is audited with no exceptions, including SuperAdmin's
 - Agent authentication: bearer token, presented by the agent when it dials out.
   Chosen over mTLS for simplicity, consistent with the secret-handling approach below

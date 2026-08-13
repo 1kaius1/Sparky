@@ -120,8 +120,16 @@ type breakGlassLoginRequest struct {
 // handleBreakGlassLogin is a distinct endpoint from handleLogin, not a
 // special case within it - see PLANNING.md Decisions Log: the SuperAdmin
 // is not an AD/LDAP identity, and a separate path avoids any risk of
-// colliding with a real AD username.
+// colliding with a real AD username. Like handleLogin, it now serves two
+// callers - the JSON API contract below (unchanged) and the break-glass
+// login page's own browser submission (handleBreakGlassLoginFormSubmit in
+// breakglass_login_page.go) - branching on the same isFormRequest check.
 func (a *API) handleBreakGlassLogin(w http.ResponseWriter, r *http.Request) {
+	if isFormRequest(r) {
+		a.handleBreakGlassLoginFormSubmit(w, r)
+		return
+	}
+
 	var req breakGlassLoginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "request body must be valid JSON")

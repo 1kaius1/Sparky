@@ -23,10 +23,11 @@ type Config struct {
 
 	SessionSecret string
 
-	ListenPort          string
-	LogLevel            string
-	LogFormat           string
-	AuditForwardEnabled bool
+	ListenPort           string
+	LogLevel             string
+	LogFormat            string
+	AuditForwardEnabled  bool
+	BreakGlassAllowedIPs string
 }
 
 // required maps each mandatory environment variable to the Config field it
@@ -41,10 +42,11 @@ type required struct {
 // Lifecycle, Config / Env Validation.
 func Load() (*Config, error) {
 	cfg := &Config{
-		ListenPort:          getEnvDefault("LISTEN_PORT", "8080"),
-		LogLevel:            getEnvDefault("LOG_LEVEL", "info"),
-		LogFormat:           getEnvDefault("LOG_FORMAT", "text"),
-		AuditForwardEnabled: os.Getenv("AUDIT_FORWARD_ENABLED") == "true",
+		ListenPort:           getEnvDefault("LISTEN_PORT", "8080"),
+		LogLevel:             getEnvDefault("LOG_LEVEL", "info"),
+		LogFormat:            getEnvDefault("LOG_FORMAT", "text"),
+		AuditForwardEnabled:  os.Getenv("AUDIT_FORWARD_ENABLED") == "true",
+		BreakGlassAllowedIPs: getEnvDefault("BREAKGLASS_ALLOWED_IPS", ""),
 	}
 
 	fields := []required{

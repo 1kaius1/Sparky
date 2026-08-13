@@ -49,6 +49,15 @@ func loadPageTemplates() (map[string]*template.Template, error) {
 	}
 	result["login"] = loginTmpl
 
+	// breakglass_login.html is also a standalone document, same reasoning
+	// as login.html above - it's the SuperAdmin's own sign-in form, not
+	// part of the authenticated app shell.
+	breakGlassLoginTmpl, err := template.ParseFS(web.FS, "templates/pages/breakglass_login.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse break-glass login template: %w", err)
+	}
+	result["breakglass_login"] = breakGlassLoginTmpl
+
 	return result, nil
 }
 

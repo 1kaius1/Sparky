@@ -354,6 +354,7 @@ with `existingSecret` support, etc.). Agent-specific variables are documented in
 | `LOG_LEVEL`              | No       | `info`      | Log verbosity                                     |
 | `LOG_FORMAT`             | No       | `json` (prod) / `text` (dev) | See `ARCHITECTURE.md` Logging   |
 | `AUDIT_FORWARD_ENABLED`  | No       | `false`     | Enables the optional active syslog/GELF push - see `SCHEMA.md` Audit settings |
+| `BREAKGLASS_ALLOWED_IPS` | No       | (empty, allow all) | IP/CIDR allowlist for `/login/break-glass` - see `.env.example` |
 
 Everything else that's user-configurable after first run (metrics export
 destination, audit retention, permission overrides) lives in the database, set
