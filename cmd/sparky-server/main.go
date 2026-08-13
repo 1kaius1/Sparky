@@ -110,10 +110,12 @@ func main() {
 	// Transfers page's ListTransfers, not a real InitiateTransfer caller.
 	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
 
-	// rbacService is currently only wired for the Users & permissions
-	// page's RBAC-gated roster read (ListUsers) - ElevateTier has no HTTP
-	// caller yet, since no write/action forms exist in the Dashboard UI
-	// (Phase 5 and beyond, PLANNING.md).
+	// rbacService backs both the Users & permissions page's RBAC-gated
+	// roster read (ListUsers) and, as of Dashboard UI Phase 8, its
+	// tier-change form's own write (ElevateTier) - the same value is
+	// passed twice below, once per narrow interface httpapi expects
+	// (userRoster, userElevator), since both were already this Service's
+	// job before either had an HTTP caller.
 	rbacService := rbac.NewService(users, auditRecorder)
 
 	// settingsService backs the Settings page's read-only view of the two
@@ -134,7 +136,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
-		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, settingsService, metricsService, logger)
+		nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

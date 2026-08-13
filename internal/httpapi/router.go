@@ -32,6 +32,7 @@ type API struct {
 	users      userLister
 	audit      auditLister
 	userRoster userRoster
+	elevator   userElevator
 	settings   settingsViewer
 	metrics    metricsLister
 	templates  map[string]*template.Template
@@ -57,19 +58,23 @@ type API struct {
 // Users & permissions page (same Admin floor as Audit log) via
 // rbac.Service.ListUsers - a distinct, RBAC-gated dependency from users,
 // since that page exposes the full roster itself rather than resolving an
-// already-permitted record's actor_id; settingsSvc backs the Settings
-// page (same Admin floor) via internal/settings.Service.Get, covering the
-// two singleton config rows neither internal/metrics nor internal/audit
-// owns - see that package's doc comment; metricsSvc backs the Metrics
-// page, back at the Read-only floor like nodes/profiles/instances/
-// transfers - unlike audit/roster/settingsSvc, no RBAC check is involved;
-// logger is used for rendering/query failures a handler can't turn into a
-// useful HTTP response on its own. Returns an error if the embedded
-// templates (web.FS) fail to parse - a template syntax error is a
-// build-time bug, caught here rather than surfacing as a broken page on
-// first request.
+// already-permitted record's actor_id; elevator backs that page's
+// tier-change form (PLANNING.md Dashboard UI Phase 8, the first
+// write/action form) via rbac.Service.ElevateTier - roster and elevator
+// are two narrow interfaces satisfied by the same *rbac.Service value in
+// production, not two different dependencies; settingsSvc backs the
+// Settings page (same Admin floor) via internal/settings.Service.Get,
+// covering the two singleton config rows neither internal/metrics nor
+// internal/audit owns - see that package's doc comment; metricsSvc backs
+// the Metrics page, back at the Read-only floor like nodes/profiles/
+// instances/transfers - unlike audit/roster/elevator/settingsSvc, no RBAC
+// check is involved; logger is used for rendering/query failures a
+// handler can't turn into a useful HTTP response on its own. Returns an
+// error if the embedded templates (web.FS) fail to parse - a template
+// syntax error is a build-time bug, caught here rather than surfacing as
+// a broken page on first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -92,6 +97,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		users:                  users,
 		audit:                  auditLog,
 		userRoster:             roster,
+		elevator:               elevator,
 		settings:               settingsSvc,
 		metrics:                metricsSvc,
 		templates:              templates,
@@ -162,6 +168,11 @@ func (a *API) Router() http.Handler {
 	// /users' floor is also Admin, same reasoning as /audit-log - the tier
 	// check happens inside handleUsers via rbac.Service.ListUsers.
 	r.With(a.RequireSession).Get("/users", a.handleUsers)
+	// The tier-change form's own RBAC decision happens inside
+	// handleElevateUser via rbac.Service.ElevateTier, same reasoning as
+	// every other Admin-floor page above - RequireSession only confirms a
+	// session exists.
+	r.With(a.RequireSession).Post("/users/{id}/tier", a.handleElevateUser)
 	// /settings' floor is also Admin, same reasoning as /audit-log and
 	// /users - the tier check happens inside handleSettings via
 	// settings.Service.Get.
