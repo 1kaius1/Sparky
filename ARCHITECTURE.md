@@ -183,9 +183,13 @@ layer rather than managing WebSocket connections itself.
 ### Agent
 
 #### Runtime Backends
-Pluggable, selected by a node's `node_type` (`SCHEMA.md` Nodes):
-- **Bare-metal** (Spark): execs the engine process directly, running as the
-  `serviceloop` system account for direct filesystem access to model storage.
+Pluggable, selected by a node's `runtime_backend` (`SCHEMA.md` Nodes) - not tied to
+any particular hardware class:
+- **Bare-metal**: execs the engine process directly, running as the `serviceloop`
+  system account for direct filesystem access to model storage. Used when GPU
+  passthrough isn't viable - e.g. a single-GPU workstation already using that GPU
+  for its own host session, not something specific to DGX Spark hardware. A
+  headless Spark can use the Docker/Podman backend below just as well.
 - **Docker/Podman**: targets the standard Docker Engine API against either runtime's
   socket - Podman exposes a Docker-Engine-API-compatible socket, so one
   implementation serves both. GPU passthrough is standardized on CDI
@@ -199,9 +203,10 @@ that generalizes to any Linux box with an NVIDIA GPU without modification.
 
 #### Transfer Executor & Local Store Manager
 Executes downloads and rsync replications, writing to node-local storage
-(`/home/serviceloop/models/` on Spark; a per-`node_type` configurable path on
-Docker/Podman hosts). Deletion of a local model copy to free space is a distinct
-action from unloading a running instance - see `SCHEMA.md` Permission overrides.
+(`/home/serviceloop/models/` on a bare-metal host; a per-`runtime_backend`
+configurable path on Docker/Podman hosts). Deletion of a local model copy to free
+space is a distinct action from unloading a running instance - see `SCHEMA.md`
+Permission overrides.
 
 ---
 
@@ -328,8 +333,9 @@ configuration surface:
 - **Bare metal**: one-script installer (apt and dnf both supported), dedicated
   purpose-built host assumption for the central app, systemd units for both binaries,
   Postgres installed locally by the script or pointed at a remote instance via config
-- **Podman**: preferred runtime for non-Spark compute nodes; Docker-Engine-API
-  compatibility means the agent's container-management code does not fork per runtime
+- **Podman**: preferred runtime for compute nodes using the Docker/Podman backend
+  (`SCHEMA.md` Nodes' `runtime_backend`); Docker-Engine-API compatibility means the
+  agent's container-management code does not fork per runtime
 - **Kubernetes**: Helm chart controlling the same parameters `sparky setup` would
   prompt for interactively; `existingSecret` support for bring-your-own secret
   management

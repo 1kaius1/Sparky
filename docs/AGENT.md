@@ -10,8 +10,10 @@ general-purpose infrastructure.
 
 ## Project Overview
 
-The agent runs on every compute node - an NVIDIA DGX Spark or a generic Docker/Podman
-GPU host - and does four things on the central app's behalf: manages the lifecycle of
+The agent runs on every compute node - an NVIDIA DGX Spark or a generic GPU host,
+using whichever runtime backend fits its own GPU-passthrough situation (`SCHEMA.md`
+Nodes' `runtime_backend`: `docker` / `podman` / `bare-metal`) - and does four things
+on the central app's behalf: manages the lifecycle of
 inference engine processes, collects hardware telemetry, executes model transfers
 (downloads and peer-to-peer replication), and reports its own health. It connects
 *outbound* to the central app over a persistent WebSocket and never accepts inbound
@@ -39,7 +41,7 @@ See `CLAUDE.md` for the full repo tree. Agent-specific code lives under:
 agent/
 - connection/          # Connection goroutine: dial, hello/auth handshake, heartbeat, reconnect-with-backoff
 - runtime/
-  - baremetal/      # Spark: direct process exec, runs as `serviceloop`
+  - baremetal/      # Direct process exec, runs as `serviceloop` - for hosts without GPU passthrough, not specific to Spark
   - containers/      # Docker/Podman: shared Docker-Engine-API-compatible backend
 - telemetry/          # nvidia-smi and /proc collectors
 cmd/sparky-agent/      # Entry point
@@ -76,7 +78,7 @@ directly - see PLANNING.md Decisions Log, 2026-08-07. Not yet implemented; the s
 below still reflect what install.sh actually does today. -->
 
 ```bash
-# 1. Create the dedicated service account (Spark targets specifically use `serviceloop`)
+# 1. Create the dedicated service account (bare-metal hosts use `serviceloop` - see SCHEMA.md Nodes)
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin serviceloop
 
 # 2. Add it to the group that gates GPU device access (video or render, depending on distro)
@@ -161,9 +163,8 @@ come from Secrets, identically to the server.
 | `SPARKY_CENTRAL_URL`             | Yes      | -       | WebSocket URL of the central app to dial                |
 | `SPARKY_BEARER_TOKEN`            | Yes      | -       | Presented at connect time - see `ARCHITECTURE.md` Protocol |
 | `SPARKY_NODE_NAME`               | Yes      | -       | Must match this node's registered name in the central app |
-| `SPARKY_NODE_TYPE`               | Yes      | -       | `spark` or `docker-gpu` - selects the runtime backend    |
-| `SPARKY_CONTAINER_RUNTIME`       | No       | -       | `docker` or `podman` - only meaningful when `SPARKY_NODE_TYPE=docker-gpu` |
-| `SPARKY_MODEL_STORAGE_PATH`      | No       | `/home/serviceloop/models` on Spark | Per-`node_type` configurable, not hardcoded |
+| `SPARKY_RUNTIME_BACKEND`         | Yes      | -       | `docker`, `podman`, or `bare-metal` - see `SCHEMA.md` Nodes |
+| `SPARKY_MODEL_STORAGE_PATH`      | No       | `/home/serviceloop/models` on a bare-metal host | Per-`runtime_backend` configurable, not hardcoded |
 | `SPARKY_TELEMETRY_POLL_INTERVAL` | No       | `5s`    | How often telemetry is collected and pushed              |
 | `LOG_LEVEL`                      | No       | `info`  | |
 | `LOG_FORMAT`                     | No       | `json`  | |

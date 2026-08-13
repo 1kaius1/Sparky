@@ -893,6 +893,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   staleness - several described pre-implementation state, referenced the
   wrong milestone version, or duplicated an entry now tracked in Known
   Issues and Technical Debt.
+- Nodes' `node_type` (`spark` / `docker-gpu`) and `container_runtime`
+  (`docker` / `podman`, CHECK-constraint-paired) collapsed into a single
+  `runtime_backend` enum (`docker` / `podman` / `bare-metal`) - migration
+  `000014_nodes_collapse_runtime_backend`, backfilling existing rows
+  (`docker-gpu`+`container_runtime` -> the matching value, `spark` ->
+  `bare-metal`) and verified up/down/up against a real Postgres instance.
+  The original design conflated a hardware label with a runtime-mechanism
+  choice, backwards: Spark is headless, so CDI GPU passthrough into a
+  Docker/Podman container should work fine there, while a single-GPU
+  workstation (e.g. this project's own RTX 4090 dev laptop) is the case
+  that actually needs the bare-metal backend, since its GPU is already
+  claimed by the host OS's own session and can't be passed through at
+  all - see PLANNING.md's 2026-08-13 Decisions Log entry for the full
+  correction. `internal/db.RuntimeBackend` replaces `NodeType`/
+  `ContainerRuntime`; `Node.RuntimeBackend` is a single non-nullable field
+  (was two, one nullable); `NodeRepository.Create` takes one parameter
+  instead of two. `internal/nodes.RegisterNodeParams.RuntimeBackend`
+  replaces its two fields, and `validate()`'s pairing logic (spark must
+  have a nil `container_runtime`, docker-gpu must have a non-nil one)
+  simplifies to a plain known-value check, since a mismatched pairing is
+  no longer constructible at the Go type level - the integration test
+  that existed specifically to prove the database's CHECK constraint
+  rejected such a mismatch is removed, not updated, since there is
+  nothing left to mismatch. The node registration form
+  (`web/templates/pages/register_node.html`) now offers one "Runtime
+  backend" dropdown (`docker` / `podman` / `bare-metal`) instead of two
+  linked fields. `agent/config`'s `SPARKY_NODE_TYPE`/
+  `SPARKY_CONTAINER_RUNTIME` collapse to one required
+  `SPARKY_RUNTIME_BACKEND`, matching the schema - the agent doesn't
+  branch on this value for backend selection yet either way, that
+  remains real v0.2.0 work. SCHEMA.md, ARCHITECTURE.md, CLAUDE.md, and
+  docs/AGENT.md updated to match; PLANNING.md's v0.2.0 milestone entry
+  and Dependencies and Blockers section corrected to stop describing the
+  bare-metal backend as Spark-specific. Already-completed Phase
+  write-ups describing the old schema as it was actually built at the
+  time are deliberately left unedited, matching this project's existing
+  never-rewrite-history discipline.
 
 ### Deprecated
 

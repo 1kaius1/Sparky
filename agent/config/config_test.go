@@ -11,7 +11,7 @@ var requiredVars = []string{
 	"SPARKY_CENTRAL_URL",
 	"SPARKY_BEARER_TOKEN",
 	"SPARKY_NODE_NAME",
-	"SPARKY_NODE_TYPE",
+	"SPARKY_RUNTIME_BACKEND",
 }
 
 func setAllRequired(t *testing.T) {
@@ -19,7 +19,7 @@ func setAllRequired(t *testing.T) {
 	t.Setenv("SPARKY_CENTRAL_URL", "wss://central.example.internal/agent")
 	t.Setenv("SPARKY_BEARER_TOKEN", "token")
 	t.Setenv("SPARKY_NODE_NAME", "spark-1")
-	t.Setenv("SPARKY_NODE_TYPE", "spark")
+	t.Setenv("SPARKY_RUNTIME_BACKEND", "podman")
 }
 
 func TestLoad_AllRequiredPresent_Succeeds(t *testing.T) {
@@ -33,8 +33,8 @@ func TestLoad_AllRequiredPresent_Succeeds(t *testing.T) {
 	if cfg.NodeName != "spark-1" {
 		t.Errorf("NodeName = %q, want %q", cfg.NodeName, "spark-1")
 	}
-	if cfg.NodeType != "spark" {
-		t.Errorf("NodeType = %q, want %q", cfg.NodeType, "spark")
+	if cfg.RuntimeBackend != "podman" {
+		t.Errorf("RuntimeBackend = %q, want %q", cfg.RuntimeBackend, "podman")
 	}
 }
 
@@ -59,7 +59,6 @@ func TestLoad_DefaultsApply(t *testing.T) {
 
 func TestLoad_OverridesDefaults(t *testing.T) {
 	setAllRequired(t)
-	t.Setenv("SPARKY_CONTAINER_RUNTIME", "podman")
 	t.Setenv("SPARKY_MODEL_STORAGE_PATH", "/mnt/models")
 	t.Setenv("SPARKY_TELEMETRY_POLL_INTERVAL", "10s")
 	t.Setenv("LOG_LEVEL", "debug")
@@ -70,9 +69,6 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
 
-	if cfg.ContainerRuntime != "podman" {
-		t.Errorf("ContainerRuntime = %q, want %q", cfg.ContainerRuntime, "podman")
-	}
 	if cfg.ModelStoragePath != "/mnt/models" {
 		t.Errorf("ModelStoragePath = %q, want %q", cfg.ModelStoragePath, "/mnt/models")
 	}

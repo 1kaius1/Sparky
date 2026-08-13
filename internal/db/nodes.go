@@ -12,23 +12,24 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// NodeType mirrors the node_type Postgres enum - see
-// migrations/000005_create_nodes.up.sql and SCHEMA.md Nodes.
-type NodeType string
+// RuntimeBackend mirrors the runtime_backend Postgres enum - see
+// migrations/000014_nodes_collapse_runtime_backend.up.sql and SCHEMA.md
+// Nodes. Selects how the agent runs the inference engine: inside a
+// Docker or Podman container with GPU passthrough via CDI, or
+// (RuntimeBackendBareMetal) as a direct child process when passthrough
+// isn't viable - e.g. a single-GPU workstation already using that GPU
+// for its own host session. Not specific to any particular hardware
+// class (a headless DGX Spark, for instance, can use any of the three
+// depending on its own passthrough situation) - see PLANNING.md's
+// Decisions Log for the correction this replaced (node_type/
+// container_runtime previously conflated a hardware label with this
+// choice).
+type RuntimeBackend string
 
 const (
-	NodeTypeSpark     NodeType = "spark"
-	NodeTypeDockerGPU NodeType = "docker-gpu"
-)
-
-// ContainerRuntime mirrors the container_runtime Postgres enum - only
-// meaningful when NodeType is NodeTypeDockerGPU, enforced at the database
-// level by nodes_container_runtime_matches_type.
-type ContainerRuntime string
-
-const (
-	ContainerRuntimeDocker ContainerRuntime = "docker"
-	ContainerRuntimePodman ContainerRuntime = "podman"
+	RuntimeBackendDocker    RuntimeBackend = "docker"
+	RuntimeBackendPodman    RuntimeBackend = "podman"
+	RuntimeBackendBareMetal RuntimeBackend = "bare-metal"
 )
 
 // AgentStatus mirrors the agent_status Postgres enum - derived from the
@@ -45,18 +46,17 @@ const (
 // Node mirrors the nodes table - see SCHEMA.md Nodes. FabricGroupID is
 // deliberately absent - see migrations/000005_create_nodes.up.sql.
 type Node struct {
-	ID               string
-	Name             string
-	Hostname         string
-	IPAddress        string
-	NodeType         NodeType
-	ContainerRuntime *ContainerRuntime
-	GPUMemoryGB      float64
-	CPUMemoryGB      float64
-	AgentStatus      AgentStatus
-	LastHeartbeatAt  *time.Time
-	RegisteredBy     *string
-	RegisteredAt     time.Time
+	ID              string
+	Name            string
+	Hostname        string
+	IPAddress       string
+	RuntimeBackend  RuntimeBackend
+	GPUMemoryGB     float64
+	CPUMemoryGB     float64
+	AgentStatus     AgentStatus
+	LastHeartbeatAt *time.Time
+	RegisteredBy    *string
+	RegisteredAt    time.Time
 }
 
 // ErrNodeNotFound is returned when a lookup finds no matching row.
@@ -75,12 +75,12 @@ func NewNodeRepository(pool *pgxpool.Pool) *NodeRepository {
 	return &NodeRepository{pool: pool}
 }
 
-const nodeColumns = `id, name, hostname, ip_address, node_type, container_runtime,
+const nodeColumns = `id, name, hostname, ip_address, runtime_backend,
 	gpu_memory_gb, cpu_memory_gb, agent_status, last_heartbeat_at, registered_by, registered_at`
 
 func scanNode(row pgx.Row) (*Node, error) {
 	var n Node
-	err := row.Scan(&n.ID, &n.Name, &n.Hostname, &n.IPAddress, &n.NodeType, &n.ContainerRuntime,
+	err := row.Scan(&n.ID, &n.Name, &n.Hostname, &n.IPAddress, &n.RuntimeBackend,
 		&n.GPUMemoryGB, &n.CPUMemoryGB, &n.AgentStatus, &n.LastHeartbeatAt, &n.RegisteredBy, &n.RegisteredAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNodeNotFound
@@ -93,19 +93,17 @@ func scanNode(row pgx.Row) (*Node, error) {
 
 // Create inserts a new node. registeredBy is nil only for the break-glass
 // SuperAdmin, which is not a Users row - see SCHEMA.md Break-glass
-// credential. containerRuntime must be nil for NodeTypeSpark and non-nil
-// for NodeTypeDockerGPU - the database enforces this via
-// nodes_container_runtime_matches_type regardless of caller discipline.
-// bearerTokenHash must already be hashed (internal/auth.HashNodeToken) -
-// this package never sees the plaintext token, same as it never sees a
-// plaintext password. It is deliberately excluded from nodeColumns/Node,
-// so it never flows out through FindByID or List.
-func (r *NodeRepository) Create(ctx context.Context, name, hostname, ipAddress string, nodeType NodeType, containerRuntime *ContainerRuntime, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string, bearerTokenHash string) (*Node, error) {
+// credential. bearerTokenHash must already be hashed
+// (internal/auth.HashNodeToken) - this package never sees the plaintext
+// token, same as it never sees a plaintext password. It is deliberately
+// excluded from nodeColumns/Node, so it never flows out through FindByID
+// or List.
+func (r *NodeRepository) Create(ctx context.Context, name, hostname, ipAddress string, runtimeBackend RuntimeBackend, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string, bearerTokenHash string) (*Node, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO nodes (name, hostname, ip_address, node_type, container_runtime, gpu_memory_gb, cpu_memory_gb, registered_by, bearer_token_hash)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		`INSERT INTO nodes (name, hostname, ip_address, runtime_backend, gpu_memory_gb, cpu_memory_gb, registered_by, bearer_token_hash)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		 RETURNING `+nodeColumns,
-		name, hostname, ipAddress, nodeType, containerRuntime, gpuMemoryGB, cpuMemoryGB, registeredBy, bearerTokenHash)
+		name, hostname, ipAddress, runtimeBackend, gpuMemoryGB, cpuMemoryGB, registeredBy, bearerTokenHash)
 
 	n, err := scanNode(row)
 	if err != nil {
@@ -137,7 +135,7 @@ func (r *NodeRepository) FindCredentialByName(ctx context.Context, name string) 
 	row := r.pool.QueryRow(ctx, `SELECT `+nodeColumns+`, bearer_token_hash FROM nodes WHERE name = $1`, name)
 
 	var c NodeCredential
-	err := row.Scan(&c.Node.ID, &c.Node.Name, &c.Node.Hostname, &c.Node.IPAddress, &c.Node.NodeType, &c.Node.ContainerRuntime,
+	err := row.Scan(&c.Node.ID, &c.Node.Name, &c.Node.Hostname, &c.Node.IPAddress, &c.Node.RuntimeBackend,
 		&c.Node.GPUMemoryGB, &c.Node.CPUMemoryGB, &c.Node.AgentStatus, &c.Node.LastHeartbeatAt, &c.Node.RegisteredBy, &c.Node.RegisteredAt,
 		&c.BearerTokenHash)
 	if errors.Is(err, pgx.ErrNoRows) {

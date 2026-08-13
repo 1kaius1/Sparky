@@ -20,20 +20,15 @@ var ErrInvalidNode = errors.New("invalid node")
 
 // RegisterNodeParams is the input to Service.RegisterNode.
 type RegisterNodeParams struct {
-	Name             string
-	Hostname         string
-	IPAddress        string
-	NodeType         db.NodeType
-	ContainerRuntime *db.ContainerRuntime
-	GPUMemoryGB      float64
-	CPUMemoryGB      float64
+	Name           string
+	Hostname       string
+	IPAddress      string
+	RuntimeBackend db.RuntimeBackend
+	GPUMemoryGB    float64
+	CPUMemoryGB    float64
 }
 
 // validate checks RegisterNodeParams against SCHEMA.md Nodes' invariants.
-// It duplicates the database's nodes_container_runtime_matches_type CHECK
-// constraint deliberately: failing fast here gives a specific error
-// message instead of an opaque constraint-violation error surfaced from
-// Postgres.
 func (p RegisterNodeParams) validate() error {
 	if p.Name == "" {
 		return fmt.Errorf("%w: name is required", ErrInvalidNode)
@@ -45,17 +40,10 @@ func (p RegisterNodeParams) validate() error {
 		return fmt.Errorf("%w: ip_address is required", ErrInvalidNode)
 	}
 
-	switch p.NodeType {
-	case db.NodeTypeSpark:
-		if p.ContainerRuntime != nil {
-			return fmt.Errorf("%w: container_runtime must be unset for a %s node", ErrInvalidNode, db.NodeTypeSpark)
-		}
-	case db.NodeTypeDockerGPU:
-		if p.ContainerRuntime == nil {
-			return fmt.Errorf("%w: container_runtime is required for a %s node", ErrInvalidNode, db.NodeTypeDockerGPU)
-		}
+	switch p.RuntimeBackend {
+	case db.RuntimeBackendDocker, db.RuntimeBackendPodman, db.RuntimeBackendBareMetal:
 	default:
-		return fmt.Errorf("%w: unknown node_type %q", ErrInvalidNode, p.NodeType)
+		return fmt.Errorf("%w: unknown runtime_backend %q", ErrInvalidNode, p.RuntimeBackend)
 	}
 
 	if p.GPUMemoryGB <= 0 {

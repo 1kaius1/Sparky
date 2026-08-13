@@ -36,7 +36,7 @@ func assertJSONEqual(t *testing.T, got, want json.RawMessage) {
 func createTestNode(t *testing.T, nodes *NodeRepository, name string) *Node {
 	t.Helper()
 	n, err := nodes.Create(context.Background(), name, name+".local", "10.0.9.1",
-		NodeTypeSpark, nil, 128, 128, nil, "test-bearer-token-hash")
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
 	if err != nil {
 		t.Fatalf("create test node: %v", err)
 	}
