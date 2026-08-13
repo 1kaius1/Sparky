@@ -19,6 +19,11 @@ import (
 type fakeMetricsStore struct {
 	createErr error
 	calls     []createCall
+
+	latestByNode    []*db.Metric
+	latestByNodeErr error
+	recent          []*db.Metric
+	recentErr       error
 }
 
 type createCall struct {
@@ -40,6 +45,20 @@ func (f *fakeMetricsStore) Create(_ context.Context, recordedAt time.Time, nodeI
 		cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB,
 	})
 	return &db.Metric{RecordedAt: recordedAt, NodeID: nodeID, RunningInstanceID: runningInstanceID}, nil
+}
+
+func (f *fakeMetricsStore) LatestByNode(context.Context) ([]*db.Metric, error) {
+	if f.latestByNodeErr != nil {
+		return nil, f.latestByNodeErr
+	}
+	return f.latestByNode, nil
+}
+
+func (f *fakeMetricsStore) Recent(context.Context) ([]*db.Metric, error) {
+	if f.recentErr != nil {
+		return nil, f.recentErr
+	}
+	return f.recent, nil
 }
 
 // fakeInstanceLookup implements instanceLookup for tests.
@@ -169,5 +188,49 @@ func TestService_HandleTelemetry_MalformedPayload_Ignored(t *testing.T) {
 
 	if len(store.calls) != 0 {
 		t.Error("HandleTelemetry acted on a malformed payload")
+	}
+}
+
+func TestService_ListLatestByNode(t *testing.T) {
+	store := &fakeMetricsStore{latestByNode: []*db.Metric{{NodeID: "node-1", GPUUtilizationPct: 42}}}
+	svc := NewService(store, &fakeInstanceLookup{}, testLogger())
+
+	got, err := svc.ListLatestByNode(context.Background())
+	if err != nil {
+		t.Fatalf("ListLatestByNode() error: %v", err)
+	}
+	if len(got) != 1 || got[0].NodeID != "node-1" {
+		t.Errorf("ListLatestByNode() = %+v, want one metric for node-1", got)
+	}
+}
+
+func TestService_ListLatestByNode_StoreFailurePropagates(t *testing.T) {
+	store := &fakeMetricsStore{latestByNodeErr: errors.New("database unreachable")}
+	svc := NewService(store, &fakeInstanceLookup{}, testLogger())
+
+	if _, err := svc.ListLatestByNode(context.Background()); err == nil {
+		t.Fatal("ListLatestByNode() succeeded despite a store failure")
+	}
+}
+
+func TestService_ListRecent(t *testing.T) {
+	store := &fakeMetricsStore{recent: []*db.Metric{{NodeID: "node-1"}, {NodeID: "node-2"}}}
+	svc := NewService(store, &fakeInstanceLookup{}, testLogger())
+
+	got, err := svc.ListRecent(context.Background())
+	if err != nil {
+		t.Fatalf("ListRecent() error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Errorf("len(got) = %d, want 2", len(got))
+	}
+}
+
+func TestService_ListRecent_StoreFailurePropagates(t *testing.T) {
+	store := &fakeMetricsStore{recentErr: errors.New("database unreachable")}
+	svc := NewService(store, &fakeInstanceLookup{}, testLogger())
+
+	if _, err := svc.ListRecent(context.Background()); err == nil {
+		t.Fatal("ListRecent() succeeded despite a store failure")
 	}
 }

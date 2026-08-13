@@ -91,3 +91,96 @@ func TestMetricsRepository_Create_UnknownRunningInstanceRejectedByDatabase(t *te
 		t.Error("Create() succeeded with a running_instance_id that doesn't exist, want the FK to reject it")
 	}
 }
+
+func TestMetricsRepository_LatestByNode(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	metricsRepo := NewMetricsRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	older := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	newer := time.Now().UTC().Truncate(time.Microsecond)
+
+	if _, err := metricsRepo.Create(ctx, older, node.ID, nil, 10, 1024, 24576, 5, 1024, 16384); err != nil {
+		t.Fatalf("Create() older error: %v", err)
+	}
+	if _, err := metricsRepo.Create(ctx, newer, node.ID, nil, 90, 20480, 24576, 80, 15360, 16384); err != nil {
+		t.Fatalf("Create() newer error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM metrics WHERE node_id = $1`, node.ID)
+	})
+
+	got, err := metricsRepo.LatestByNode(ctx)
+	if err != nil {
+		t.Fatalf("LatestByNode() error: %v", err)
+	}
+
+	var forNode *Metric
+	for _, m := range got {
+		if m.NodeID == node.ID {
+			forNode = m
+		}
+	}
+	if forNode == nil {
+		t.Fatalf("LatestByNode() did not include node %s", node.ID)
+	}
+	if !forNode.RecordedAt.Equal(newer) {
+		t.Errorf("RecordedAt = %v, want the newer reading %v", forNode.RecordedAt, newer)
+	}
+	if forNode.GPUUtilizationPct != 90 {
+		t.Errorf("GPUUtilizationPct = %v, want 90 (the newer reading, not the older one)", forNode.GPUUtilizationPct)
+	}
+}
+
+func TestMetricsRepository_Recent_OrderedMostRecentFirst(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	metricsRepo := NewMetricsRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	older := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	newer := time.Now().UTC().Truncate(time.Microsecond)
+
+	if _, err := metricsRepo.Create(ctx, older, node.ID, nil, 10, 1024, 24576, 5, 1024, 16384); err != nil {
+		t.Fatalf("Create() older error: %v", err)
+	}
+	if _, err := metricsRepo.Create(ctx, newer, node.ID, nil, 90, 20480, 24576, 80, 15360, 16384); err != nil {
+		t.Fatalf("Create() newer error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM metrics WHERE node_id = $1`, node.ID)
+	})
+
+	got, err := metricsRepo.Recent(ctx)
+	if err != nil {
+		t.Fatalf("Recent() error: %v", err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("len(got) = %d, want at least 2", len(got))
+	}
+	// The other integration tests in this package/run may have left
+	// unrelated rows behind (real Postgres, shared across this test
+	// binary's run) - find this test's own two rows by node_id rather
+	// than assuming got[0]/got[1] are exactly them.
+	var newerIdx, olderIdx = -1, -1
+	for i, m := range got {
+		if m.NodeID != node.ID {
+			continue
+		}
+		if m.RecordedAt.Equal(newer) {
+			newerIdx = i
+		}
+		if m.RecordedAt.Equal(older) {
+			olderIdx = i
+		}
+	}
+	if newerIdx == -1 || olderIdx == -1 {
+		t.Fatalf("Recent() did not include both of this test's readings for node %s", node.ID)
+	}
+	if newerIdx > olderIdx {
+		t.Errorf("newer reading at index %d, older at index %d - want most-recently-recorded first", newerIdx, olderIdx)
+	}
+}

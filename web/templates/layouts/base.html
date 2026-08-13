@@ -7,6 +7,8 @@
   <title>{{.Title}} - Sparky</title>
   <link rel="stylesheet" href="/static/css/main.css">
   <script src="/static/js/htmx.min.js"></script>
+  <script src="/static/js/chart.umd.min.js"></script>
+  <script src="/static/js/metrics.js"></script>
 </head>
 <body>
   <div class="layout">
@@ -28,6 +30,10 @@
         <li>
           <a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "transfers"}}active{{end}}">Transfers</a>
+        </li>
+        <li>
+          <a href="/metrics" hx-get="/metrics" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "metrics"}}active{{end}}">Metrics</a>
         </li>
         <li>
           <a href="/users" hx-get="/users" hx-target="#main-content" hx-push-url="true"

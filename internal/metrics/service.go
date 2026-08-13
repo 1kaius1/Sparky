@@ -12,6 +12,7 @@ package metrics
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"time"
 
@@ -24,6 +25,8 @@ import (
 type metricsStore interface {
 	Create(ctx context.Context, recordedAt time.Time, nodeID string, runningInstanceID *string,
 		gpuUtilizationPct, gpuMemoryUsedMB, gpuMemoryTotalMB, cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB float64) (*db.Metric, error)
+	LatestByNode(ctx context.Context) ([]*db.Metric, error)
+	Recent(ctx context.Context) ([]*db.Metric, error)
 }
 
 // instanceLookup is the subset of *db.RunningInstanceRepository this
@@ -35,12 +38,16 @@ type instanceLookup interface {
 
 // Service is Telemetry ingestion's orchestration layer - unlike
 // internal/transfers and internal/lifecycle, there is no RBAC check or
-// audit record here: a telemetry push is agent-initiated observational
-// data, not a human-actor state-changing action (SCHEMA.md Audit log's
-// "action" examples - loaded_model, elevated_user, deleted_model_copy -
-// are all administrative actions on domain objects; a telemetry reading
-// is neither administrative nor actor-attributable). Its only job is
-// HandleTelemetry, wired in as internal/agentconn's OnMessageFunc.
+// audit record on the write side: a telemetry push is agent-initiated
+// observational data, not a human-actor state-changing action (SCHEMA.md
+// Audit log's "action" examples - loaded_model, elevated_user,
+// deleted_model_copy - are all administrative actions on domain objects;
+// a telemetry reading is neither administrative nor actor-attributable).
+// HandleTelemetry is wired in as internal/agentconn's OnMessageFunc.
+// ListLatestByNode/ListRecent are the Metrics page's read path, also
+// unguarded by RBAC - same reasoning as nodes.Service.ListNodes: viewing
+// telemetry is available at the lowest tier (CLAUDE.md Frontend
+// Conventions, Metrics' sidebar tier "Read-only").
 type Service struct {
 	metrics   metricsStore
 	instances instanceLookup
@@ -102,4 +109,26 @@ func (s *Service) HandleTelemetry(nodeID string, env agentproto.Envelope) {
 		t.CPUUtilizationPct, t.SystemMemoryUsedMB, t.SystemMemoryTotalMB); err != nil {
 		s.logger.Printf("metrics: create metric for node %s: %v", nodeID, err)
 	}
+}
+
+// ListLatestByNode returns the single most recent reading for every node
+// that has ever reported one - see this method's doc comment on the
+// Service type for why this is unguarded by RBAC.
+func (s *Service) ListLatestByNode(ctx context.Context) ([]*db.Metric, error) {
+	metrics, err := s.metrics.LatestByNode(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list latest metrics by node: %w", err)
+	}
+	return metrics, nil
+}
+
+// ListRecent returns the most recent readings across every node, up to
+// db.MetricsRepository's own recent-window cap - the Metrics page's chart
+// data source.
+func (s *Service) ListRecent(ctx context.Context) ([]*db.Metric, error) {
+	metrics, err := s.metrics.Recent(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list recent metrics: %w", err)
+	}
+	return metrics, nil
 }
