@@ -29,6 +29,10 @@
           <a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "transfers"}}active{{end}}">Transfers</a>
         </li>
+        <li>
+          <a href="/audit-log" hx-get="/audit-log" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "audit"}}active{{end}}">Audit log</a>
+        </li>
       </ul>
       <div class="sidebar-footer">
         <a class="logout-link" hx-post="/logout" hx-swap="none">Logout</a>

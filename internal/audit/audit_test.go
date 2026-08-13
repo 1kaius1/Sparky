@@ -12,13 +12,17 @@ import (
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/rbac"
 )
 
-// fakeWriter implements writer for tests without a real Postgres - same
+// fakeWriter implements store for tests without a real Postgres - same
 // pattern as internal/rbac's fakeUserStore.
 type fakeWriter struct {
 	writeErr error
 	calls    []call
+
+	listResult []*db.AuditRecord
+	listErr    error
 }
 
 type call struct {
@@ -45,6 +49,13 @@ func (f *fakeWriter) Write(_ context.Context, actorID *string, isSuperAdminActio
 		Detail:             detail,
 		CreatedAt:          time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC),
 	}, nil
+}
+
+func (f *fakeWriter) List(_ context.Context) ([]*db.AuditRecord, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
 }
 
 func TestRecorder_Record_WritesAndEmitsStreamLine(t *testing.T) {
@@ -133,5 +144,47 @@ func TestRecorder_Record_WriteFailurePropagates(t *testing.T) {
 	}
 	if stream.Len() != 0 {
 		t.Errorf("stream got a line despite the write failing: %q", stream.String())
+	}
+}
+
+func TestRecorder_List_PermittedForAdmin(t *testing.T) {
+	want := []*db.AuditRecord{{ID: "audit-1", Action: "elevated_user"}}
+	fw := &fakeWriter{listResult: want}
+	r := NewRecorder(fw, nil)
+
+	got, err := r.List(context.Background(), rbac.Actor{Tier: db.TierAdmin})
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "audit-1" {
+		t.Errorf("List() = %+v, want %+v", got, want)
+	}
+}
+
+func TestRecorder_List_PermittedForSuperAdmin(t *testing.T) {
+	fw := &fakeWriter{listResult: []*db.AuditRecord{{ID: "audit-1"}}}
+	r := NewRecorder(fw, nil)
+
+	if _, err := r.List(context.Background(), rbac.Actor{IsSuperAdmin: true}); err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+}
+
+func TestRecorder_List_NotPermittedBelowAdmin(t *testing.T) {
+	fw := &fakeWriter{listResult: []*db.AuditRecord{{ID: "audit-1"}}}
+	r := NewRecorder(fw, nil)
+
+	_, err := r.List(context.Background(), rbac.Actor{Tier: db.TierPowerDev})
+	if !errors.Is(err, rbac.ErrNotPermitted) {
+		t.Errorf("List() error = %v, want rbac.ErrNotPermitted", err)
+	}
+}
+
+func TestRecorder_List_StoreError(t *testing.T) {
+	fw := &fakeWriter{listErr: errors.New("database unreachable")}
+	r := NewRecorder(fw, nil)
+
+	if _, err := r.List(context.Background(), rbac.Actor{Tier: db.TierAdmin}); err == nil {
+		t.Fatal("List() succeeded despite a store error")
 	}
 }

@@ -57,3 +57,32 @@ func (r *AuditRepository) Write(ctx context.Context, actorID *string, isSuperAdm
 	}
 	return &rec, nil
 }
+
+// List returns every audit record, most recently created first - the
+// Audit log page's default chronological view (SCHEMA.md Audit log;
+// migrations/000004_create_audit_log.up.sql's created_at index exists for
+// exactly this query). RBAC gating (Admin-tier only, per CLAUDE.md
+// Frontend Conventions) happens above this layer, in internal/audit.
+func (r *AuditRepository) List(ctx context.Context) ([]*AuditRecord, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT id, actor_id, is_superadmin_action, action, object_type, object_id, detail, created_at
+		 FROM audit_log ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list audit records: %w", err)
+	}
+	defer rows.Close()
+
+	var records []*AuditRecord
+	for rows.Next() {
+		var rec AuditRecord
+		if err := rows.Scan(&rec.ID, &rec.ActorID, &rec.IsSuperAdminAction, &rec.Action,
+			&rec.ObjectType, &rec.ObjectID, &rec.Detail, &rec.CreatedAt); err != nil {
+			return nil, fmt.Errorf("list audit records: %w", err)
+		}
+		records = append(records, &rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list audit records: %w", err)
+	}
+	return records, nil
+}

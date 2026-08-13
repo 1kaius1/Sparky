@@ -128,3 +128,29 @@ func (r *UserRepository) UpdateTier(ctx context.Context, id string, tier Tier, e
 	}
 	return nil
 }
+
+// List returns every user, ordered by display name - the future Users &
+// permissions page's full roster, and in the meantime the Audit log
+// page's source for resolving an audit record's actor_id to a display
+// name (the same map-of-names pattern already used for node names on the
+// Model profiles and Transfers pages).
+func (r *UserRepository) List(ctx context.Context) ([]*User, error) {
+	rows, err := r.pool.Query(ctx, `SELECT `+userColumns+` FROM users ORDER BY display_name`)
+	if err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	defer rows.Close()
+
+	var users []*User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list users: %w", err)
+		}
+		users = append(users, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list users: %w", err)
+	}
+	return users, nil
+}

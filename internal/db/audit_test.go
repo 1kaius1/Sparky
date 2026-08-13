@@ -100,3 +100,47 @@ func TestAuditRepository_Write_SuperAdminActionHasNilActor(t *testing.T) {
 		t.Errorf("Detail = %s, want nil", rec.Detail)
 	}
 }
+
+func TestAuditRepository_List(t *testing.T) {
+	pool := newTestPool(t)
+	users := NewUserRepository(pool)
+	auditLog := NewAuditRepository(pool)
+	ctx := context.Background()
+
+	actor := createTestUser(t, users, fmt.Sprintf("S-1-TEST-%s-actor", t.Name()))
+	target := createTestUser(t, users, fmt.Sprintf("S-1-TEST-%s-target", t.Name()))
+
+	recA, err := auditLog.Write(ctx, &actor.ID, false, "elevated_user", "user", target.ID, nil)
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM audit_log WHERE id = $1`, recA.ID)
+	})
+
+	recB, err := auditLog.Write(ctx, nil, true, "set_superadmin_password", "break_glass_credential", target.ID, nil)
+	if err != nil {
+		t.Fatalf("Write() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM audit_log WHERE id = $1`, recB.ID)
+	})
+
+	got, err := auditLog.List(ctx)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	var foundA, foundB bool
+	for _, rec := range got {
+		if rec.ID == recA.ID {
+			foundA = true
+		}
+		if rec.ID == recB.ID {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("List() = %d records, missing one or both of the two just written", len(got))
+	}
+}
