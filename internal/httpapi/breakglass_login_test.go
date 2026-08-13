@@ -114,7 +114,7 @@ func TestHandleBreakGlassLogin_FullRoundTrip(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, testLogger())
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -157,7 +157,7 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, testLogger())
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 func TestHandleBreakGlassLogin_MissingPassword(t *testing.T) {
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, testLogger())
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

@@ -16,6 +16,7 @@ import (
 
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/nodes"
+	"github.com/1kaius1/Sparky/internal/profiles"
 	"github.com/1kaius1/Sparky/internal/rbac"
 	"github.com/1kaius1/Sparky/internal/session"
 )
@@ -75,6 +76,41 @@ func (f *fakeProfileLister) ListProfiles(context.Context) ([]*db.Profile, error)
 		return nil, f.err
 	}
 	return f.profiles, nil
+}
+
+// fakeProfileEditor implements profileEditor for tests, recording every
+// call.
+type fakeProfileEditor struct {
+	getResult *db.Profile
+	getErr    error
+
+	createErr error
+	updateErr error
+	created   []profiles.CreateParams
+	updated   []profiles.UpdateParams
+}
+
+func (f *fakeProfileEditor) CreateProfile(_ context.Context, _ rbac.Actor, params profiles.CreateParams) (*db.Profile, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	f.created = append(f.created, params)
+	return &db.Profile{ID: "profile-1", Name: params.Name}, nil
+}
+
+func (f *fakeProfileEditor) UpdateProfile(_ context.Context, _ rbac.Actor, params profiles.UpdateParams) (*db.Profile, error) {
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	f.updated = append(f.updated, params)
+	return &db.Profile{ID: params.ID, Name: params.Name}, nil
+}
+
+func (f *fakeProfileEditor) GetProfile(_ context.Context, _ string) (*db.Profile, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	return f.getResult, nil
 }
 
 // fakeInstanceLister implements instanceLister for tests.
@@ -288,11 +324,25 @@ func newTestDashboardAPIWithElevator(t *testing.T, nodes *fakeNodeLister, profil
 // adding control over nodeRegistrar (the Nodes page's registration form)
 // on top of newTestDashboardAPIWithElevator's parameters - same "kept
 // separate" reasoning as that function's own doc comment.
-func newTestDashboardAPIWithRegistrar(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
+// newTestDashboardAPIWithRegistrar adds control over nodeRegistrar (the
+// Nodes page's registration form) on top of
+// newTestDashboardAPIWithElevator's parameters - same "kept separate"
+// reasoning as that function's own doc comment.
+func newTestDashboardAPIWithRegistrar(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
+	t.Helper()
+	return newTestDashboardAPIWithProfileEditor(t, nodeList, registrar, profileList, &fakeProfileEditor{}, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc)
+}
+
+// newTestDashboardAPIWithProfileEditor is the innermost test
+// constructor, adding control over profileEditor (the Model profiles
+// page's create/edit form) on top of newTestDashboardAPIWithRegistrar's
+// parameters - same "kept separate" reasoning as that function's own doc
+// comment.
+func newTestDashboardAPIWithProfileEditor(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
 	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodeList, registrar, profiles, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -1474,5 +1524,306 @@ func TestHandleRegisterNode_Unauthenticated(t *testing.T) {
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleModelProfiles_CanManage_ShownForPowerDev(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles", "pd-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "/profiles/new") {
+		t.Errorf("response does not show a New profile link for a PowerDev viewer: %s", rec.Body.String())
+	}
+}
+
+func TestHandleModelProfiles_CanManage_HiddenForDeveloper(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles", "dev-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if strings.Contains(rec.Body.String(), "/profiles/new") {
+		t.Error("response shows a New profile link for a Developer viewer, want it hidden")
+	}
+}
+
+func TestHandleNewProfileForm_PowerDevAccess(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles/new", "pd-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), `name="model_ref"`) {
+		t.Errorf("response does not show the profile form: %s", rec.Body.String())
+	}
+}
+
+func TestHandleNewProfileForm_Forbidden(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles/new", "dev-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleNewProfileForm_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/profiles/new", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleEditProfileForm_PrefillsExistingValues(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	nodeID := "node-1"
+	memGB := 40.0
+	profileEditorFake := &fakeProfileEditor{getResult: &db.Profile{
+		ID: "profile-1", Name: "llama-70b", ModelRef: "meta-llama/Llama-3-70B", EngineType: db.ProfileEngineVLLM,
+		EngineParams: []byte(`{"tensor_parallel_size":2}`), RequiredMemoryGB: &memGB, TargetNodeID: &nodeID, Port: 8001,
+	}}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles/profile-1/edit", "pd-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "llama-70b") || !strings.Contains(body, "meta-llama/Llama-3-70B") {
+		t.Errorf("response does not preserve the existing name/model_ref: %s", body)
+	}
+	if !strings.Contains(body, `tensor_parallel_size`) {
+		t.Errorf("response does not preserve the existing engine_params: %s", body)
+	}
+	if !strings.Contains(body, "action=\"/profiles/profile-1/edit\"") {
+		t.Errorf("response does not post back to the edit URL: %s", body)
+	}
+}
+
+func TestHandleEditProfileForm_NotFound(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{getErr: db.ErrProfileNotFound}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles/does-not-exist/edit", "pd-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleEditProfileForm_Forbidden(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles/profile-1/edit", "dev-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func profileForm(overrides url.Values) url.Values {
+	form := url.Values{
+		"name":           {"llama-70b"},
+		"model_ref":      {"meta-llama/Llama-3-70B"},
+		"engine_type":    {"vllm"},
+		"target_node_id": {"node-1"},
+		"port":           {"8001"},
+	}
+	for k, v := range overrides {
+		form[k] = v
+	}
+	return form
+}
+
+func TestHandleCreateProfile_Success(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(nil))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+	if got := rec.Header().Get("Location"); got != "/profiles" {
+		t.Errorf("Location header = %q, want %q", got, "/profiles")
+	}
+	if len(profileEditorFake.created) != 1 {
+		t.Fatalf("CreateProfile called %d times, want 1", len(profileEditorFake.created))
+	}
+	params := profileEditorFake.created[0]
+	if params.Name != "llama-70b" || params.ModelRef != "meta-llama/Llama-3-70B" || params.EngineType != db.ProfileEngineVLLM {
+		t.Errorf("CreateProfile params = %+v, want the submitted form values", params)
+	}
+	if params.Port != 8001 || params.TargetNodeID != "node-1" {
+		t.Errorf("CreateProfile params port/target = %v/%v, want 8001/node-1", params.Port, params.TargetNodeID)
+	}
+	if string(params.EngineParams) != "{}" {
+		t.Errorf("CreateProfile params.EngineParams = %s, want {} for a blank submission", params.EngineParams)
+	}
+}
+
+func TestHandleCreateProfile_Forbidden(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	profileEditorFake := &fakeProfileEditor{createErr: rbac.ErrNotPermitted}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "dev-1", profileForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleCreateProfile_InvalidProfile_RedisplaysFormWithError(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{createErr: profiles.ErrInvalidProfile}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "llama-70b") {
+		t.Errorf("response does not preserve the submitted name value: %s", body)
+	}
+	if !strings.Contains(body, "form-error") {
+		t.Errorf("response does not show the error message: %s", body)
+	}
+}
+
+func TestHandleCreateProfile_NonNumericPort_BadRequest(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(url.Values{"port": {"not-a-number"}}))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if len(profileEditorFake.created) != 0 {
+		t.Error("CreateProfile was called despite a non-numeric port - input must be validated before the Service call")
+	}
+}
+
+func TestHandleCreateProfile_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodPost, "/profiles/new", strings.NewReader(profileForm(nil).Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleUpdateProfile_Success(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/profile-1/edit", "pd-1", profileForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+	if len(profileEditorFake.updated) != 1 {
+		t.Fatalf("UpdateProfile called %d times, want 1", len(profileEditorFake.updated))
+	}
+	if profileEditorFake.updated[0].ID != "profile-1" {
+		t.Errorf("UpdateProfile params.ID = %q, want %q", profileEditorFake.updated[0].ID, "profile-1")
+	}
+}
+
+func TestHandleUpdateProfile_NotFound(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{updateErr: db.ErrProfileNotFound}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/does-not-exist/edit", "pd-1", profileForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestHandleUpdateProfile_Forbidden(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	profileEditorFake := &fakeProfileEditor{updateErr: rbac.ErrNotPermitted}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/profile-1/edit", "dev-1", profileForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }

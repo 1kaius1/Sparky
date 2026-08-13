@@ -721,6 +721,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   submission correctly re-shown with its specific validation message, a
   docker-gpu submission missing `container_runtime` correctly refused
   with the matching message, and an unauthenticated request getting 401.
+- Dashboard UI Phase 10: the model profile create/edit form, the
+  Dashboard UI's third write/action form. `internal/profiles.Service`
+  gains `GetProfile` (wrapping `ProfileRepository.FindByID`, already
+  exported at the repository layer but not previously exposed through
+  the Service), unguarded by RBAC like `ListProfiles`, backing the edit
+  form's own prefill read; `CreateProfile`/`UpdateProfile` themselves
+  needed no changes, same "already fully built and tested" shape as
+  Phase 8/9's discoveries. New `internal/httpapi`: `profileEditor`
+  interface, referencing `profiles.CreateParams`/`UpdateParams` directly
+  (the second interface in this package, after `nodeRegistrar`, that
+  can't avoid importing a domain package's exported type);
+  `handleNewProfileForm`/`handleCreateProfile` and
+  `handleEditProfileForm`/`handleUpdateProfile` share one template
+  (`profile_form.html`, an `IsEdit` flag picking title/button/POST
+  target) and one field-parsing helper. Unlike node registration, a
+  successful submission has no one-time secret, so it uses a standard
+  Post/Redirect/Get (`http.Redirect` to `/profiles`) rather than a
+  dedicated confirmation page. A validation failure
+  (`profiles.ErrInvalidProfile`, already carrying the specific
+  engine-adapter-level reason) re-renders the form with that message and
+  every previously-typed value preserved, including the raw
+  `engine_params` JSON text. A blank `engine_params` submission defaults
+  to `"{}"` before validation, since every `internal/engines` adapter
+  treats an empty params object as valid. The engine-type dropdown
+  includes `aphrodite` even though it has no registered adapter until
+  v0.3.0 - selecting it fails through the same validation path as any
+  other invalid submission rather than the UI maintaining a separate
+  notion of availability. The Model profiles list page gained a
+  `CanManage`-gated "New profile" link and per-row "Edit" links, resolved
+  the same non-security-boundary way as the Nodes/Users pages' own gated
+  affordances. This is the third new state-changing endpoint pair added
+  since the app-wide CSRF gap was documented - joins it the same way
+  Phases 8 and 9 did; PLANNING.md Known Issues extended accordingly.
+  Verified with new unit tests (`GetProfile` found/not-found/
+  store-failure, `CanManage` shown/hidden by tier, both forms' own
+  403/401/404 gating, the edit form's prefill including a real JSON
+  `engine_params` round-trip, successful create/update with correct
+  params construction, forbidden, invalid-profile re-display with
+  preserved field values, non-numeric port rejected before the Service
+  call) and a genuine end-to-end pass against the actual compiled
+  `sparky-server` binary against a real Postgres instance - a real
+  PowerDev creating a real vLLM profile with real `engine_params`
+  (confirmed in the database: `requires_full_gpu_residency = true`, the
+  exact submitted params, a real `created_profile` audit row), the edit
+  form correctly prefilling every field including the JSON textarea, a
+  real edit changing the port and persisting `updated_by`, a Developer
+  session correctly refused both the new-profile form and its
+  submission, an adapter-rejected `engine_params` value correctly
+  re-shown with vLLM's own specific validation message, an unknown
+  profile ID on the edit form getting 404, and an unauthenticated
+  request getting 401.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

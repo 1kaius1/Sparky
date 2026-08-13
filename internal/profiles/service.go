@@ -21,6 +21,7 @@ type profileStore interface {
 	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*db.Profile, error)
+	FindByID(ctx context.Context, id string) (*db.Profile, error)
 }
 
 // nodeLookup is the subset of *db.NodeRepository this package needs, to
@@ -194,4 +195,20 @@ func (s *Service) ListProfiles(ctx context.Context) ([]*db.Profile, error) {
 		return nil, fmt.Errorf("list model profiles: %w", err)
 	}
 	return profiles, nil
+}
+
+// GetProfile returns a single model profile by ID - unguarded by RBAC,
+// same reasoning as ListProfiles (this is a read, not a mutation; the
+// Dashboard UI's edit form uses it to prefill itself, and the actual
+// authorization check happens on submission, inside UpdateProfile).
+// Returns db.ErrProfileNotFound if id doesn't exist.
+func (s *Service) GetProfile(ctx context.Context, id string) (*db.Profile, error) {
+	p, err := s.profiles.FindByID(ctx, id)
+	if err != nil {
+		if errors.Is(err, db.ErrProfileNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("get model profile: %w", err)
+	}
+	return p, nil
 }

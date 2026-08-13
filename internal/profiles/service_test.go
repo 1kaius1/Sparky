@@ -27,6 +27,9 @@ type fakeProfileStore struct {
 
 	listResult []*db.Profile
 	listErr    error
+
+	findResult *db.Profile
+	findErr    error
 }
 
 func (f *fakeProfileStore) List(_ context.Context) ([]*db.Profile, error) {
@@ -72,6 +75,13 @@ func (f *fakeProfileStore) Delete(_ context.Context, id string) error {
 	}
 	f.deletedIDs = append(f.deletedIDs, id)
 	return nil
+}
+
+func (f *fakeProfileStore) FindByID(_ context.Context, id string) (*db.Profile, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	return f.findResult, nil
 }
 
 // fakeNodeLookup implements nodeLookup.
@@ -485,5 +495,44 @@ func TestService_ListProfiles_StoreError(t *testing.T) {
 
 	if _, err := svc.ListProfiles(context.Background()); err == nil {
 		t.Fatal("ListProfiles() succeeded despite a store failure")
+	}
+}
+
+func TestService_GetProfile(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	store.findResult = &db.Profile{ID: "profile-1", Name: "llama-70b"}
+	svc := NewService(store, nodes, adapters, audit)
+
+	got, err := svc.GetProfile(context.Background(), "profile-1")
+	if err != nil {
+		t.Fatalf("GetProfile() error: %v", err)
+	}
+	if got.Name != "llama-70b" {
+		t.Errorf("GetProfile().Name = %q, want %q", got.Name, "llama-70b")
+	}
+}
+
+func TestService_GetProfile_NotFound(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	store.findErr = db.ErrProfileNotFound
+	svc := NewService(store, nodes, adapters, audit)
+
+	_, err := svc.GetProfile(context.Background(), "does-not-exist")
+	if !errors.Is(err, db.ErrProfileNotFound) {
+		t.Errorf("GetProfile() error = %v, want db.ErrProfileNotFound", err)
+	}
+}
+
+func TestService_GetProfile_StoreError(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	store.findErr = errors.New("database unreachable")
+	svc := NewService(store, nodes, adapters, audit)
+
+	_, err := svc.GetProfile(context.Background(), "profile-1")
+	if err == nil {
+		t.Fatal("GetProfile() succeeded despite a store failure")
+	}
+	if errors.Is(err, db.ErrProfileNotFound) {
+		t.Error("GetProfile() returned ErrProfileNotFound for an infrastructure failure")
 	}
 }
