@@ -60,12 +60,13 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-2 are done (base layout/sidebar shell, session-gated
-routing, three working read-only pages - Dashboard overview, Nodes, Model
-profiles; a real HTML login page and a logout control - no write/action forms,
-remaining sidebar sections, or SSE wiring yet). The bare-metal install script has
-not been started - Dashboard UI Phase 3 (the remaining sidebar sections and
-write forms) is the current active work, see Current Sprint / Active Work below.
+Dashboard UI Phases 1-3 are done (base layout/sidebar shell, session-gated
+routing, four working read-only pages - Dashboard overview, Nodes, Model
+profiles, Transfers; a real HTML login page and a logout control - no
+write/action forms, the remaining four sidebar sections, or SSE wiring yet).
+The bare-metal install script has not been started - Dashboard UI Phase 4 (the
+remaining sidebar sections and write forms) is the current active work, see
+Current Sprint / Active Work below.
 
 ---
 
@@ -926,10 +927,54 @@ write forms) is the current active work, see Current Sprint / Active Work below.
           spanning every POST route already built, not something specific
           to this page, so neither was added here; see this phase's Known
           Issues rows.
-    - [ ] Phase 3 and beyond (not started): the remaining five sidebar
-          sections (Transfers, Metrics, Users & permissions, Audit log,
-          Settings), write/action forms for the three Phase 1 pages
-          (profile create/edit, node registration, instance load/unload -
+    - [x] Phase 3: the Transfers sidebar section as a fourth read-only
+          page, following Phase 1's exact pattern - the first slice of
+          "Phase 3 and beyond," scoped down the same way Phase 2 was
+          (confirmed with the user via an explicit multi-option choice -
+          see this date's Decisions Log entry). Complete when the
+          compiled binary, driven with real HTTP requests against a real
+          Postgres instance, serves a real Transfers page with real
+          data, gated the same way Nodes/Model profiles already are.
+          Done - `db.ModelTransferRepository` gained `List` (every
+          transfer across every node, most recently requested first -
+          distinct from the existing `ListByDestNode`'s per-node view);
+          `internal/transfers.Service` gained `ListTransfers`, unguarded
+          by RBAC like every other `List*` method Phase 1 added. New
+          `internal/httpapi/transfers.go` resolves each transfer's
+          `dest_node_id` to a node name the same way `handleModelProfiles`
+          already resolves `target_node_id`, and formats
+          `bytes_transferred`/`bytes_total` as simple `"N.N MB / N.N MB"`
+          text - no smart unit-scaling, matching nodes.html's own
+          `{{.GPUMemoryGB}} GB` precedent of plain, minimal formatting
+          over a general-purpose byte-formatting helper. New CSS status
+          classes for `queued`/`transferring`/`completed`/`cancelled`
+          (reusing existing color tokens - grey/amber/green/grey;
+          `failed` already existed). This is also the first time
+          `internal/transfers.Service` is constructed in
+          `cmd/sparky-server/main.go` at all - Model transfers Phase 4
+          built it but never wired it in, since nothing had an
+          HTTP-facing caller for it yet. `HandleTransferProgress` is
+          deliberately still not wired as `agentconn`'s `onMessage`
+          callback - `ListTransfers` is a pure read path that doesn't
+          need it, and combining it with `HandleInstanceResult`/
+          `HandleTelemetry` is its own explicitly-declined-for-now
+          option (OnMessage dispatcher consolidation), not a side effect
+          of this one. Verified two ways: new unit tests (dest-node-name
+          resolution, empty state, list-failure handling, unauthenticated
+          gating) plus integration tests for `ModelTransferRepository.List`
+          against a real Postgres instance, and a genuine end-to-end pass
+          through the actual compiled `sparky-server` binary - a real
+          node and transfer row inserted directly via SQL (no write path
+          exists yet to create one through the app itself), then
+          `curl` confirming the full page renders the model ref, resolved
+          node name, status badge, and formatted progress; the `HX-Request`
+          partial correctly omits the sidebar; and the sidebar's own
+          `Transfers` link renders correctly from another authenticated
+          page.
+    - [ ] Phase 4 and beyond (not started): the remaining four sidebar
+          sections (Metrics, Users & permissions, Audit log, Settings),
+          write/action forms for the three Phase 1 pages (profile
+          create/edit, node registration, instance load/unload -
           `internal/profiles.Service`/`internal/nodes.Service`/
           `internal/lifecycle.Service` already have the RBAC-gated
           mutation methods these forms would call), SSE wiring for live
@@ -990,11 +1035,11 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 3 - the remaining sidebar sections (Transfers,
-  Metrics, Users & permissions, Audit log, Settings) and write/action forms for
-  the three Phase 1 pages. Phases 1 (base layout, session-gated routing,
-  Dashboard/Nodes/Model profiles read views) and 2 (login page, logout control)
-  are done.
+- Next up: Dashboard UI Phase 4 - the remaining four sidebar sections
+  (Metrics, Users & permissions, Audit log, Settings) and write/action forms
+  for the three Phase 1 pages. Phases 1 (base layout, session-gated routing,
+  Dashboard/Nodes/Model profiles read views), 2 (login page, logout control),
+  and 3 (Transfers read view) are done.
 
 ---
 
@@ -1091,6 +1136,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | A failed login-page form submission re-renders `login.html` in place with an error message, rather than redirecting back to `GET /login` with the error carried some other way | No flash-message or session-backed mechanism exists anywhere in this codebase to carry a one-time message across a redirect, and building one is a real, separate feature. Re-rendering in place is the standard pattern for a server-rendered form with no such infrastructure, and keeps the failure path a single request/response, easier to test | A query-parameter error code on a redirect to `GET /login?error=...` (rejected: leaks the failure reason into browser history/referrer headers, and `GET /login`'s existing already-authenticated-redirect check would need to special-case it) |
 | 2026-08-12 | `RequireSession` keeps its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | An htmx partial (`HX-Request` header set) fetch that received a redirect would have it followed transparently by the browser's `fetch` implementation, landing `login.html`'s full standalone `<html>` document nested inside `#main-content` - broken markup, not a real fix. Correctly redirecting only a full-page navigation (not an htmx partial) needs to inspect `HX-Request` before deciding, which is additional, untested logic outside this phase's confirmed scope (login page + logout control) | Redirecting unconditionally regardless of `HX-Request` (rejected: verified against the real htmx source this session - the vendored `htmx.min.js` follows a redirect via the browser's normal fetch redirect-following, with no awareness that the origin request was a partial fetch - so this would visibly break navigation away from an expired session mid-page) |
 | 2026-08-12 | Neither CSRF protection nor authentication-endpoint rate limiting was added as part of the login page, despite CLAUDE.md Security Considerations calling for both | Both are pre-existing, app-wide gaps that predate this task and span every POST route already built (profile create/edit, node registration, transfers, instance load/unload, not just login) - fixing either one properly means a coordinated pass across every existing write route, not something to bolt onto one new form as a side effect. Flagged explicitly in Known Issues rather than silently left unaddressed | Adding CSRF protection to just the new login form (rejected: inconsistent - every other existing POST route stays unprotected, giving false confidence about this one); adding a rate limiter now (rejected: CLAUDE.md requires discussing a new Go module dependency first, and a hand-rolled version is a real design decision on its own, not a login-page side effect) |
+| 2026-08-12 | Dashboard UI's "Phase 3 and beyond" bundle (four remaining sidebar sections, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Transfers section was built as Phase 3 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the two prior phase-scoping entries (2026-08-12, twice): the bundle as PLANNING.md described it was several genuinely distinct pieces of work. Transfers specifically was chosen as "smallest, most direct continuation of what's already proven to work" - it's the same read-only-list shape Phase 1 already established for three other domains | Building all five remaining sections at once, write/action forms for the three Phase 1 pages, or the `OnMessage` dispatcher consolidation instead (all three offered as explicit alternatives; user chose Transfers) |
+| 2026-08-12 | `internal/transfers.Service` is constructed in `cmd/sparky-server/main.go` for the first time by this phase, but `HandleTransferProgress` is still not wired as `agentconn`'s `onMessage` callback | The Transfers page's `ListTransfers` is a pure read from `ModelTransferRepository.List` - it has no dependency on live agent dispatch or progress reporting at all. Wiring `onMessage` is a separate, already-identified unit of work (the OnMessage dispatcher consolidation option this phase's own scoping choice explicitly declined) with its own three-way combination logic (`HandleTransferProgress`/`HandleInstanceResult`/`HandleTelemetry`) - conflating it with a read-only page would blur two unrelated decisions into one commit | Wiring `onMessage` now since a real `Service` instance exists anyway (rejected: `Service` existing and `onMessage` needing it are unrelated - the constructor call was already going to happen the moment any HTTP-facing caller needed the `Service`, read or write) |
 
 ---
 
@@ -1106,7 +1153,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
 | `agent/telemetry.Collector`'s `nvidia-smi` integration (CSV parsing, multi-GPU aggregation) is unverified against a real `nvidia-smi` binary or real GPU hardware - this dev environment has neither (same gap already on record for CDI GPU passthrough). The CSV query shape (`--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is well-documented, stable `nvidia-smi` behavior, not guessed, but has never actually been run here | Medium | Requires real GPU hardware with `nvidia-smi` installed to close, same blocker already tracked for CDI verification; the parsing logic itself is unit-tested against a fake command runner exercising realistic CSV shapes (single GPU, multiple GPUs, malformed lines), so the gap is specifically "does the real binary's output match the documented format," not "is the parser correct for the format it's given" |
-| Dashboard UI's pages (Phase 1 and Phase 2's login page) were verified via `curl` against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
+| Dashboard UI's pages (Phase 1, Phase 2's login page, Phase 3's Transfers page) were verified via `curl` against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
 | No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route already built (login, logout, profile create/edit, node registration, transfers, instance load/unload) - not specific to Dashboard UI Phase 2's login form. Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user) |
 | No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |

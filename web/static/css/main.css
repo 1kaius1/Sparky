@@ -186,10 +186,10 @@ table.data-table:not(.panel .data-table) {
   text-transform: capitalize;
 }
 
-.status-online, .status-running { background: var(--color-status-online); }
-.status-offline { background: var(--color-status-offline); }
+.status-online, .status-running, .status-completed { background: var(--color-status-online); }
+.status-offline, .status-queued, .status-cancelled { background: var(--color-status-offline); }
 .status-unreachable { background: var(--color-status-unreachable); }
-.status-starting, .status-stopping { background: var(--color-status-starting); }
+.status-starting, .status-stopping, .status-transferring { background: var(--color-status-starting); }
 .status-stopped { background: var(--color-status-stopped); }
 .status-failed { background: var(--color-status-failed); }
 

@@ -25,6 +25,10 @@
           <a href="/profiles" hx-get="/profiles" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "profiles"}}active{{end}}">Model profiles</a>
         </li>
+        <li>
+          <a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "transfers"}}active{{end}}">Transfers</a>
+        </li>
       </ul>
       <div class="sidebar-footer">
         <a class="logout-link" hx-post="/logout" hx-swap="none">Logout</a>

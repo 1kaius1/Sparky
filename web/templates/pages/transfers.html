@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Transfers</h1>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Model</th>
+      <th>Destination node</th>
+      <th>Source</th>
+      <th>Status</th>
+      <th>Progress</th>
+      <th>Requested at</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Transfers}}
+    <tr>
+      <td>{{.ModelRef}}</td>
+      <td>{{.DestNode}}</td>
+      <td>{{.SourceType}}</td>
+      <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
+      <td>{{.Progress}}</td>
+      <td>{{.RequestedAt}}</td>
+      <td>{{.ErrorMessage}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="7" class="empty">No transfers yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

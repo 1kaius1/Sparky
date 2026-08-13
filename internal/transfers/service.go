@@ -21,6 +21,7 @@ type transferStore interface {
 	FindByID(ctx context.Context, id string) (*db.ModelTransfer, error)
 	UpdateProgress(ctx context.Context, id string, bytesTransferred, bytesTotal int64) error
 	SetStatus(ctx context.Context, id string, status db.TransferStatus, errorMessage *string) error
+	List(ctx context.Context) ([]*db.ModelTransfer, error)
 }
 
 // inventoryStore is the subset of *db.NodeModelInventoryRepository this
@@ -151,6 +152,18 @@ func (s *Service) InitiateTransfer(ctx context.Context, actor rbac.Actor, params
 		return nil, fmt.Errorf("record audit: %w", err)
 	}
 	return t, nil
+}
+
+// ListTransfers returns every transfer across every node - unguarded by
+// RBAC, since viewing is available at the lowest tier (CLAUDE.md Frontend
+// Conventions, Transfers' sidebar tier "Read-only view"). Read/view
+// actions are also never audited - see ARCHITECTURE.md Audit Log.
+func (s *Service) ListTransfers(ctx context.Context) ([]*db.ModelTransfer, error) {
+	transfers, err := s.transfers.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list transfers: %w", err)
+	}
+	return transfers, nil
 }
 
 // HandleTransferProgress implements agentconn.OnMessageFunc for

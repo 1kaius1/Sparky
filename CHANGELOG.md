@@ -493,6 +493,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already-authenticated redirect, the sidebar's real logout markup,
   `POST /logout` clearing the cookie and setting `HX-Redirect`, and a
   post-logout request actually getting 401 again.
+- Dashboard UI Phase 3: the Transfers sidebar section as a fourth read-only
+  page, following Phase 1's exact pattern. `db.ModelTransferRepository`
+  gains `List` (every transfer across every node, most recently requested
+  first); `internal/transfers.Service` gains `ListTransfers`, unguarded by
+  RBAC like every other `List*` method. New `internal/httpapi/transfers.go`
+  resolves each transfer's `dest_node_id` to a node name the same way
+  `handleModelProfiles` resolves `target_node_id`, and formats
+  `bytes_transferred`/`bytes_total` as plain `"N.N MB / N.N MB"` text - no
+  smart unit-scaling, matching `nodes.html`'s own minimal `{{.GPUMemoryGB}}
+  GB` formatting. New CSS status classes for
+  `queued`/`transferring`/`completed`/`cancelled`. `internal/transfers.Service`
+  is now constructed in `cmd/sparky-server/main.go` for the first time -
+  Model transfers Phase 4 built it but nothing had an HTTP-facing caller
+  for it until this page. `HandleTransferProgress` is still not wired as
+  `agentconn`'s `onMessage` callback - `ListTransfers` is a pure read path
+  that doesn't need it; that consolidation stays a separate, explicitly
+  deferred unit of work. Verified with new unit tests (dest-node-name
+  resolution, empty state, list-failure handling, unauthenticated gating),
+  a new `ModelTransferRepository.List` integration test against a real
+  Postgres instance, and a genuine end-to-end pass against the actual
+  compiled `sparky-server` binary with a real node/transfer row inserted
+  directly via SQL (no write path exists yet to create one through the
+  app itself).
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

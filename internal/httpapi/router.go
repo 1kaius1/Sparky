@@ -28,6 +28,7 @@ type API struct {
 	nodes     nodeLister
 	profiles  profileLister
 	instances instanceLister
+	transfers transferLister
 	templates map[string]*template.Template
 	static    http.Handler
 	logger    *log.Logger
@@ -41,15 +42,16 @@ type API struct {
 // internal/agentconn's WebSocket endpoint (ARCHITECTURE.md's
 // Agent-Communication Layer) - it is a plain http.Handler here, not a
 // concrete type, so this package doesn't need to depend on
-// internal/agentconn's other exports. nodes/profiles/instances back the
-// Dashboard UI's read-only pages (Dashboard, Nodes, Model profiles - see
-// PLANNING.md's Dashboard UI milestone item); logger is used for
-// rendering/query failures a handler can't turn into a useful HTTP
-// response on its own. Returns an error if the embedded templates
-// (web.FS) fail to parse - a template syntax error is a build-time bug,
-// caught here rather than surfacing as a broken page on first request.
+// internal/agentconn's other exports. nodes/profiles/instances/transfers
+// back the Dashboard UI's read-only pages (Dashboard, Nodes, Model
+// profiles, Transfers - see PLANNING.md's Dashboard UI milestone item);
+// logger is used for rendering/query failures a handler can't turn into a
+// useful HTTP response on its own. Returns an error if the embedded
+// templates (web.FS) fail to parse - a template syntax error is a
+// build-time bug, caught here rather than surfacing as a broken page on
+// first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, profiles profileLister, instances instanceLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -68,6 +70,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		nodes:                  nodes,
 		profiles:               profiles,
 		instances:              instances,
+		transfers:              transfers,
 		templates:              templates,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
@@ -110,10 +113,11 @@ func (a *API) Router() http.Handler {
 	// Dashboard UI - server-rendered pages, not /api/v1 REST/JSON (CLAUDE.md
 	// API Conventions reserves that base path for actions; these render
 	// HTML). Read-only for every authenticated session regardless of tier
-	// (CLAUDE.md Frontend Conventions: Dashboard/Nodes/Model profiles all
-	// have "Read-only" as their minimum visible tier), so RequireSession is
-	// the only gate - no RBAC check, matching internal/nodes.Service.ListNodes
-	// et al.'s own "unguarded by RBAC" reasoning. An unauthenticated request
+	// (CLAUDE.md Frontend Conventions: Dashboard/Nodes/Model profiles/
+	// Transfers all have "Read-only" as their minimum visible tier), so
+	// RequireSession is the only gate - no RBAC check, matching
+	// internal/nodes.Service.ListNodes et al.'s own "unguarded by RBAC"
+	// reasoning. An unauthenticated request
 	// here still gets RequireSession's existing JSON 401, not a redirect to
 	// /login - deliberately unchanged by the login page's own addition,
 	// since an htmx partial (HX-Request) fetch following a redirect would
@@ -125,6 +129,7 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Get("/dashboard", a.handleDashboard)
 	r.With(a.RequireSession).Get("/nodes", a.handleNodes)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
+	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 
 	// Static assets (CSS, vendored htmx) - public, no session required,
 	// same reasoning a login page's own assets would need if one existed.
