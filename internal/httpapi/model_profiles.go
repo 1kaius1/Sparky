@@ -43,25 +43,39 @@ type profileEditor interface {
 var profileEngineTypeOptions = []string{string(db.ProfileEngineVLLM), string(db.ProfileEngineAphrodite), string(db.ProfileEngineLlamaCPP)}
 
 // profilesPageData is the Model profiles page's view model - CLAUDE.md
-// Frontend Conventions' Model profiles sidebar tier ("Read-only view");
-// the "Developer launch" half of that tier note is a later phase - no
-// launch form exists yet. CanManage gates the "New profile" link and
-// each row's "Edit" link, resolved the same non-security-boundary way as
-// the Nodes page's own CanRegister (Dashboard UI Phase 9) - the real
-// enforcement is rbac.CanManageProfiles, checked again inside
-// CreateProfile/UpdateProfile on every submission.
+// Frontend Conventions' Model profiles sidebar tier ("Read-only view /
+// Developer launch / PowerDev create"). CanManage gates the "New profile"
+// link and each row's "Edit" link; CanLaunch gates the Load/Unload
+// controls (Dashboard UI Phase 11) - both resolved the same
+// non-security-boundary way as the Nodes page's own CanRegister (Phase 9):
+// the real enforcement is rbac.CanManageProfiles/CanLaunchInstances,
+// checked again inside the Service methods themselves on every
+// submission.
 type profilesPageData struct {
 	Profiles  []profileRow
 	CanManage bool
+	CanLaunch bool
+}
+
+// nonTerminalInstanceStatuses are the running_instances statuses that mean
+// a profile already has an active instance - see SCHEMA.md Running
+// instances. A stopped/failed instance leaves its profile eligible to
+// load again, so those two are deliberately excluded.
+var nonTerminalInstanceStatuses = map[db.RunningInstanceStatus]bool{
+	db.RunningInstanceStatusStarting: true,
+	db.RunningInstanceStatusRunning:  true,
+	db.RunningInstanceStatusStopping: true,
 }
 
 type profileRow struct {
-	ID         string
-	Name       string
-	ModelRef   string
-	EngineType string
-	TargetNode string
-	Port       int
+	ID               string
+	Name             string
+	ModelRef         string
+	EngineType       string
+	TargetNode       string
+	Port             int
+	InstanceStatus   string
+	ActiveInstanceID string
 }
 
 func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
@@ -79,10 +93,28 @@ func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+	instanceList, err := a.instances.ListInstances(ctx)
+	if err != nil {
+		a.logger.Printf("httpapi: list running instances for model profiles: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 
 	nodeNames := make(map[string]string, len(nodeList))
 	for _, n := range nodeList {
 		nodeNames[n.ID] = n.Name
+	}
+
+	// A profile can have at most one non-terminal running instance at a
+	// time - lifecycle.Service.LoadInstance refuses a second concurrent
+	// load for the same profile (ErrAlreadyRunning) - so the last
+	// non-terminal instance seen per profile in ListInstances' result is
+	// unambiguous, not an arbitrary pick among several.
+	activeByProfile := make(map[string]*db.RunningInstance, len(instanceList))
+	for _, inst := range instanceList {
+		if nonTerminalInstanceStatuses[inst.Status] {
+			activeByProfile[inst.ProfileID] = inst
+		}
 	}
 
 	rows := make([]profileRow, 0, len(profileList))
@@ -91,24 +123,30 @@ func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 		if p.TargetNodeID != nil {
 			targetNode = nodeNames[*p.TargetNodeID]
 		}
-		rows = append(rows, profileRow{
+		row := profileRow{
 			ID:         p.ID,
 			Name:       p.Name,
 			ModelRef:   p.ModelRef,
 			EngineType: string(p.EngineType),
 			TargetNode: targetNode,
 			Port:       p.Port,
-		})
+		}
+		if active, ok := activeByProfile[p.ID]; ok {
+			row.InstanceStatus = string(active.Status)
+			row.ActiveInstanceID = active.ID
+		}
+		rows = append(rows, row)
 	}
 
-	var canManage bool
+	var canManage, canLaunch bool
 	if identity, ok := IdentityFromContext(ctx); ok {
 		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
 			canManage = rbac.CanManageProfiles(actor)
+			canLaunch = rbac.CanLaunchInstances(actor)
 		}
 	}
 
-	a.render(w, r, "profiles", "Model profiles", profilesPageData{Profiles: rows, CanManage: canManage})
+	a.render(w, r, "profiles", "Model profiles", profilesPageData{Profiles: rows, CanManage: canManage, CanLaunch: canLaunch})
 }
 
 // profileFormPageData is the create/edit form's view model - IsEdit and

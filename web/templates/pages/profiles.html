@@ -13,7 +13,8 @@
       <th>Engine</th>
       <th>Target node</th>
       <th>Port</th>
-      {{if .Data.CanManage}}<th></th>{{end}}
+      <th>Instance</th>
+      {{if or .Data.CanManage .Data.CanLaunch}}<th></th>{{end}}
     </tr>
   </thead>
   <tbody>
@@ -24,10 +25,28 @@
       <td>{{.EngineType}}</td>
       <td>{{.TargetNode}}</td>
       <td>{{.Port}}</td>
-      {{if $.Data.CanManage}}<td><a href="/profiles/{{.ID}}/edit">Edit</a></td>{{end}}
+      <td>
+        {{if .InstanceStatus}}<span class="status status-{{.InstanceStatus}}">{{.InstanceStatus}}</span>{{end}}
+      </td>
+      {{if or $.Data.CanManage $.Data.CanLaunch}}
+      <td>
+        {{if $.Data.CanManage}}<a href="/profiles/{{.ID}}/edit">Edit</a>{{end}}
+        {{if $.Data.CanLaunch}}
+          {{if not .InstanceStatus}}
+          <form hx-post="/profiles/{{.ID}}/load" hx-swap="none">
+            <button type="submit">Load</button>
+          </form>
+          {{else if eq .InstanceStatus "running"}}
+          <form hx-post="/instances/{{.ActiveInstanceID}}/unload" hx-swap="none">
+            <button type="submit">Unload</button>
+          </form>
+          {{end}}
+        {{end}}
+      </td>
+      {{end}}
     </tr>
     {{else}}
-    <tr><td colspan="6" class="empty">No model profiles yet.</td></tr>
+    <tr><td colspan="7" class="empty">No model profiles yet.</td></tr>
     {{end}}
   </tbody>
 </table>
