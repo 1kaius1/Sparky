@@ -60,11 +60,12 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phase 1 is done (base layout/sidebar shell, session-gated routing,
-three working read-only pages - Dashboard overview, Nodes, Model profiles; no
-write forms or login page yet). The bare-metal install script has not been
-started - Dashboard UI Phase 2 (the remaining sidebar sections and write
-forms) is the current active work, see Current Sprint / Active Work below.
+Dashboard UI Phases 1-2 are done (base layout/sidebar shell, session-gated
+routing, three working read-only pages - Dashboard overview, Nodes, Model
+profiles; a real HTML login page and a logout control - no write/action forms,
+remaining sidebar sections, or SSE wiring yet). The bare-metal install script has
+not been started - Dashboard UI Phase 3 (the remaining sidebar sections and
+write forms) is the current active work, see Current Sprint / Active Work below.
 
 ---
 
@@ -871,15 +872,69 @@ forms) is the current active work, see Current Sprint / Active Work below.
           request confirming the existing JSON 401 - not just asserted,
           actually run. No visual/browser check was possible in this
           environment (no display) - see this phase's Known Issues row.
-    - [ ] Phase 2 and beyond (not started): the remaining five sidebar
+    - [x] Phase 2: a real HTML login page and a logout control - the
+          first slice of "Phase 2 and beyond," scoped down from that
+          whole bundle the same way Phase 1 was scoped down from the
+          full 8-section dashboard (confirmed with the user rather than
+          assumed - see this date's Decisions Log entry). Complete when
+          the compiled binary, driven with real HTTP requests against a
+          real Postgres instance, serves a real login form, authenticates
+          through it, and a logout control actually clears the session.
+          Done - `GET /login` serves `web/templates/pages/login.html`, a
+          standalone document (no sidebar - there's no session yet to
+          show one for), parsed on its own rather than with
+          `base.html` per `loadPageTemplates`' existing per-page-isolation
+          reasoning. `POST /login` now serves two callers at the same URL:
+          the existing JSON contract, unchanged, and the login page's own
+          `application/x-www-form-urlencoded` submission
+          (`isFormRequest`/`handleLoginFormSubmit` in the new
+          `login_page.go`) - branching on Content-Type within one handler,
+          not a separate endpoint, since (unlike break-glass vs AD) this
+          is the same identity source and flow, just two response
+          formats. A failed form submission re-renders the login page
+          in place with an error message rather than redirecting back to
+          `GET /login`, since no flash-message/session mechanism exists
+          to carry an error across a redirect. `GET /login` redirects an
+          already-authenticated request straight to `/dashboard`. The
+          sidebar (`base.html`) gains a `Logout` control, `hx-post`ing to
+          `/logout`; `handleLogout` now also sets `HX-Redirect: /login`
+          (inert for a plain API caller, read by htmx to drive a full
+          client-side navigation to the login page on success).
+          `RequireSession`'s unauthenticated response is deliberately
+          left as its existing JSON 401, not changed to redirect to
+          `/login` - an htmx partial (`HX-Request`) fetch following a
+          redirect would swap the login page's full standalone document
+          into `#main-content`, which is broken - see this phase's Known
+          Issues row. Verified two ways: 8 new unit tests (form rendering,
+          already-authenticated redirect, successful submission setting
+          the cookie and redirecting, each failure mode re-rendering with
+          its error message, the JSON contract unaffected, logout's
+          `HX-Redirect` header) and a genuine end-to-end pass through the
+          actual compiled `sparky-server` binary - real Postgres, a real
+          `set-superadmin-password` run over a real pty, then `curl`
+          (no cookiejar needed - manual `-b`/`-c` cookie-file handling)
+          through: the unauthenticated form, a failed submission against
+          a real (dial-failing, since no real AD server exists in this
+          environment) LDAP identity provider, a real
+          `POST /login/break-glass` session, the already-authenticated
+          `/login` redirect, the sidebar's real logout control markup,
+          `POST /logout` clearing the cookie and setting `HX-Redirect`,
+          and a post-logout request actually getting 401 again. Neither
+          CSRF protection nor auth-endpoint rate limiting exist anywhere
+          in this app yet, despite CLAUDE.md's Security Considerations
+          calling for both - both are pre-existing, app-wide gaps
+          spanning every POST route already built, not something specific
+          to this page, so neither was added here; see this phase's Known
+          Issues rows.
+    - [ ] Phase 3 and beyond (not started): the remaining five sidebar
           sections (Transfers, Metrics, Users & permissions, Audit log,
           Settings), write/action forms for the three Phase 1 pages
           (profile create/edit, node registration, instance load/unload -
           `internal/profiles.Service`/`internal/nodes.Service`/
           `internal/lifecycle.Service` already have the RBAC-gated
-          mutation methods these forms would call), a real HTML login
-          page, SSE wiring for live telemetry/transfer progress, and
-          combining `internal/transfers.Service.HandleTransferProgress`/
+          mutation methods these forms would call), SSE wiring for live
+          telemetry/transfer progress, and combining
+          `internal/transfers.Service.HandleTransferProgress`/
           `internal/lifecycle.Service.HandleInstanceResult`/
           `internal/metrics.Service.HandleTelemetry` into the single
           `agentconn.OnMessageFunc` `cmd/sparky-server/main.go` currently
@@ -935,10 +990,11 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 2 - the remaining sidebar sections (Transfers,
-  Metrics, Users & permissions, Audit log, Settings), write/action forms for
-  the three Phase 1 pages, and a real HTML login page. Phase 1 (base layout,
-  session-gated routing, Dashboard/Nodes/Model profiles read views) is done.
+- Next up: Dashboard UI Phase 3 - the remaining sidebar sections (Transfers,
+  Metrics, Users & permissions, Audit log, Settings) and write/action forms for
+  the three Phase 1 pages. Phases 1 (base layout, session-gated routing,
+  Dashboard/Nodes/Model profiles read views) and 2 (login page, logout control)
+  are done.
 
 ---
 
@@ -1030,6 +1086,11 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | Each Dashboard UI page is parsed as base-layout-plus-that-one-page into its own isolated `*template.Template` (`internal/httpapi.loadPageTemplates`), not one `template.ParseGlob` across every page | Every page template defines a block named `"content"` (the htmx-swappable inner region) - `html/template` keeps one flat namespace per `*template.Template`, not a per-source-file one, so combining all pages into one parsed set would make every page's `"content"` block collide, with whichever was parsed last silently winning for every page. This was caught by reasoning through the mechanism before writing it, not discovered as a bug afterward | One shared `*template.Template` with a per-page-uniquely-named content block (e.g. `"dashboard-content"`, `"nodes-content"`) referenced dynamically from `base.html` (rejected: `html/template` has no clean way to parameterize *which* named template `{{template "X" .}}` invokes from within the template language itself - it would need Go-side string-building of template source, uglier than just parsing per-page) |
 | 2026-08-12 | The sidebar (`web/templates/layouts/base.html`) lists only the three sections Phase 1 actually built (Dashboard, Nodes, Model profiles), not all eight CLAUDE.md's Frontend Conventions table names | A static nav link to a route that doesn't exist yet is a dead 404 link - real UX regression for a real user, not a cosmetic gap. Trivial to extend: each later phase adds its own `<li>` alongside its new route, in the same commit that adds the route | Rendering all eight now, with five pointing nowhere (rejected: shipping known-broken links to "look complete" is worse than an honest, incrementally-growing nav) |
 | 2026-08-12 | `internal/nodes.Service`/`internal/profiles.Service`/`internal/lifecycle.Service` each gained a `List*` read method directly, rather than a separate new query-only service/package | These are the same `Service` types that already own each domain's RBAC-gated mutations (`RegisterNode`, `CreateProfile`, `LoadInstance`, ...) - adding an unguarded read method alongside them (no RBAC check needed, since viewing is available at the lowest tier) reuses the exact repository dependency each `Service` already holds, rather than standing up a second orchestration layer with its own copy of the same `nodeStore`/`profileStore`/`instanceStore` interface. `internal/db`'s own doc comments on `NodeRepository.List`/`ProfileRepository.List` already anticipated this exact call site ("for the future Nodes dashboard page") | A dedicated read-only query package per domain (rejected: doubles the interface surface for a one-method pass-through, and CLAUDE.md's Handler -> Service Layer -> Repository pattern doesn't distinguish "read service" from "write service" - it's one Service per domain) |
+| 2026-08-12 | Dashboard UI's "Phase 2 and beyond" bundle (five sidebar sections, write forms, a login page, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the login page + logout control was built as Phase 2 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the 2026-08-12 entry scoping Phase 1 down from the full 8-section dashboard: the bundle as PLANNING.md originally described it was several genuinely distinct pieces of work, too large to verify thoroughly in one sitting | Building the whole "Phase 2 and beyond" bundle in one pass (not offered as the recommended option, given the Phase 1 precedent); building one more read-only section (Transfers) or all five remaining read-only sections instead (both offered, user chose the login page) |
+| 2026-08-12 | `POST /login` serves both the existing JSON API contract and the new login page's `application/x-www-form-urlencoded` form submission, branching on `Content-Type` inside one handler (`isFormRequest`), rather than a second endpoint the way `POST /login/break-glass` is separate from `POST /login` | The break-glass precedent's separation is about identity source (AD vs. a credential that isn't a Users row at all) - a real semantic difference worth a distinct URL. A browser form and a JSON client logging in via AD are the same identity source and the same `LoginService.Login` call, differing only in response format (redirect vs. JSON) - ordinary HTTP content negotiation, not the kind of conflation the break-glass precedent guards against. Chi also has no method+path dispatch finer than exact (method, path) pairs, so serving both at the same bookmarkable `/login` URL requires branching inside one handler regardless | A second path (e.g. `/login/form`) mirroring break-glass's shape (rejected: manufactures a URL distinction where none of the underlying semantics differ, and loses `/login` as a single bookmarkable/memorable URL for both a browser and an API client) |
+| 2026-08-12 | A failed login-page form submission re-renders `login.html` in place with an error message, rather than redirecting back to `GET /login` with the error carried some other way | No flash-message or session-backed mechanism exists anywhere in this codebase to carry a one-time message across a redirect, and building one is a real, separate feature. Re-rendering in place is the standard pattern for a server-rendered form with no such infrastructure, and keeps the failure path a single request/response, easier to test | A query-parameter error code on a redirect to `GET /login?error=...` (rejected: leaks the failure reason into browser history/referrer headers, and `GET /login`'s existing already-authenticated-redirect check would need to special-case it) |
+| 2026-08-12 | `RequireSession` keeps its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | An htmx partial (`HX-Request` header set) fetch that received a redirect would have it followed transparently by the browser's `fetch` implementation, landing `login.html`'s full standalone `<html>` document nested inside `#main-content` - broken markup, not a real fix. Correctly redirecting only a full-page navigation (not an htmx partial) needs to inspect `HX-Request` before deciding, which is additional, untested logic outside this phase's confirmed scope (login page + logout control) | Redirecting unconditionally regardless of `HX-Request` (rejected: verified against the real htmx source this session - the vendored `htmx.min.js` follows a redirect via the browser's normal fetch redirect-following, with no awareness that the origin request was a partial fetch - so this would visibly break navigation away from an expired session mid-page) |
+| 2026-08-12 | Neither CSRF protection nor authentication-endpoint rate limiting was added as part of the login page, despite CLAUDE.md Security Considerations calling for both | Both are pre-existing, app-wide gaps that predate this task and span every POST route already built (profile create/edit, node registration, transfers, instance load/unload, not just login) - fixing either one properly means a coordinated pass across every existing write route, not something to bolt onto one new form as a side effect. Flagged explicitly in Known Issues rather than silently left unaddressed | Adding CSRF protection to just the new login form (rejected: inconsistent - every other existing POST route stays unprotected, giving false confidence about this one); adding a rate limiter now (rejected: CLAUDE.md requires discussing a new Go module dependency first, and a hand-rolled version is a real design decision on its own, not a login-page side effect) |
 
 ---
 
@@ -1045,9 +1106,10 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
 | `agent/telemetry.Collector`'s `nvidia-smi` integration (CSV parsing, multi-GPU aggregation) is unverified against a real `nvidia-smi` binary or real GPU hardware - this dev environment has neither (same gap already on record for CDI GPU passthrough). The CSV query shape (`--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is well-documented, stable `nvidia-smi` behavior, not guessed, but has never actually been run here | Medium | Requires real GPU hardware with `nvidia-smi` installed to close, same blocker already tracked for CDI verification; the parsing logic itself is unit-tested against a fake command runner exercising realistic CSV shapes (single GPU, multiple GPUs, malformed lines), so the gap is specifically "does the real binary's output match the documented format," not "is the parser correct for the format it's given" |
-| No HTML login page exists yet - a real browser user cannot reach the Dashboard UI at all today, only `curl`/an API client hitting `POST /login` or `POST /login/break-glass` directly and carrying the resulting cookie itself. An unauthenticated request to `/dashboard`/`/nodes`/`/profiles` gets `RequireSession`'s existing JSON 401, not a redirect to a login page | Medium | Deliberately deferred to Dashboard UI Phase 2 (PLANNING.md Decisions Log) - Phase 1's approved scope was the shell plus three read-only pages; a login page is real, separate design surface (a form, `POST /login`'s JSON response shape vs. what a plain HTML form post expects, a post-login redirect target) rather than a natural extension of what Phase 1 already built |
-| Dashboard UI Phase 1 has no logout control in the rendered UI (the base layout's sidebar has no logout link/button) - `POST /logout` itself still works, only the page has nothing wired to call it | Low | Same root cause as the login-page gap directly above: a logout control that lands the user somewhere coherent needs a login page to land on, which doesn't exist yet. Adding a logout button now would either do nothing useful (no page to redirect to) or need htmx response-header redirect wiring for a destination Phase 2 will build anyway |
-| Dashboard UI Phase 1's pages were verified via `curl`+cookiejar against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
+| Dashboard UI's pages (Phase 1 and Phase 2's login page) were verified via `curl` against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
+| No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route already built (login, logout, profile create/edit, node registration, transfers, instance load/unload) - not specific to Dashboard UI Phase 2's login form. Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user) |
+| No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
+| `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
 
 ---
 

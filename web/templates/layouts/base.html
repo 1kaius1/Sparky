@@ -26,6 +26,9 @@
              class="{{if eq .ActiveSection "profiles"}}active{{end}}">Model profiles</a>
         </li>
       </ul>
+      <div class="sidebar-footer">
+        <a class="logout-link" hx-post="/logout" hx-swap="none">Logout</a>
+      </div>
     </nav>
     <main id="main-content" class="main">
       {{template "content" .}}

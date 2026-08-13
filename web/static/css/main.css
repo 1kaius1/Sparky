@@ -192,3 +192,79 @@ table.data-table:not(.panel .data-table) {
 .status-starting, .status-stopping { background: var(--color-status-starting); }
 .status-stopped { background: var(--color-status-stopped); }
 .status-failed { background: var(--color-status-failed); }
+
+.sidebar-footer {
+  margin-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 8px;
+}
+
+.logout-link {
+  cursor: pointer;
+}
+
+.login-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  background: var(--color-bg);
+}
+
+.login-box {
+  width: 320px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 28px 24px;
+}
+
+.login-brand {
+  font-weight: 600;
+  font-size: 18px;
+  margin-bottom: 20px;
+  text-align: center;
+}
+
+.login-error {
+  background: #fdecea;
+  color: var(--color-status-failed);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.login-form {
+  display: flex;
+  flex-direction: column;
+}
+
+.login-form label {
+  font-size: 13px;
+  color: var(--color-text-muted);
+  margin-bottom: 4px;
+}
+
+.login-form input {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 14px;
+  margin-bottom: 16px;
+}
+
+.login-form button {
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+  border: none;
+  border-radius: var(--radius);
+  padding: 10px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.login-form button:hover {
+  opacity: 0.92;
+}

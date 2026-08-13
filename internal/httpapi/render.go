@@ -30,7 +30,7 @@ type pageData struct {
 // to its own set.
 func loadPageTemplates() (map[string]*template.Template, error) {
 	pages := []string{"dashboard", "nodes", "profiles"}
-	result := make(map[string]*template.Template, len(pages))
+	result := make(map[string]*template.Template, len(pages)+1)
 	for _, name := range pages {
 		t, err := template.ParseFS(web.FS, "templates/layouts/base.html", "templates/pages/"+name+".html")
 		if err != nil {
@@ -38,6 +38,17 @@ func loadPageTemplates() (map[string]*template.Template, error) {
 		}
 		result[name] = t
 	}
+
+	// login.html is a standalone document, not part of the authenticated
+	// app shell - it defines its own <html>/<head>/<body>, so it's parsed
+	// alone rather than together with base.html (there is no sidebar to
+	// render before a session exists).
+	loginTmpl, err := template.ParseFS(web.FS, "templates/pages/login.html")
+	if err != nil {
+		return nil, fmt.Errorf("parse login template: %w", err)
+	}
+	result["login"] = loginTmpl
+
 	return result, nil
 }
 

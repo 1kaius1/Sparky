@@ -1,0 +1,26 @@
+{{define "login"}}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Sign in - Sparky</title>
+  <link rel="stylesheet" href="/static/css/main.css">
+</head>
+<body class="login-body">
+  <div class="login-box">
+    <div class="login-brand">Sparky</div>
+    {{if .Error}}
+    <div class="login-error">{{.Error}}</div>
+    {{end}}
+    <form method="post" action="/login" class="login-form">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+  </div>
+</body>
+</html>
+{{end}}
