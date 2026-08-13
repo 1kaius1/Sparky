@@ -1,0 +1,52 @@
+{{define "content"}}
+{{if .Data.IsEdit}}
+<h1>Edit model profile</h1>
+{{else}}
+<h1>New model profile</h1>
+{{end}}
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<form method="post" action="{{if .Data.IsEdit}}/profiles/{{.Data.ProfileID}}/edit{{else}}/profiles/new{{end}}">
+  <p>
+    <label for="name">Name</label><br>
+    <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" required>
+  </p>
+  <p>
+    <label for="model_ref">Model ref (Hugging Face repo path)</label><br>
+    <input type="text" id="model_ref" name="model_ref" value="{{.Data.Form.ModelRef}}" required>
+  </p>
+  <p>
+    <label for="engine_type">Engine type</label><br>
+    <select id="engine_type" name="engine_type">
+      {{range .Data.EngineTypes}}
+      <option value="{{.}}" {{if eq . $.Data.Form.EngineType}}selected{{end}}>{{.}}</option>
+      {{end}}
+    </select>
+  </p>
+  <p>
+    <label for="target_node_id">Target node</label><br>
+    <select id="target_node_id" name="target_node_id" required>
+      <option value="">(select a node)</option>
+      {{range .Data.Nodes}}
+      <option value="{{.ID}}" {{if eq .ID $.Data.Form.TargetNodeID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </p>
+  <p>
+    <label for="port">Port</label><br>
+    <input type="text" id="port" name="port" value="{{.Data.Form.Port}}" required>
+  </p>
+  <p>
+    <label for="required_memory_gb">Required memory (GB, optional)</label><br>
+    <input type="text" id="required_memory_gb" name="required_memory_gb" value="{{.Data.Form.RequiredMemoryGB}}">
+  </p>
+  <p>
+    <label for="engine_params">Engine params (JSON, optional)</label><br>
+    <textarea id="engine_params" name="engine_params" rows="6" cols="60">{{.Data.Form.EngineParamsJSON}}</textarea>
+  </p>
+  <p><button type="submit">{{if .Data.IsEdit}}Save{{else}}Create{{end}}</button></p>
+</form>
+{{end}}

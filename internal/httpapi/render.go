@@ -29,7 +29,7 @@ type pageData struct {
 // base+one-page per entry keeps each page's "content" definition private
 // to its own set.
 func loadPageTemplates() (map[string]*template.Template, error) {
-	pages := []string{"dashboard", "nodes", "profiles", "transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered"}
+	pages := []string{"dashboard", "nodes", "profiles", "transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "profile_form"}
 	result := make(map[string]*template.Template, len(pages)+1)
 	for _, name := range pages {
 		t, err := template.ParseFS(web.FS, "templates/layouts/base.html", "templates/pages/"+name+".html")

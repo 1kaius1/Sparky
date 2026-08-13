@@ -60,23 +60,25 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-9 are done (base layout/sidebar shell, session-gated
-routing, all eight sidebar sections have a working read-only page -
-Dashboard overview, Nodes, Model profiles, Transfers, Metrics, Audit log,
-Users & permissions, Settings; a real HTML login page and a logout
-control; two write/action forms - Users & permissions tier changes, node
-registration - no SSE wiring yet). Two new singleton config tables
-(`metrics_export_config`, `audit_settings`) were migrated as part of
-Phase 6, closing a gap where SCHEMA.md had long documented their shape
-but neither had ever actually been created; Phase 7 similarly gave
-`internal/metrics.Service` its first real production caller (`Chart.js`,
-vendored per ARCHITECTURE.md's no-CDN policy, is the Metrics page's chart
-library); Phases 8 and 9 gave `rbac.Service.ElevateTier` and
-`nodes.Service.RegisterNode` - both fully built and tested well before
-this Dashboard UI milestone started - their first HTTP callers. The
-bare-metal install script has not been started - Dashboard UI Phase 10
-(the two remaining CRUD forms and SSE wiring) is the current active work,
-see Current Sprint / Active Work below.
+Dashboard UI Phases 1-10 are done (base layout/sidebar shell,
+session-gated routing, all eight sidebar sections have a working
+read-only page - Dashboard overview, Nodes, Model profiles, Transfers,
+Metrics, Audit log, Users & permissions, Settings; a real HTML login page
+and a logout control; three write/action forms - Users & permissions
+tier changes, node registration, model profile create/edit - no SSE
+wiring yet). Two new singleton config tables (`metrics_export_config`,
+`audit_settings`) were migrated as part of Phase 6, closing a gap where
+SCHEMA.md had long documented their shape but neither had ever actually
+been created; Phase 7 similarly gave `internal/metrics.Service` its first
+real production caller (`Chart.js`, vendored per ARCHITECTURE.md's no-CDN
+policy, is the Metrics page's chart library); Phases 8, 9, and 10 gave
+`rbac.Service.ElevateTier`, `nodes.Service.RegisterNode`, and
+`profiles.Service.CreateProfile`/`UpdateProfile` - all fully built and
+tested well before this Dashboard UI milestone started - their first
+HTTP callers. The bare-metal install script has not been started -
+Dashboard UI Phase 11 (the instance load/unload form, gated on the
+`OnMessage` consolidation slice, plus SSE wiring) is the current active
+work, see Current Sprint / Active Work below.
 
 ---
 
@@ -1325,21 +1327,115 @@ see Current Sprint / Active Work below.
           docker-gpu submission missing `container_runtime` correctly
           refused with the matching validation message, and an
           unauthenticated request to the form getting 401.
-    - [ ] Phase 10 and beyond (not started): the two remaining CRUD
-          forms (profile create/edit, instance load/unload -
-          `internal/profiles.Service`/`internal/lifecycle.Service`
-          already have the RBAC-gated mutation methods these forms would
-          call), SSE wiring for live telemetry/transfer progress, and
+    - [x] Phase 10: the model profile create/edit form - the third
+          write/action form, the first slice of "Phase 10 and beyond",
+          scoped down the same way Phases 2-9 were (confirmed with the
+          user via an explicit multi-option choice - see this date's
+          Decisions Log entry). Complete when the compiled binary,
+          driven with real HTTP requests against a real Postgres
+          instance, actually creates and edits a real profile - with its
+          `requires_full_gpu_residency` correctly derived from the
+          selected engine adapter, its `engine_params` validated through
+          that same adapter, and a real audit record - and correctly
+          refuses a non-PowerDev's attempt. Done - `profiles.Service`
+          needed one small, genuinely new addition unlike Phases 8/9's
+          "no changes needed" discovery: `GetProfile` (wrapping the
+          already-existing but previously Service-unexposed
+          `ProfileRepository.FindByID`), added so the edit form has a
+          single-record read to prefill itself from, unguarded by RBAC
+          like `ListProfiles` for the same reason (a read, with the real
+          authorization check on the write that follows). `CreateProfile`/
+          `UpdateProfile` themselves needed no changes at all - both were
+          already fully built and tested, same shape as `ElevateTier`/
+          `RegisterNode` before them. New `internal/httpapi`:
+          `profileEditor` interface, referencing
+          `profiles.CreateParams`/`UpdateParams` directly - the second
+          interface in this package (after `nodeRegistrar`) that can't
+          avoid importing a domain package's exported type, for the same
+          structural reason. `handleNewProfileForm`/`handleCreateProfile`
+          (`GET`/`POST /profiles/new`) and
+          `handleEditProfileForm`/`handleUpdateProfile`
+          (`GET`/`POST /profiles/{id}/edit`) share one template
+          (`profile_form.html`, an `IsEdit` flag picking the title,
+          submit-button label, and POST target) and one field-parsing
+          helper (`fieldsFromForm`) - the same shape of form either way,
+          differing only in whether a `GetProfile` prefill happens first.
+          Unlike node registration's confirmation page, a successful
+          submission here has no one-time secret to protect, so it uses
+          the standard Post/Redirect/Get pattern (a real
+          `http.Redirect` to `/profiles`, not `HX-Redirect`, since
+          this form - like node registration's - is a plain `<form
+          method="post">` full-page navigation, not `hx-post`) rather
+          than needing a dedicated confirmation view. A validation
+          failure (`profiles.ErrInvalidProfile`, which already carries
+          the specific engine-adapter-level reason inside its wrapped
+          message - e.g. "invalid engine params: tensor_parallel_size
+          must be positive") re-renders the same form with that message
+          and every previously-typed value preserved, including the raw
+          `engine_params` JSON text so a malformed submission never loses
+          what was typed. A blank `engine_params` submission defaults to
+          `"{}"` before reaching `Fields.validate`/the adapter, since
+          every `internal/engines` adapter treats an empty params object
+          as valid and typing `{}` by hand for every profile would be
+          needless friction. The engine-type dropdown includes
+          `aphrodite` even though it has no registered adapter until
+          v0.3.0 - selecting it correctly fails through the same
+          validation path as any other invalid submission, rather than
+          the UI maintaining its own separate notion of which enum
+          values are "really" available yet. The Model profiles list
+          page gained a `CanManage`-gated "New profile" link and a
+          per-row "Edit" link, resolved the same non-security-boundary
+          way as the Nodes and Users pages' own gated links/forms - the
+          real enforcement is `rbac.CanManageProfiles`, checked directly
+          in the GET handlers and internally inside
+          `CreateProfile`/`UpdateProfile` on every submission. This is
+          the third new state-changing endpoint pair added since the
+          CSRF gap was documented, and joins it the same way Phases 8
+          and 9 did - see those phases' own Decisions Log entries,
+          extended here rather than repeated. Verified two ways: new
+          unit tests (`profiles.Service.GetProfile` found/not-found/
+          store-failure, `CanManage` shown/hidden by tier, both forms'
+          own 403/401/404 gating, the edit form's prefill including a
+          real JSON `engine_params` round-trip, successful create with
+          correct `CreateParams` construction and the blank-params-
+          defaults-to-`{}` behavior, successful update targeting the
+          right profile ID, forbidden, invalid-profile re-display with
+          preserved field values including the raw JSON text,
+          non-numeric port rejected before the Service call) and a
+          genuine end-to-end pass through the actual compiled
+          `sparky-server` binary against a real Postgres instance - a
+          real PowerDev creating a real vLLM profile with real
+          `engine_params` (confirmed in the database:
+          `requires_full_gpu_residency = true`, the exact submitted
+          params, a real `created_profile` audit row), the edit form
+          correctly prefilling every field including the JSON textarea
+          (HTML-escaped by `html/template`, confirmed safe and correct),
+          a real edit changing the port and persisting `updated_by`, a
+          Developer session correctly refused (403) both the new-profile
+          form and its submission, a submission with an
+          adapter-rejected `engine_params` value
+          (`tensor_parallel_size: -1`) correctly re-shown with vLLM's
+          own specific validation message, an unknown profile ID on the
+          edit form getting 404, and an unauthenticated request getting
+          401.
+    - [ ] Phase 11 and beyond (not started): the instance load/unload
+          form, SSE wiring for live telemetry/transfer progress, and
           combining `internal/transfers.Service.HandleTransferProgress`/
           `internal/lifecycle.Service.HandleInstanceResult`/
           `internal/metrics.Service.HandleTelemetry` into the single
           `agentconn.OnMessageFunc` `cmd/sparky-server/main.go` currently
-          passes `nil` for. Unlike profile create/edit, the instance
-          load/unload form specifically has a real dependency on the
-          `OnMessage` consolidation slice - without it, a Load/Unload
-          click would leave a `running_instances` row stuck in
-          `starting`/`stopping` forever, since nothing processes the
-          agent's response.
+          passes `nil` for. All four Dashboard UI write/action forms this
+          milestone originally scoped are now built except this one, and
+          this one specifically has a real dependency on the `OnMessage`
+          consolidation slice - without it, a Load/Unload click would
+          leave a `running_instances` row stuck in `starting`/`stopping`
+          forever, since nothing processes the agent's response. Unlike
+          every prior phase's scoping choice, this is no longer a
+          multi-option split - `OnMessage` consolidation (and, with it,
+          SSE wiring, since both touch the same `agentconn.NewHandler`
+          callback wiring in `cmd/sparky-server/main.go`) is the only
+          remaining piece, and is now a hard prerequisite rather than an
+          independent alternative.
   - [ ] Bare-metal install script (apt + dnf)
 
 - [ ] **v0.2.0** - Spark bare-metal support
@@ -1391,21 +1487,24 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 10 - the two remaining CRUD write/action
-  forms (profile create/edit, instance load/unload), plus SSE wiring and
-  the `OnMessage` dispatcher consolidation the instance load/unload form
-  specifically depends on. Phases 1 (base layout, session-gated routing,
-  Dashboard/Nodes/Model profiles read views), 2 (login page, logout
-  control), 3 (Transfers read view), 4 (Audit log read view, the first
-  Admin-tier-gated page), 5 (Users & permissions read view), 6 (Settings
-  read view, which also migrated the two singleton config tables
-  SCHEMA.md had documented but never created), 7 (Metrics read view +
-  chart, back at the Read-only floor, which also gave
-  `internal/metrics.Service` its first production caller), 8 (the Users
-  & permissions tier-change form, the Dashboard UI's first write/action
-  form, giving `rbac.Service.ElevateTier` its first HTTP caller), and 9
-  (the node registration form, giving `nodes.Service.RegisterNode` its
-  first HTTP caller) are done.
+- Next up: Dashboard UI Phase 11 - the instance load/unload form, gated
+  on the `OnMessage` dispatcher consolidation slice it specifically
+  depends on, plus SSE wiring (the last remaining piece - no longer a
+  multi-option scoping choice, since it's the only work left). Phases 1
+  (base layout, session-gated routing, Dashboard/Nodes/Model profiles
+  read views), 2 (login page, logout control), 3 (Transfers read view), 4
+  (Audit log read view, the first Admin-tier-gated page), 5 (Users &
+  permissions read view), 6 (Settings read view, which also migrated the
+  two singleton config tables SCHEMA.md had documented but never
+  created), 7 (Metrics read view + chart, back at the Read-only floor,
+  which also gave `internal/metrics.Service` its first production
+  caller), 8 (the Users & permissions tier-change form, the Dashboard
+  UI's first write/action form, giving `rbac.Service.ElevateTier` its
+  first HTTP caller), 9 (the node registration form, giving
+  `nodes.Service.RegisterNode` its first HTTP caller), and 10 (the model
+  profile create/edit form, giving `profiles.Service.CreateProfile`/
+  `UpdateProfile` their first HTTP callers, and adding the new
+  `GetProfile` read method the edit form's own prefill needed) are done.
 
 ---
 
@@ -1521,6 +1620,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-13 | The Users & permissions tier-change form (`POST /users/{id}/tier`) was added without any CSRF protection, same as every other write route in the app | This is the first new state-changing endpoint added since the app-wide CSRF gap was documented (PLANNING.md Known Issues, Dashboard UI Phase 2), which already reasoned that retrofitting CSRF protection needs a coordinated pass across every existing write route at once, not something bolted onto one form as a side effect of an unrelated task. That reasoning applies identically to a *new* write route: protecting this one form in isolation while every other POST endpoint (login, logout) stays unprotected would be an inconsistent half-measure, not a real fix. The existing Known Issues row is extended to name this endpoint explicitly rather than left silently exposed to a future reader of that row | Adding CSRF protection to just this one new endpoint (rejected: solves nothing security-wise while creating an inconsistent app where some POST routes are protected and others aren't, and still requires the same coordinated-pass work eventually) |
 | 2026-08-13 | Dashboard UI's "Phase 9 and beyond" bundle (two more write/action forms plus SSE wiring plus `OnMessage` dispatcher consolidation) was split, and only the node registration form was built as Phase 9 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the seven prior phase-scoping entries (now eight times): the bundle was several genuinely distinct pieces of work. Node registration was offered alongside profile create/edit and the `OnMessage`-plus-SSE slice, each with its own explicitly-named wrinkle (this one's once-only bearer token display; profile create/edit's free-form `engine_params` JSON; the `OnMessage` slice's real dependency for the *next* form, instance load/unload) rather than presented as uniformly simple options - `nodes.Service.RegisterNode` was, like `ElevateTier` before it, already fully built and tested before this milestone started | Model profile create/edit or the `OnMessage` consolidation plus SSE wiring instead (both offered as explicit alternatives; user chose node registration) |
 | 2026-08-13 | The node registration form's successful submission renders a dedicated confirmation page showing the plaintext bearer token, rather than reusing Phase 8's `HX-Redirect`-back-to-the-list pattern | `nodes.Service.RegisterNode`'s own doc comment is explicit: the token is "shown here only once" and never persisted anywhere but its hash. An `HX-Redirect` back to `/nodes` would discard it the instant the browser navigated - there would be no second chance to retrieve it, unlike every other write action in this app so far where redirecting to the updated list is harmless because the list itself reflects the new state. The whole registration flow (including the form submission) also deliberately uses a plain `<form method="post">` full-page navigation rather than an `hx-post` partial swap, sidestepping any need to reason about htmx's swap semantics for a page whose entire purpose is a value the Admin must actually read before navigating anywhere else | Showing the token in a toast/banner over the redirected `/nodes` page via query parameter or flash-message mechanism (rejected: no such mechanism exists in this app yet, and building one for a single one-time-secret display would be more machinery than the plain-confirmation-page alternative, for a form that isn't performance- or frequency-sensitive enough to need `hx-post`'s smoother partial swap) |
+| 2026-08-13 | Dashboard UI's "Phase 10 and beyond" bundle (profile create/edit form plus SSE wiring plus `OnMessage` dispatcher consolidation) was split, and only the profile create/edit form was built as Phase 10 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the eight prior phase-scoping entries (now nine times): the bundle was still two genuinely distinct pieces of work even after node registration's own scoping (Phase 9) narrowed it. Profile create/edit was offered as completing all four originally-planned write/action forms except instance load/unload, with its own explicitly-named wrinkle (free-form `engine_params` JSON) rather than presented as uniformly simple; the `OnMessage`-plus-SSE option was offered too, explicitly flagged as unblocking instance load/unload as the *next* slice rather than being that form itself | The `OnMessage` consolidation plus SSE wiring instead (offered as the only other option; user chose the profile form) |
+| 2026-08-13 | `profiles.Service` gained a new `GetProfile` method (wrapping `ProfileRepository.FindByID`, already exported at the repository layer but previously unexposed through the Service) rather than the edit form's prefill reusing `ListProfiles` and filtering client-side for the matching ID | `ListProfiles` already exists specifically for the read-only list page and returns every profile; filtering a full list down to one record in the HTTP handler to prefill a form is presentation-layer plumbing standing in for what should be a real single-record Service read, the same category of thing `nodes.Service`/`rbac.Service` already expose for their own single-record needs (`FindByID`/`FindByADSID` equivalents). Unlike Phases 8 and 9, which needed zero domain-package changes because the write methods pre-existed complete, this phase's read-side gap was real and worth closing properly rather than working around in the wrong layer | Filtering `ListProfiles`'s full result in `handleEditProfileForm` (rejected: technically works for a "handful of nodes" scale roster, per CLAUDE.md Project Overview, but is exactly the kind of misplaced business-logic-in-a-handler CLAUDE.md's Handler -> Service Layer -> Repository pattern exists to prevent, and leaves `ProfileRepository.FindByID` sitting unused at the Service layer for no reason) |
 
 ---
 
@@ -1537,7 +1638,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
 | `agent/telemetry.Collector`'s `nvidia-smi` integration (CSV parsing, multi-GPU aggregation) is unverified against a real `nvidia-smi` binary or real GPU hardware - this dev environment has neither (same gap already on record for CDI GPU passthrough). The CSV query shape (`--query-gpu=utilization.gpu,memory.used,memory.total --format=csv,noheader,nounits`) is well-documented, stable `nvidia-smi` behavior, not guessed, but has never actually been run here | Medium | Requires real GPU hardware with `nvidia-smi` installed to close, same blocker already tracked for CDI verification; the parsing logic itself is unit-tested against a fake command runner exercising realistic CSV shapes (single GPU, multiple GPUs, malformed lines), so the gap is specifically "does the real binary's output match the documented format," not "is the parser correct for the format it's given" |
 | Dashboard UI's pages (Phase 1, Phase 2's login page, Phase 3's Transfers page) were verified via `curl` against the real compiled binary, not a real browser - no display exists in this sandboxed environment (PLANNING.md Decisions Log, confirmed with the user rather than assumed). CSS layout, responsive behavior, and real-DOM htmx behavior are all unverified beyond what raw markup inspection can confirm. Phase 7's Metrics chart carries the same gap in a more consequential form: the server-generated chart series JSON and Chart.js/metrics.js's correct loading were confirmed structurally (curl, correct byte counts and content), but whether `initMetricsChart` actually renders a correct, readable chart in a real browser - and whether htmx's script-execution behavior holds exactly as read from source for this page's own script ordering - has never been visually confirmed | Medium | No headless-browser tooling is available in this environment either; closing this requires either running the binary and checking it in a real browser outside this sandbox, or provisioning browser automation tooling here - neither happened this pass |
-| No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route actually built so far (`/login`, `/login/break-glass`, `/logout`, `/users/{id}/tier` as of Phase 8, and `/nodes/register` as of Phase 9) - not specific to Dashboard UI Phase 2's login form, and confirmed not to be closing on its own as new write routes get added (Phases 8 and 9 each deliberately left their own new route unprotected too, consistent with every prior one - see the respective Decisions Log entries). Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user). Profile create/edit and instance load/unload remain Service-layer methods only - no HTTP route exists for either yet (PLANNING.md's Phase 10 and beyond) |
+| No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route actually built so far (`/login`, `/login/break-glass`, `/logout`, `/users/{id}/tier` as of Phase 8, `/nodes/register` as of Phase 9, and `/profiles/new`/`/profiles/{id}/edit` as of Phase 10) - not specific to Dashboard UI Phase 2's login form, and confirmed not to be closing on its own as new write routes get added (Phases 8, 9, and 10 each deliberately left their own new routes unprotected too, consistent with every prior one - see the respective Decisions Log entries). Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user). Instance load/unload remains a Service-layer method only - no HTTP route exists for it yet (PLANNING.md's Phase 11 and beyond) |
 | No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
 | The sidebar's `Audit log`, `Users & permissions`, and `Settings` links are shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks any of them gets a raw JSON 403 (`handleAuditLog`/`handleUsers`/`handleSettings`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding these nav links by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just these three pages' own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case. Phases 5 and 6 (Users & permissions, Settings) each hit the identical gap Phase 4 (Audit log) already documented here rather than opening further near-duplicate rows |

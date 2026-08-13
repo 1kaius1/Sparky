@@ -25,20 +25,21 @@ type API struct {
 	sessionSecret          string
 	agentConn              http.Handler
 
-	nodes      nodeLister
-	registrar  nodeRegistrar
-	profiles   profileLister
-	instances  instanceLister
-	transfers  transferLister
-	users      userLister
-	audit      auditLister
-	userRoster userRoster
-	elevator   userElevator
-	settings   settingsViewer
-	metrics    metricsLister
-	templates  map[string]*template.Template
-	static     http.Handler
-	logger     *log.Logger
+	nodes         nodeLister
+	registrar     nodeRegistrar
+	profiles      profileLister
+	profileEditor profileEditor
+	instances     instanceLister
+	transfers     transferLister
+	users         userLister
+	audit         auditLister
+	userRoster    userRoster
+	elevator      userElevator
+	settings      settingsViewer
+	metrics       metricsLister
+	templates     map[string]*template.Template
+	static        http.Handler
+	logger        *log.Logger
 }
 
 // New constructs an API. sessionSecret is used to verify session cookies
@@ -67,19 +68,23 @@ type API struct {
 // backs that page's tier-change form (PLANNING.md Dashboard UI Phase 8,
 // the first write/action form) via rbac.Service.ElevateTier - roster and
 // elevator are two narrow interfaces satisfied by the same *rbac.Service
-// value in production, not two different dependencies; settingsSvc backs
-// the Settings page (same Admin floor) via internal/settings.Service.Get,
-// covering the two singleton config rows neither internal/metrics nor
-// internal/audit owns - see that package's doc comment; metricsSvc backs
-// the Metrics page, back at the Read-only floor like nodes/profiles/
-// instances/transfers - unlike audit/roster/elevator/settingsSvc, no RBAC
-// check is involved; logger is used for rendering/query failures a
-// handler can't turn into a useful HTTP response on its own. Returns an
-// error if the embedded templates (web.FS) fail to parse - a template
-// syntax error is a build-time bug, caught here rather than surfacing as
-// a broken page on first request.
+// value in production, not two different dependencies; profileEditorSvc
+// backs the Model profiles page's create/edit form (PLANNING.md
+// Dashboard UI Phase 10) via profiles.Service.CreateProfile/
+// UpdateProfile/GetProfile - a distinct interface from profiles, same
+// pattern as registrar/nodes; settingsSvc backs the Settings page (same
+// Admin floor) via internal/settings.Service.Get, covering the two
+// singleton config rows neither internal/metrics nor internal/audit
+// owns - see that package's doc comment; metricsSvc backs the Metrics
+// page, back at the Read-only floor like nodes/profiles/instances/
+// transfers - unlike audit/roster/elevator/settingsSvc, no RBAC check is
+// involved; logger is used for rendering/query failures a handler can't
+// turn into a useful HTTP response on its own. Returns an error if the
+// embedded templates (web.FS) fail to parse - a template syntax error is
+// a build-time bug, caught here rather than surfacing as a broken page
+// on first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -98,6 +103,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		nodes:                  nodes,
 		registrar:              registrar,
 		profiles:               profiles,
+		profileEditor:          profileEditorSvc,
 		instances:              instances,
 		transfers:              transfers,
 		users:                  users,
@@ -170,6 +176,15 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Get("/nodes/register", a.handleRegisterNodeForm)
 	r.With(a.RequireSession).Post("/nodes/register", a.handleRegisterNode)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
+	// The create/edit form's own RBAC gate (rbac.CanManageProfiles) is
+	// checked directly in each handler - GET to decide whether to show
+	// the form at all, POST (via profiles.Service.CreateProfile/
+	// UpdateProfile) as the real enforcement boundary that never trusts
+	// what the GET rendered - same reasoning as node registration.
+	r.With(a.RequireSession).Get("/profiles/new", a.handleNewProfileForm)
+	r.With(a.RequireSession).Post("/profiles/new", a.handleCreateProfile)
+	r.With(a.RequireSession).Get("/profiles/{id}/edit", a.handleEditProfileForm)
+	r.With(a.RequireSession).Post("/profiles/{id}/edit", a.handleUpdateProfile)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	r.With(a.RequireSession).Get("/metrics", a.handleMetrics)
 	// /audit-log's floor is Admin, not Read-only - RequireSession only

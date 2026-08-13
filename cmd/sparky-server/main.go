@@ -107,6 +107,10 @@ func main() {
 	// (RegisterNode) - the same value is passed twice below, once per
 	// narrow interface httpapi expects (nodeLister, nodeRegistrar).
 	nodeService := nodes.NewService(nodeRepo, auditRecorder)
+	// profileService backs both the Model profiles page's unguarded
+	// ListProfiles read and, as of Dashboard UI Phase 10, the create/edit
+	// form's own writes (CreateProfile/UpdateProfile/GetProfile) - same
+	// twice-passed-value reasoning as nodeService above.
 	profileService := profiles.NewService(profileRepo, nodeRepo, engineRegistry, auditRecorder)
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
 	// onMessage stays nil (see agentConnHandler above) - HandleTransferProgress
@@ -140,7 +144,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
