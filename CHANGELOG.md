@@ -567,6 +567,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `sparky-server` binary with a real Admin user, a real Developer
   (non-Admin) user with `elevated_by`/`elevated_at` set, and the
   break-glass SuperAdmin session, against a real Postgres instance.
+- Dashboard UI Phase 6: the Settings sidebar section as a seventh
+  read-only page, same Admin sidebar tier floor as Audit log and Users &
+  permissions. Discovered along the way that the two singleton config
+  tables SCHEMA.md already documented - `metrics_export_config` and
+  `audit_settings` - had never actually been migrated; migrations
+  000012/000013 create them, each seeded with exactly one default row at
+  creation time (same `id boolean PRIMARY KEY DEFAULT true` plus
+  `CHECK (id)` singleton pattern as `break_glass_credential`, but with an
+  `INSERT` in the same migration rather than left absent - neither table
+  has a real "not configured yet" state distinct from "configured to do
+  nothing"). `audit_settings.retention_months` had no default decided
+  anywhere before this phase; confirmed with the user as 12 months, a
+  middle value between the Metrics table's own 6-month retention window
+  and this column's 24-month ceiling, now enforced with a CHECK
+  constraint. New `internal/db` repositories
+  (`MetricsExportConfigRepository`, `AuditSettingsRepository`), each with
+  a read-only `Get`. `rbac.CanViewSettings` (Admin/SuperAdmin only, no
+  override path, same shape as `CanViewAuditLog`/`CanViewUsers`, but a
+  distinct function - three capabilities that happen to share a tier
+  floor today). New `internal/settings` package wraps both repositories
+  behind one RBAC-gated `Service.Get(ctx, actor)` - neither
+  `internal/metrics.Service` (scoped to telemetry ingestion only) nor
+  `internal/audit.Recorder` (scoped to `audit_log`, not the separate
+  `audit_settings` table) was the right home for this read. New
+  `internal/httpapi/settings.go` reuses `actorFromIdentity` and resolves
+  each row's `updated_by` via a single `FindByID` lookup, simpler than the
+  Audit log/Users pages' list-and-map pattern since at most two IDs ever
+  need resolving here. SCHEMA.md updated in the same change: both tables'
+  `updated_by` notes corrected to nullable (the break-glass SuperAdmin
+  case) and their seeded-default behavior documented. The sidebar's
+  `Settings` link is shown to every authenticated viewer regardless of
+  tier, same known gap as `Audit log`/`Users & permissions` - see
+  PLANNING.md Known Issues. Verified with new unit tests across
+  `internal/rbac`, `internal/settings`, and `internal/httpapi`
+  (permit/deny, updated-by-name resolution, empty-state placeholders,
+  forbidden, unauthenticated, HX-Request partial), new
+  `MetricsExportConfigRepository`/`AuditSettingsRepository` integration
+  tests confirming the migrations' seeded rows against a real Postgres
+  instance (including a full down/up migration round-trip), and a genuine
+  end-to-end pass against the actual compiled `sparky-server` binary with
+  a real Admin user, a real Developer (non-Admin) user, the break-glass
+  SuperAdmin, and both config rows updated directly via SQL to
+  non-default values.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

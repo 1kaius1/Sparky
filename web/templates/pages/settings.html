@@ -1,0 +1,63 @@
+{{define "content"}}
+<h1>Settings</h1>
+
+<section class="panel">
+  <h2>Metrics export config</h2>
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <td>Backend</td>
+        <td>{{.Data.MetricsExportBackend}}</td>
+      </tr>
+      <tr>
+        <td>Last updated by</td>
+        <td>{{if .Data.MetricsExportUpdatedBy}}{{.Data.MetricsExportUpdatedBy}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated at</td>
+        <td>{{.Data.MetricsExportUpdatedAt}}</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section class="panel">
+  <h2>Audit settings</h2>
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <td>Retention (months)</td>
+        <td>{{.Data.AuditRetentionMonths}}</td>
+      </tr>
+      <tr>
+        <td>Forwarding enabled</td>
+        <td>{{if .Data.AuditForwardingEnabled}}Yes{{else}}No{{end}}</td>
+      </tr>
+      <tr>
+        <td>Forwarding protocol</td>
+        <td>{{.Data.AuditForwardingProtocol}}</td>
+      </tr>
+      <tr>
+        <td>Forwarding host</td>
+        <td>{{if .Data.AuditForwardingHost}}{{.Data.AuditForwardingHost}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Forwarding port</td>
+        <td>{{if .Data.AuditForwardingPort}}{{.Data.AuditForwardingPort}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Forwarding TLS enabled</td>
+        <td>{{if .Data.AuditForwardingTLSEnabled}}Yes{{else}}No{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated by</td>
+        <td>{{if .Data.AuditUpdatedBy}}{{.Data.AuditUpdatedBy}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated at</td>
+        <td>{{.Data.AuditUpdatedAt}}</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+{{end}}

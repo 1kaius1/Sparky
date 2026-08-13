@@ -96,6 +96,22 @@ func CanViewUsers(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanViewSettings reports whether actor may view the Settings page (the
+// Metrics export config and Audit settings singleton rows) - see
+// CLAUDE.md Frontend Conventions, Settings' sidebar tier ("Admin"). Same
+// unconditional-by-tier shape as CanViewAuditLog/CanViewUsers: no
+// permission-override path, Admin/SuperAdmin only. A distinct function
+// rather than reusing either of those, even though all three share the
+// same tier floor today - Settings, Audit log, and the Users roster are
+// three different capabilities that could diverge in who may view them
+// later.
+func CanViewSettings(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanManageModelStore reports whether actor has the manage_model_store
 // capability (download and delete models) - see SCHEMA.md Permission
 // overrides. Admin and SuperAdmin always have it implicitly. PowerDev has

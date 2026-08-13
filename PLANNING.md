@@ -60,12 +60,15 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-5 are done (base layout/sidebar shell, session-gated
-routing, six working read-only pages - Dashboard overview, Nodes, Model
-profiles, Transfers, Audit log, Users & permissions; a real HTML login page
-and a logout control - no write/action forms, the remaining two sidebar
-sections, or SSE wiring yet). The bare-metal install script has not been
-started - Dashboard UI Phase 6 (the remaining sidebar sections and write
+Dashboard UI Phases 1-6 are done (base layout/sidebar shell, session-gated
+routing, seven working read-only pages - Dashboard overview, Nodes, Model
+profiles, Transfers, Audit log, Users & permissions, Settings; a real HTML
+login page and a logout control - no write/action forms, the Metrics
+sidebar section, or SSE wiring yet). Two new singleton config tables
+(`metrics_export_config`, `audit_settings`) were migrated as part of Phase
+6, closing a gap where SCHEMA.md had long documented their shape but
+neither had ever actually been created. The bare-metal install script has
+not been started - Dashboard UI Phase 7 (the Metrics section and write
 forms) is the current active work, see Current Sprint / Active Work below.
 
 ---
@@ -1069,10 +1072,72 @@ forms) is the current active work, see Current Sprint / Active Work below.
           the SuperAdmin session gets 200 without a tier lookup, an
           unauthenticated request gets 401, and the `HX-Request` partial
           correctly omits the sidebar.
-    - [ ] Phase 6 and beyond (not started): the remaining two sidebar
-          sections (Metrics, Settings), write/action forms for the three
-          Phase 1 pages (profile create/edit, node registration, instance
-          load/unload - `internal/profiles.Service`/`internal/nodes.Service`/
+    - [x] Phase 6: the Settings sidebar section as a seventh read-only
+          page - the first slice of "Phase 6 and beyond", scoped down the
+          same way Phases 2-5 were (confirmed with the user via an
+          explicit multi-option choice - see this date's Decisions Log
+          entry). Same Admin sidebar floor as Audit log and Users &
+          permissions. Complete when the compiled binary, driven with
+          real HTTP requests against a real Postgres instance, serves the
+          two singleton config rows (Metrics export config, Audit
+          settings) gated by actual tier. Done - this phase discovered
+          neither singleton table SCHEMA.md already documented
+          (`metrics_export_config`, `audit_settings`) had ever been
+          migrated; building the page required creating both first.
+          Migrations 000012/000013 seed exactly one row each at creation
+          time (`id boolean PRIMARY KEY DEFAULT true` plus a `CHECK (id)`
+          singleton constraint, same pattern as `break_glass_credential`)
+          rather than leaving them absent until first configured - unlike
+          the break-glass credential, there is no real "not configured
+          yet" state to represent for a setting the app reads on every
+          page load. `audit_settings.retention_months` had no default
+          decided anywhere before this phase (unlike
+          `forwarding_protocol`, whose `syslog` default SCHEMA.md already
+          stated) - confirmed with the user: 12 months, a middle value
+          between the Metrics table's own 6-month raw-resolution window
+          and this column's 24-month ceiling, which is now enforced with
+          a CHECK constraint rather than left as an application-level-only
+          convention. `rbac.CanViewSettings` (Admin/SuperAdmin only, no
+          override path, same shape as `CanViewAuditLog`/`CanViewUsers`,
+          but a distinct function rather than reusing either - three
+          capabilities that happen to share a tier floor today, not one).
+          Neither singleton row belongs to an existing Service's domain
+          (`internal/metrics.Service` is scoped to telemetry ingestion
+          only; `internal/audit.Recorder` is scoped to `audit_log`, not
+          the separate `audit_settings` table), so this phase adds a new
+          `internal/settings` package - `Service.Get` checks
+          `CanViewSettings` and returns both rows as plain `*db` types
+          (not a wrapping struct), so `internal/httpapi` doesn't need to
+          import the new package at all, matching how
+          `auditLister`/`transferLister`/`userRoster` are already defined
+          there against `db` types alone. New `internal/httpapi/settings.go`
+          reuses `actorFromIdentity` and resolves each row's `updated_by`
+          via a single `FindByID` lookup rather than the audit/users pages'
+          list-and-map pattern, since at most two IDs ever need resolving
+          here. SCHEMA.md updated in this same change: both tables'
+          `updated_by` notes corrected to nullable (the SuperAdmin case,
+          same reasoning as Nodes' `registered_by`), and both tables'
+          seeded-default behavior documented. Verified two ways: new unit
+          tests (`rbac.CanViewSettings`'s tier matrix,
+          `settings.Service.Get` permit/deny/store-failure,
+          `internal/httpapi` handler tests covering updated-by-name
+          resolution, empty-state placeholders, forbidden, unauthenticated,
+          HX-Request partial), new `MetricsExportConfigRepository`/
+          `AuditSettingsRepository` integration tests confirming the
+          migrations' seeded rows against a real Postgres instance
+          (including a full down/up migration round-trip), and a genuine
+          end-to-end pass through the actual compiled `sparky-server`
+          binary - a real Admin user, a real Developer (non-Admin) user,
+          the break-glass SuperAdmin, and both config rows updated
+          directly via SQL to non-default values (backend `nfs`,
+          forwarding to a GELF host with TLS) to confirm the page reflects
+          real data, not just the seeded defaults.
+    - [ ] Phase 7 and beyond (not started): the Metrics sidebar section
+          (the first page needing aggregation/charting - Chart.js, per
+          CLAUDE.md Tech Stack - rather than a plain table or singleton
+          view), write/action forms for the three Phase 1 pages (profile
+          create/edit, node registration, instance load/unload -
+          `internal/profiles.Service`/`internal/nodes.Service`/
           `internal/lifecycle.Service` already have the RBAC-gated
           mutation methods these forms would call, and
           `rbac.Service.ElevateTier` for a Users & permissions edit form),
@@ -1133,12 +1198,14 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 6 - the remaining two sidebar sections
-  (Metrics, Settings) and write/action forms for the three Phase 1 pages.
-  Phases 1 (base layout, session-gated routing, Dashboard/Nodes/Model
-  profiles read views), 2 (login page, logout control), 3 (Transfers read
-  view), 4 (Audit log read view, the first Admin-tier-gated page), and 5
-  (Users & permissions read view) are done.
+- Next up: Dashboard UI Phase 7 - the remaining Metrics sidebar section
+  and write/action forms for the three Phase 1 pages. Phases 1 (base
+  layout, session-gated routing, Dashboard/Nodes/Model profiles read
+  views), 2 (login page, logout control), 3 (Transfers read view), 4
+  (Audit log read view, the first Admin-tier-gated page), 5 (Users &
+  permissions read view), and 6 (Settings read view, which also migrated
+  the two singleton config tables SCHEMA.md had documented but never
+  created) are done.
 
 ---
 
@@ -1242,6 +1309,10 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | `internal/audit`'s `writer` interface (and the `Recorder` field backing it) was renamed to `store`, widened to require both `Write` and `List` | `Recorder` is `audit_log`'s single sanctioned access point for both directions now, not writer-only - its own doc comment already framed it that way ("the only sanctioned path to the audit log," not "the only sanctioned way to write to it"). One interface matches that framing; `*db.AuditRepository` (the only real implementation) already satisfies both methods naturally, so no production call site changed, only the package's own test fake gained a `List` method | Two separate interfaces (a `writer` for `Record` and a distinct `reader` for `List`), composed via two fields on `Recorder` (rejected: `Recorder` has exactly one backing store either way - `*db.AuditRepository` - so two fields pointing at the same real value in production adds indirection with no actual decoupling benefit) |
 | 2026-08-12 | Dashboard UI's "Phase 5 and beyond" bundle (remaining three sidebar sections, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Users & permissions section was built as Phase 5 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the four prior phase-scoping entries (2026-08-12, four times now): the bundle was several genuinely distinct pieces of work. Users & permissions specifically was offered as "a straightforward list, same shape as every prior phase, smallest continuation of what's proven to work" - it also reuses `UserRepository.List`, already built for Phase 4's actor-name resolution | Building all three remaining sections at once, the Metrics section (rejected as an option too, since it needs Chart.js/aggregation - a new UI shape, not a continuation), write/action forms, or the `OnMessage` dispatcher consolidation instead (all offered as explicit alternatives; user chose Users & permissions) |
 | 2026-08-12 | Users & permissions' RBAC check (`rbac.CanViewUsers`) lives in `rbac.Service.ListUsers`, not `internal/audit`-style inside a new dedicated Service, and not reusing `audit.Recorder.List`'s own check | `rbac.Service` already exists and already wraps `UserRepository` via its `userStore` interface (for `ElevateTier`) - widening `userStore` with `List` and adding `ListUsers` alongside it keeps every RBAC-gated action on `Users` in one place, rather than splitting Users-related authorization across `rbac.Service` (writes) and a new package (reads). This also means `cmd/sparky-server/main.go` constructs a real `rbac.Service` for the first time, ahead of `ElevateTier` having any HTTP caller | A new `internal/users` package mirroring `internal/audit`'s shape (rejected: `rbac.Service` was already the RBAC-gated home for `Users` table access via `ElevateTier` - a second package covering the read side of the exact same table would split one concern in two for no benefit); reusing `rbac.CanViewAuditLog` for this page too (rejected: same tier floor today, but a distinct capability conceptually - Audit log and the user roster could diverge in who may view them later, and `CanViewAuditLog`'s own doc comment is specific to the Audit log) |
+| 2026-08-12 | Dashboard UI's "Phase 6 and beyond" bundle (remaining two sidebar sections, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Settings section was built as Phase 6 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the four prior phase-scoping entries (2026-08-12, five times now): the bundle was several genuinely distinct pieces of work. Settings specifically was offered as "no aggregation or charting, closest in shape to the list/detail pages already built" - it turned out to need two new migrations (see the row below), which the scoping discussion did not anticipate, but the page shape itself was still the smallest continuation among the offered options | Building both remaining sections at once, the Metrics section (rejected as an option too, since it needs Chart.js/aggregation - a new UI shape, not a continuation, same reasoning Phase 5's own scoping already used to decline it), write/action forms, or the `OnMessage` dispatcher consolidation instead (all offered as explicit alternatives; user chose Settings) |
+| 2026-08-12 | `audit_settings.retention_months`'s seeded default is 12 months | SCHEMA.md had never stated a default for this column (unlike `forwarding_protocol`, whose `syslog` default it already documented) - discovered only once the migration was actually being written, since building the Settings page's read view required creating the table for the first time. Confirmed with the user rather than guessed: a middle value between the Metrics table's own 6-month raw-resolution retention window and this column's stated 24-month ceiling | 6 months, matching the Metrics table's window exactly (offered, not chosen - the two retention policies govern unrelated tables, so matching them isn't obviously more correct than a middle value); 24 months, the maximum (offered, not chosen - would mean nothing is ever pruned by default) |
+| 2026-08-12 | `metrics_export_config` and `audit_settings` (SCHEMA.md-documented tables that had never actually been migrated) are seeded with exactly one default row at migration time, using the same `id boolean PRIMARY KEY DEFAULT true` plus `CHECK (id)` singleton pattern as `break_glass_credential` - but, unlike that table, with an `INSERT` in the same migration rather than left absent until first configured | Break-glass credential legitimately has a "not set up yet" state before `sparky set-superadmin-password` ever runs - `BreakGlassRepository.Get` returning `ErrBreakGlassNotSet` is a real, meaningful signal. Metrics export config and Audit settings have no equivalent real-world unset state: the app (today, this page's read path; later, an actual export/forwarding job) needs an effective setting on every read, and "not configured" is indistinguishable in practice from "configured to do nothing" (`backend_type = 'none'`, `forwarding_enabled = false`) - so the schema states that explicitly as the seeded default rather than making every future caller handle a third, redundant empty state | Leaving both tables empty until an Admin visits a future write form and saves once (rejected: would make this phase's own read-only Settings page's `Get` calls handle a not-yet-configured error state that has no real meaning - the singleton is either configured to do something or configured to do nothing, never absent) |
+| 2026-08-12 | Neither `internal/metrics.Service` nor `internal/audit.Recorder` gained the Settings page's RBAC-gated read; a new `internal/settings` package was created instead, wrapping both `MetricsExportConfigRepository` and `AuditSettingsRepository` behind one `Service.Get(ctx, actor)` | `internal/metrics.Service`'s own doc comment already scopes it to telemetry ingestion only, explicitly deferring NFS/S3 export itself to the v0.4.0 Historical metrics milestone - bolting a config *read* onto it now would blur ingestion-only scope with a v0.4.0-scoped concern before that milestone exists. `internal/audit.Recorder` is scoped to the `audit_log` table specifically, not the separate `audit_settings` table that configures its optional forwarding - the two tables are related but distinct. Rather than split the one RBAC decision behind a single page's data across two unrelated packages, one new package owns it, matching the `internal/audit`/`rbac.Service` precedent of a Service-layer method taking `rbac.Actor` and returning `rbac.ErrNotPermitted` | Extending `internal/metrics.Service` and `internal/audit.Recorder` each with their own gated read, and having `handleSettings` call both separately (rejected: two RBAC checks for one page's one "may view Settings" decision, and neither package's existing scope actually fits the config-read concern being added) |
 
 ---
 
@@ -1261,7 +1332,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route already built (login, logout, profile create/edit, node registration, transfers, instance load/unload) - not specific to Dashboard UI Phase 2's login form. Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user) |
 | No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
-| The sidebar's `Audit log` and `Users & permissions` links are shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks either gets a raw JSON 403 (`handleAuditLog`/`handleUsers`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding these nav links by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just these two pages' own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case. Phase 5 (Users & permissions) hit the identical gap Phase 4 (Audit log) already documented here rather than opening a second, near-duplicate row |
+| The sidebar's `Audit log`, `Users & permissions`, and `Settings` links are shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks any of them gets a raw JSON 403 (`handleAuditLog`/`handleUsers`/`handleSettings`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding these nav links by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just these three pages' own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case. Phases 5 and 6 (Users & permissions, Settings) each hit the identical gap Phase 4 (Audit log) already documented here rather than opening further near-duplicate rows |
 
 ---
 
