@@ -30,6 +30,7 @@ type API struct {
 	profiles      profileLister
 	profileEditor profileEditor
 	instances     instanceLister
+	launcher      instanceLauncher
 	transfers     transferLister
 	users         userLister
 	audit         auditLister
@@ -37,6 +38,7 @@ type API struct {
 	elevator      userElevator
 	settings      settingsViewer
 	metrics       metricsLister
+	events        eventSource
 	templates     map[string]*template.Template
 	static        http.Handler
 	logger        *log.Logger
@@ -78,13 +80,19 @@ type API struct {
 // owns - see that package's doc comment; metricsSvc backs the Metrics
 // page, back at the Read-only floor like nodes/profiles/instances/
 // transfers - unlike audit/roster/elevator/settingsSvc, no RBAC check is
-// involved; logger is used for rendering/query failures a handler can't
-// turn into a useful HTTP response on its own. Returns an error if the
-// embedded templates (web.FS) fail to parse - a template syntax error is
-// a build-time bug, caught here rather than surfacing as a broken page
-// on first request.
+// involved; launcher backs the Model profiles page's Load/Unload controls
+// (PLANNING.md Dashboard UI Phase 11, the fourth and last write/action
+// form) via lifecycle.Service.LoadInstance/UnloadInstance - a distinct
+// interface from instances, same "same value, multiple interfaces"
+// pattern as registrar/nodes; eventsSource backs GET /events, the SSE
+// endpoint (also Phase 11) via events.Broker.Subscribe - ARCHITECTURE.md's
+// committed live-telemetry/transfer-progress channel; logger is used for
+// rendering/query failures a handler can't turn into a useful HTTP
+// response on its own. Returns an error if the embedded templates
+// (web.FS) fail to parse - a template syntax error is a build-time bug,
+// caught here rather than surfacing as a broken page on first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -105,6 +113,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		profiles:               profiles,
 		profileEditor:          profileEditorSvc,
 		instances:              instances,
+		launcher:               launcher,
 		transfers:              transfers,
 		users:                  users,
 		audit:                  auditLog,
@@ -112,6 +121,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		elevator:               elevator,
 		settings:               settingsSvc,
 		metrics:                metricsSvc,
+		events:                 eventsSource,
 		templates:              templates,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
@@ -185,6 +195,13 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Post("/profiles/new", a.handleCreateProfile)
 	r.With(a.RequireSession).Get("/profiles/{id}/edit", a.handleEditProfileForm)
 	r.With(a.RequireSession).Post("/profiles/{id}/edit", a.handleUpdateProfile)
+	// Load/Unload (Dashboard UI Phase 11, the fourth and last write/action
+	// form) - the RBAC gate (rbac.CanLaunchInstances) is checked inside
+	// lifecycle.Service.LoadInstance/UnloadInstance itself, same
+	// RequireSession-only-at-the-router-level reasoning as every other
+	// write route above.
+	r.With(a.RequireSession).Post("/profiles/{id}/load", a.handleLoadInstance)
+	r.With(a.RequireSession).Post("/instances/{id}/unload", a.handleUnloadInstance)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	r.With(a.RequireSession).Get("/metrics", a.handleMetrics)
 	// /audit-log's floor is Admin, not Read-only - RequireSession only
@@ -204,6 +221,10 @@ func (a *API) Router() http.Handler {
 	// /users - the tier check happens inside handleSettings via
 	// settings.Service.Get.
 	r.With(a.RequireSession).Get("/settings", a.handleSettings)
+	// /events is the SSE endpoint (Dashboard UI Phase 11) - session-gated
+	// like every Read-only-tier page above, no RBAC beyond that (see
+	// handleEvents' own doc comment).
+	r.With(a.RequireSession).Get("/events", a.handleEvents)
 
 	// Static assets (CSS, vendored htmx) - public, no session required,
 	// same reasoning a login page's own assets would need if one existed.

@@ -17,11 +17,13 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/1kaius1/Sparky/internal/agentconn"
+	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/audit"
 	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/config"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/engines"
+	"github.com/1kaius1/Sparky/internal/events"
 	"github.com/1kaius1/Sparky/internal/httpapi"
 	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/metrics"
@@ -82,16 +84,6 @@ func main() {
 	nodeRepo := db.NewNodeRepository(pool)
 	nodeAuth := nodes.NewAuthService(nodeRepo)
 	agentRegistry := agentconn.NewRegistry()
-	// onMessage is nil - nothing dispatches a real command yet.
-	// internal/transfers, internal/lifecycle, and internal/metrics each
-	// have their own OnMessageFunc-shaped handler
-	// (HandleTransferProgress/HandleInstanceResult/HandleTelemetry) but
-	// agentconn.Handler only accepts one callback - combining the three
-	// into a single dispatching OnMessageFunc is Dashboard UI Phase 3's
-	// OnMessage-consolidation slice (PLANNING.md), deliberately not this
-	// one - the Transfers page below only reads via ListTransfers, it
-	// doesn't need this wired.
-	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, nil)
 
 	auditRecorder := audit.NewRecorder(db.NewAuditRepository(pool), os.Stdout)
 	engineRegistry := engines.NewRegistry()
@@ -112,10 +104,11 @@ func main() {
 	// form's own writes (CreateProfile/UpdateProfile/GetProfile) - same
 	// twice-passed-value reasoning as nodeService above.
 	profileService := profiles.NewService(profileRepo, nodeRepo, engineRegistry, auditRecorder)
+	// lifecycleService backs both the Model profiles page's unguarded
+	// ListInstances read and, as of Dashboard UI Phase 11, the Load/Unload
+	// controls' own writes (LoadInstance/UnloadInstance) - same
+	// twice-passed-value reasoning as nodeService/profileService above.
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
-	// onMessage stays nil (see agentConnHandler above) - HandleTransferProgress
-	// isn't wired in yet, so this Service currently only backs the read-only
-	// Transfers page's ListTransfers, not a real InitiateTransfer caller.
 	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
 
 	// rbacService backs both the Users & permissions page's RBAC-gated
@@ -132,19 +125,48 @@ func main() {
 	// either repository's Set beyond what migrations 000012/000013 seed.
 	settingsService := settings.NewService(db.NewMetricsExportConfigRepository(pool), db.NewAuditSettingsRepository(pool))
 
-	// metricsService is constructed here for the first time - previously
-	// only referenced in the agentConnHandler comment above as a future
-	// OnMessageFunc caller. HandleTelemetry still isn't wired to that
-	// callback (onMessage stays nil, same reasoning as transferService),
-	// so in production this Service currently only backs the Metrics
-	// page's two read methods; nothing yet actually ingests a real
-	// telemetry reading end to end.
+	// metricsService backs the Metrics page's two read methods and, as of
+	// Dashboard UI Phase 11 (via the onMessage dispatch below),
+	// HandleTelemetry - the first time this Service actually ingests a
+	// real telemetry reading end to end, not just serves the page.
 	metricsService := metrics.NewService(db.NewMetricsRepository(pool), instanceRepo, logger)
+
+	// eventsBroker fans out a live signal to every open GET /events (SSE)
+	// connection - see internal/events' own doc comment. Fed by the
+	// onMessage dispatch closure below, consumed by internal/httpapi's
+	// handleEvents.
+	eventsBroker := events.NewBroker()
+
+	// onMessage is the OnMessage-consolidation slice PLANNING.md's
+	// Dashboard UI Phase 11 names as the hard prerequisite for both the
+	// Load/Unload controls (an unhandled TypeInstanceResult would leave a
+	// running_instances row stuck in starting/stopping forever) and SSE
+	// (nothing to broadcast otherwise). internal/transfers,
+	// internal/lifecycle, and internal/metrics each already have their own
+	// OnMessageFunc-shaped handler; agentconn.Handler only accepts one
+	// callback, so this switches on the envelope's own type rather than
+	// calling all three unconditionally on every message.
+	onMessage := func(nodeID string, env agentproto.Envelope) {
+		switch env.Type {
+		case agentproto.TypeTransferProgress:
+			transferService.HandleTransferProgress(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypeInstanceResult:
+			lifecycleService.HandleInstanceResult(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypeTelemetry:
+			metricsService.HandleTelemetry(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		default:
+			logger.Printf("agentconn: node %s sent an unhandled message type %q", nodeID, env.Type)
+		}
+	}
+	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, onMessage)
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, eventsBroker, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

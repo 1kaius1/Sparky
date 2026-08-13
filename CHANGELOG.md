@@ -772,6 +772,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-shown with vLLM's own specific validation message, an unknown
   profile ID on the edit form getting 404, and an unauthenticated
   request getting 401.
+- Dashboard UI Phase 11, completing the milestone item: the OnMessage
+  dispatcher consolidation, the instance load/unload controls (the fourth
+  and last Dashboard UI write/action form this milestone scoped), and SSE
+  wiring for live telemetry/transfer progress/instance results, per
+  ARCHITECTURE.md's Server-Sent Events commitment. `cmd/sparky-server/main.go`
+  no longer passes `nil` for `agentconn.NewHandler`'s `onMessage` -
+  `internal/transfers.Service.HandleTransferProgress`,
+  `internal/lifecycle.Service.HandleInstanceResult`, and
+  `internal/metrics.Service.HandleTelemetry` were all already fully built
+  and tested with no caller; a new dispatch closure switches on the
+  envelope's own `Type` to route to the right one. Without this, a
+  Load/Unload click left a `running_instances` row stuck in
+  `starting`/`stopping` forever, since nothing processed the agent's
+  response - fixed and verified against real binaries (see below), not
+  just asserted.
+
+  New `internal/events` package: an in-process, non-persisted
+  publish/subscribe broker (`Broker.Publish`/`Subscribe`) - SSE per
+  ARCHITECTURE.md is explicitly "internal use only" live signaling, not a
+  durable log like the audit log. `Publish` drops rather than blocks for a
+  subscriber whose buffer is full, so one slow or abandoned browser tab
+  can never back-pressure the agent's own WebSocket read loop - the same
+  "don't block the real work over a side channel" reasoning
+  `agentconn.Registry.Send`'s own doc comment already documents for its
+  mutex scope. The consolidated onMessage dispatch closure publishes an
+  `events.Event{Type: ...}` after handling each of the three message
+  types. New `internal/httpapi/events.go`: `GET /events`, session-gated
+  like every other Dashboard UI page (no RBAC beyond that - the events
+  carry nothing more than a type). New `web/static/js/sse.js`: a small
+  vanilla-JS `EventSource` client (CLAUDE.md Frontend Conventions'
+  "minimal vanilla JS - no framework" rule - no htmx SSE extension added,
+  since that would be a new JS library beyond Chart.js's already-discussed
+  carve-out) that triggers a debounced htmx refetch of whatever page is
+  currently visible on a relevant event, rather than patching individual
+  DOM nodes - confirmed with the user as this phase's intended scope, see
+  PLANNING.md's Decisions Log.
+
+  New `internal/httpapi/instances.go`: `instanceLauncher` interface over
+  `lifecycle.Service.LoadInstance`/`UnloadInstance` - both were already
+  fully built and tested before this phase, same "already built, just
+  needed an HTTP caller" shape as Phases 8/9/10's own discoveries.
+  `handleLoadInstance` (`POST /profiles/{id}/load`) and
+  `handleUnloadInstance` (`POST /instances/{id}/unload`) - the RBAC
+  decision (`rbac.CanLaunchInstances`) is not re-checked in the handler,
+  it lives entirely inside the Service methods themselves, matching every
+  other write path in this codebase; `rbac.ErrNotPermitted` -> 403,
+  `db.ErrProfileNotFound`/`db.ErrRunningInstanceNotFound` -> 404,
+  `lifecycle.ErrAlreadyRunning`/`ErrTargetNodeOffline`/`ErrInstanceNotRunning`
+  -> 409. Both use the same `hx-post`/`hx-swap="none"`/`HX-Redirect`
+  pattern `handleElevateUser` established - a one-click action with no
+  fields to preserve on failure. The controls live on the **Model
+  profiles** page, not a new sidebar section - matching CLAUDE.md Frontend
+  Conventions' existing tier note for that section ("PowerDev create /
+  Developer launch") directly. `internal/httpapi/model_profiles.go` now
+  also lists running instances (`instances.ListInstances`, already
+  unguarded) and folds them into a `profileID -> active instance` map,
+  keeping only the three non-terminal statuses
+  (`starting`/`running`/`stopping`) - a `stopped`/`failed` instance leaves
+  its profile eligible to load again rather than showing a stale status.
+
+  This is the fourth write route pair added since the app-wide CSRF gap
+  was documented (PLANNING.md Known Issues) - joins it the same way
+  Phases 8, 9, and 10 did, not retrofitted here; that Known Issues row's
+  route list and its now-stale "Instance load/unload remains a
+  Service-layer method only" note are both updated.
+
+  Verified with new unit tests across `internal/events` (publish/
+  subscribe/cancel, buffered-drop behavior) and `internal/httpapi`
+  (`handleLoadInstance`/`handleUnloadInstance`'s RBAC/not-found/conflict/
+  unauthenticated paths, `handleEvents` against a real `httptest.Server`
+  and a real `http.Client` - a streaming handler and a concurrently-read
+  response body over a plain `httptest.NewRecorder` would race on its
+  unsynchronized `bytes.Buffer`, which a real connection doesn't have -
+  confirming a real SSE-framed event is delivered and that a client
+  disconnect actually releases the handler goroutine/subscription, not
+  just that the route returns 200, and the Model profiles page's new
+  status/Load/Unload rendering), and `go test -race` clean across every
+  touched package. Also verified end to end against the real compiled
+  `sparky-server`/`sparky-agent` binaries, a real Postgres instance, and a
+  real local Podman daemon: registered a real node, connected a real
+  agent, created a real profile, Loaded it through the real form, and
+  confirmed the `running_instances` row actually left `starting` (a real
+  agent error - no `.gguf` file present, an expected outcome in this
+  sandbox with no real model on disk - transitioned it to `failed`,
+  proving OnMessage consolidation processes the agent's response rather
+  than leaving the row stuck) while a real `curl -N /events` connection
+  concurrently received the matching `event: instance_result` SSE frame;
+  a subsequent Unload attempt against that non-running instance correctly
+  got a real 409 `NOT_RUNNING`, and the Model profiles page correctly
+  re-offered Load once the instance reached its terminal `failed` state.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

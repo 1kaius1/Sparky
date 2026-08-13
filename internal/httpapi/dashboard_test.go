@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/events"
+	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -124,6 +126,31 @@ func (f *fakeInstanceLister) ListInstances(context.Context) ([]*db.RunningInstan
 		return nil, f.err
 	}
 	return f.instances, nil
+}
+
+// fakeInstanceLauncher implements instanceLauncher for tests, recording
+// every call.
+type fakeInstanceLauncher struct {
+	loadErr   error
+	unloadErr error
+	loaded    []string // profile IDs
+	unloaded  []string // instance IDs
+}
+
+func (f *fakeInstanceLauncher) LoadInstance(_ context.Context, _ rbac.Actor, params lifecycle.LoadParams) (*db.RunningInstance, error) {
+	if f.loadErr != nil {
+		return nil, f.loadErr
+	}
+	f.loaded = append(f.loaded, params.ProfileID)
+	return &db.RunningInstance{ID: "instance-1", ProfileID: params.ProfileID, Status: db.RunningInstanceStatusStarting}, nil
+}
+
+func (f *fakeInstanceLauncher) UnloadInstance(_ context.Context, _ rbac.Actor, instanceID string) (*db.RunningInstance, error) {
+	if f.unloadErr != nil {
+		return nil, f.unloadErr
+	}
+	f.unloaded = append(f.unloaded, instanceID)
+	return &db.RunningInstance{ID: instanceID, Status: db.RunningInstanceStatusStopping}, nil
 }
 
 // fakeTransferLister implements transferLister for tests.
@@ -340,9 +367,29 @@ func newTestDashboardAPIWithRegistrar(t *testing.T, nodeList *fakeNodeLister, re
 // comment.
 func newTestDashboardAPIWithProfileEditor(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
 	t.Helper()
+	return newTestDashboardAPIWithLauncher(t, nodeList, registrar, profileList, profileEditorFake, instances, &fakeInstanceLauncher{}, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc)
+}
+
+// newTestDashboardAPIWithLauncher adds control over instanceLauncher (the
+// Model profiles page's Load/Unload controls, Dashboard UI Phase 11) on
+// top of newTestDashboardAPIWithProfileEditor's parameters - same "kept
+// separate" reasoning as that function's own doc comment.
+func newTestDashboardAPIWithLauncher(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister) *API {
+	t.Helper()
+	return newTestDashboardAPIWithEvents(t, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, events.NewBroker())
+}
+
+// newTestDashboardAPIWithEvents is the innermost test constructor, adding
+// control over eventSource (GET /events, Dashboard UI Phase 11) on top of
+// newTestDashboardAPIWithLauncher's parameters - a real *events.Broker,
+// not a fake, since Broker.Subscribe already structurally satisfies
+// eventSource and a real broker is exactly what tests exercising
+// handleEvents need to Publish against.
+func newTestDashboardAPIWithEvents(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker) *API {
+	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -494,6 +541,80 @@ func TestHandleModelProfiles_ListProfilesFails(t *testing.T) {
 
 	if rec.Code != http.StatusInternalServerError {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleModelProfiles_ListInstancesFails(t *testing.T) {
+	profiles := &fakeProfileLister{profiles: []*db.Profile{{ID: "profile-1", Name: "my-profile"}}}
+	instances := &fakeInstanceLister{err: errors.New("database unreachable")}
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, profiles, instances, &fakeTransferLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+// TestHandleModelProfiles_ShowsInstanceStatusAndLoadControl exercises
+// Dashboard UI Phase 11's addition to the Model profiles page: a running
+// (non-terminal) instance's status is shown, a Developer-tier viewer sees
+// the Load control on a profile with no active instance, and a terminal
+// (stopped) instance leaves the profile eligible to load again rather
+// than showing a stale status.
+func TestHandleModelProfiles_ShowsInstanceStatusAndLoadControl(t *testing.T) {
+	profiles := &fakeProfileLister{profiles: []*db.Profile{
+		{ID: "profile-1", Name: "loaded-profile"},
+		{ID: "profile-2", Name: "idle-profile"},
+		{ID: "profile-3", Name: "stopped-profile"},
+	}}
+	instances := &fakeInstanceLister{instances: []*db.RunningInstance{
+		{ID: "instance-1", ProfileID: "profile-1", Status: db.RunningInstanceStatusRunning},
+		{ID: "instance-3", ProfileID: "profile-3", Status: db.RunningInstanceStatusStopped},
+	}}
+	users := newFakeUserLister()
+	users.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, profiles, instances, &fakeTransferLister{}, users, &fakeAuditLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles", "dev-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "status-running") {
+		t.Errorf("response does not show the running instance's status: %s", body)
+	}
+	if !strings.Contains(body, `/instances/instance-1/unload`) {
+		t.Errorf("response does not offer Unload for the running instance: %s", body)
+	}
+	if !strings.Contains(body, `/profiles/profile-2/load`) {
+		t.Errorf("response does not offer Load for the idle profile: %s", body)
+	}
+	if !strings.Contains(body, `/profiles/profile-3/load`) {
+		t.Errorf("response does not offer Load for the profile with only a stopped instance: %s", body)
+	}
+}
+
+func TestHandleModelProfiles_LoadControlHiddenWithoutCanLaunch(t *testing.T) {
+	profiles := &fakeProfileLister{profiles: []*db.Profile{{ID: "profile-1", Name: "my-profile"}}}
+	users := newFakeUserLister()
+	users.byID["ro-1"] = &db.User{ID: "ro-1", Tier: db.TierReadOnly}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, profiles, &fakeInstanceLister{}, &fakeTransferLister{}, users, &fakeAuditLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles", "ro-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if body := rec.Body.String(); strings.Contains(body, "/profiles/profile-1/load") {
+		t.Errorf("Read-only viewer should not be offered Load: %s", body)
 	}
 }
 
