@@ -35,7 +35,7 @@ func (f *fakeNodeStore) List(_ context.Context) ([]*db.Node, error) {
 	return f.listResult, nil
 }
 
-func (f *fakeNodeStore) Create(_ context.Context, name, hostname, ipAddress string, nodeType db.NodeType, containerRuntime *db.ContainerRuntime, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string, bearerTokenHash string) (*db.Node, error) {
+func (f *fakeNodeStore) Create(_ context.Context, name, hostname, ipAddress string, runtimeBackend db.RuntimeBackend, gpuMemoryGB, cpuMemoryGB float64, registeredBy *string, bearerTokenHash string) (*db.Node, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -44,16 +44,15 @@ func (f *fakeNodeStore) Create(_ context.Context, name, hostname, ipAddress stri
 		id = "node-1"
 	}
 	n := &db.Node{
-		ID:               id,
-		Name:             name,
-		Hostname:         hostname,
-		IPAddress:        ipAddress,
-		NodeType:         nodeType,
-		ContainerRuntime: containerRuntime,
-		GPUMemoryGB:      gpuMemoryGB,
-		CPUMemoryGB:      cpuMemoryGB,
-		AgentStatus:      db.AgentStatusOffline,
-		RegisteredBy:     registeredBy,
+		ID:             id,
+		Name:           name,
+		Hostname:       hostname,
+		IPAddress:      ipAddress,
+		RuntimeBackend: runtimeBackend,
+		GPUMemoryGB:    gpuMemoryGB,
+		CPUMemoryGB:    cpuMemoryGB,
+		AgentStatus:    db.AgentStatusOffline,
+		RegisteredBy:   registeredBy,
 	}
 	f.created = append(f.created, n)
 	f.bearerTokenHashes = append(f.bearerTokenHashes, bearerTokenHash)
@@ -90,7 +89,7 @@ func TestService_RegisterNode_PermittedByAdmin(t *testing.T) {
 	svc := NewService(store, audit)
 	actor := rbac.Actor{Tier: db.TierAdmin, UserID: "admin-1"}
 
-	n, token, err := svc.RegisterNode(context.Background(), actor, validSparkParams())
+	n, token, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
 	if err != nil {
 		t.Fatalf("RegisterNode() error: %v", err)
 	}
@@ -136,7 +135,7 @@ func TestService_RegisterNode_PermittedBySuperAdmin_NilRegisteredBy(t *testing.T
 	svc := NewService(store, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
-	_, _, err := svc.RegisterNode(context.Background(), actor, validSparkParams())
+	_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
 	if err != nil {
 		t.Fatalf("RegisterNode() error: %v", err)
 	}
@@ -164,7 +163,7 @@ func TestService_RegisterNode_NotPermitted(t *testing.T) {
 			svc := NewService(store, audit)
 			actor := rbac.Actor{Tier: tier, UserID: "user-1"}
 
-			_, _, err := svc.RegisterNode(context.Background(), actor, validSparkParams())
+			_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
 			if !errors.Is(err, rbac.ErrNotPermitted) {
 				t.Errorf("RegisterNode() error = %v, want rbac.ErrNotPermitted", err)
 			}
@@ -184,7 +183,7 @@ func TestService_RegisterNode_InvalidParamsNotPersistedOrAudited(t *testing.T) {
 	svc := NewService(store, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
-	params := validSparkParams()
+	params := validBareMetalParams()
 	params.Name = ""
 
 	_, _, err := svc.RegisterNode(context.Background(), actor, params)
@@ -205,7 +204,7 @@ func TestService_RegisterNode_CreateFails(t *testing.T) {
 	svc := NewService(store, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
-	_, _, err := svc.RegisterNode(context.Background(), actor, validSparkParams())
+	_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
 	if err == nil {
 		t.Fatal("RegisterNode() succeeded despite a Create failure")
 	}
@@ -220,7 +219,7 @@ func TestService_RegisterNode_AuditFailurePropagates(t *testing.T) {
 	svc := NewService(store, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
-	_, _, err := svc.RegisterNode(context.Background(), actor, validSparkParams())
+	_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
 	if err == nil {
 		t.Fatal("RegisterNode() succeeded despite an audit Record failure")
 	}

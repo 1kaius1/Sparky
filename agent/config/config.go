@@ -11,11 +11,10 @@ import (
 
 // Config holds sparky-agent's validated environment configuration.
 type Config struct {
-	CentralURL       string
-	BearerToken      string
-	NodeName         string
-	NodeType         string
-	ContainerRuntime string
+	CentralURL     string
+	BearerToken    string
+	NodeName       string
+	RuntimeBackend string
 
 	ModelStoragePath      string
 	TelemetryPollInterval string
@@ -32,7 +31,6 @@ type required struct {
 // if anything required is missing.
 func Load() (*Config, error) {
 	cfg := &Config{
-		ContainerRuntime:      os.Getenv("SPARKY_CONTAINER_RUNTIME"),
 		ModelStoragePath:      os.Getenv("SPARKY_MODEL_STORAGE_PATH"),
 		TelemetryPollInterval: getEnvDefault("SPARKY_TELEMETRY_POLL_INTERVAL", "5s"),
 		LogLevel:              getEnvDefault("LOG_LEVEL", "info"),
@@ -43,7 +41,7 @@ func Load() (*Config, error) {
 		{"SPARKY_CENTRAL_URL", &cfg.CentralURL},
 		{"SPARKY_BEARER_TOKEN", &cfg.BearerToken},
 		{"SPARKY_NODE_NAME", &cfg.NodeName},
-		{"SPARKY_NODE_TYPE", &cfg.NodeType},
+		{"SPARKY_RUNTIME_BACKEND", &cfg.RuntimeBackend},
 	}
 
 	var missing []string

@@ -15,10 +15,9 @@ func TestNodeRepository_Create_DockerGPU(t *testing.T) {
 	ctx := context.Background()
 
 	admin := createTestUser(t, users, fmt.Sprintf("S-1-TEST-%s", t.Name()))
-	runtime := ContainerRuntimePodman
 
 	n, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "gpu-host.local", "10.0.0.5",
-		NodeTypeDockerGPU, &runtime, 24, 64, &admin.ID, "test-bearer-token-hash")
+		RuntimeBackendPodman, 24, 64, &admin.ID, "test-bearer-token-hash")
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -29,11 +28,8 @@ func TestNodeRepository_Create_DockerGPU(t *testing.T) {
 	if n.ID == "" {
 		t.Error("ID is empty, want a generated uuid")
 	}
-	if n.NodeType != NodeTypeDockerGPU {
-		t.Errorf("NodeType = %q, want %q", n.NodeType, NodeTypeDockerGPU)
-	}
-	if n.ContainerRuntime == nil || *n.ContainerRuntime != ContainerRuntimePodman {
-		t.Errorf("ContainerRuntime = %v, want %q", n.ContainerRuntime, ContainerRuntimePodman)
+	if n.RuntimeBackend != RuntimeBackendPodman {
+		t.Errorf("RuntimeBackend = %q, want %q", n.RuntimeBackend, RuntimeBackendPodman)
 	}
 	if n.GPUMemoryGB != 24 || n.CPUMemoryGB != 64 {
 		t.Errorf("GPUMemoryGB/CPUMemoryGB = %v/%v, want 24/64", n.GPUMemoryGB, n.CPUMemoryGB)
@@ -57,16 +53,19 @@ func TestNodeRepository_Create_DockerGPU(t *testing.T) {
 	}
 }
 
-func TestNodeRepository_Create_Spark_NilContainerRuntime(t *testing.T) {
+func TestNodeRepository_Create_BareMetal(t *testing.T) {
 	pool := newTestPool(t)
 	nodes := NewNodeRepository(pool)
 	ctx := context.Background()
 
 	// A Spark's unified memory - gpu_memory_gb and cpu_memory_gb equal -
 	// is the degenerate case of the two-pool model, not a special case,
-	// per SCHEMA.md Nodes.
+	// per SCHEMA.md Nodes. Bare-metal itself is also not Spark-specific -
+	// it's for any host without viable GPU passthrough (e.g. a
+	// single-GPU workstation already using that GPU for its own host
+	// session) - see PLANNING.md's Decisions Log.
 	n, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-1.local", "10.0.0.6",
-		NodeTypeSpark, nil, 128, 128, nil, "test-bearer-token-hash")
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -74,28 +73,11 @@ func TestNodeRepository_Create_Spark_NilContainerRuntime(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, n.ID)
 	})
 
-	if n.ContainerRuntime != nil {
-		t.Errorf("ContainerRuntime = %v, want nil for a Spark node", *n.ContainerRuntime)
+	if n.RuntimeBackend != RuntimeBackendBareMetal {
+		t.Errorf("RuntimeBackend = %q, want %q", n.RuntimeBackend, RuntimeBackendBareMetal)
 	}
 	if n.RegisteredBy != nil {
 		t.Errorf("RegisteredBy = %v, want nil (SuperAdmin is not a Users row)", *n.RegisteredBy)
-	}
-}
-
-func TestNodeRepository_Create_ContainerRuntimeMismatchRejectedByDatabase(t *testing.T) {
-	pool := newTestPool(t)
-	nodes := NewNodeRepository(pool)
-	ctx := context.Background()
-
-	runtime := ContainerRuntimeDocker
-	if _, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-2.local", "10.0.0.7",
-		NodeTypeSpark, &runtime, 128, 128, nil, "test-bearer-token-hash"); err == nil {
-		t.Error("Create() succeeded for a Spark node with a container_runtime set, want the CHECK constraint to reject it")
-	}
-
-	if _, err := nodes.Create(ctx, fmt.Sprintf("node-%s-2", t.Name()), "gpu-host-2.local", "10.0.0.8",
-		NodeTypeDockerGPU, nil, 24, 64, nil, "test-bearer-token-hash"); err == nil {
-		t.Error("Create() succeeded for a docker-gpu node with no container_runtime, want the CHECK constraint to reject it")
 	}
 }
 
@@ -105,7 +87,7 @@ func TestNodeRepository_FindByID(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-3.local", "10.0.0.9",
-		NodeTypeSpark, nil, 128, 128, nil, "test-bearer-token-hash")
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -140,7 +122,7 @@ func TestNodeRepository_List(t *testing.T) {
 	nameA := fmt.Sprintf("node-a-%s", t.Name())
 	nameB := fmt.Sprintf("node-b-%s", t.Name())
 
-	a, err := nodes.Create(ctx, nameA, "host-a.local", "10.0.1.1", NodeTypeSpark, nil, 128, 128, nil, "test-bearer-token-hash")
+	a, err := nodes.Create(ctx, nameA, "host-a.local", "10.0.1.1", RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -148,7 +130,7 @@ func TestNodeRepository_List(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, a.ID)
 	})
 
-	b, err := nodes.Create(ctx, nameB, "host-b.local", "10.0.1.2", NodeTypeSpark, nil, 128, 128, nil, "test-bearer-token-hash")
+	b, err := nodes.Create(ctx, nameB, "host-b.local", "10.0.1.2", RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -181,7 +163,7 @@ func TestNodeRepository_FindCredentialByName(t *testing.T) {
 	ctx := context.Background()
 
 	name := fmt.Sprintf("node-%s", t.Name())
-	created, err := nodes.Create(ctx, name, "spark-4.local", "10.0.0.10", NodeTypeSpark, nil, 128, 128, nil, "cred-test-hash")
+	created, err := nodes.Create(ctx, name, "spark-4.local", "10.0.0.10", RuntimeBackendBareMetal, 128, 128, nil, "cred-test-hash")
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -217,7 +199,7 @@ func TestNodeRepository_SetAgentStatus(t *testing.T) {
 	ctx := context.Background()
 
 	created, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-5.local", "10.0.0.11",
-		NodeTypeSpark, nil, 128, 128, nil, "test-bearer-token-hash")
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}

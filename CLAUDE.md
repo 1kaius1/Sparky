@@ -110,9 +110,11 @@ must never be skipped regardless of how routine or urgent a task seems.
 
 Sparky gives AD-authenticated developers self-service control over loading and
 tuning LLM inference engines across a small fleet of GPU compute nodes - NVIDIA DGX
-Spark hardware and other Docker/Podman GPU hosts alike - with tiered permissions,
-full audit logging, and live and historical hardware telemetry. Built for a single
-internal team managing a handful of nodes, not a multi-tenant or hyperscale product.
+Spark hardware and other GPU hosts alike, each using whichever runtime backend
+fits its own GPU-passthrough situation (`SCHEMA.md` Nodes' `runtime_backend`) -
+with tiered permissions, full audit logging, and live and historical hardware
+telemetry. Built for a single internal team managing a handful of nodes, not a
+multi-tenant or hyperscale product.
 
 ---
 
@@ -561,5 +563,8 @@ See `PLANNING.md` for the full milestone breakdown and active goals.
 
 Currently targeting v0.1.0: core foundation built and validated against non-Spark
 hardware first (a laptop with an RTX 4090 and a Dell Precision workstation with an
-RTX 3080Ti), before Spark-specific bare-metal support in v0.2.0. See `PLANNING.md`
-Decisions Log for why the sequencing runs this direction.
+RTX 3080Ti), before the bare-metal runtime backend and real Spark-hardware
+validation in v0.2.0 - two separate goals, not one "Spark-specific" item; see
+`PLANNING.md` Decisions Log for why the sequencing runs this direction, and its
+2026-08-13 entry for why "Spark-specific" was never actually the right framing for
+the bare-metal backend itself.

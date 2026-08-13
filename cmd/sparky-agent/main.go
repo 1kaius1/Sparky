@@ -26,15 +26,16 @@ func main() {
 	if err != nil {
 		logger.Fatalf("config: %v", err)
 	}
-	logger.Printf("configuration loaded (node_name=%s node_type=%s)", cfg.NodeName, cfg.NodeType)
+	logger.Printf("configuration loaded (node_name=%s runtime_backend=%s)", cfg.NodeName, cfg.RuntimeBackend)
 
 	telemetryPollInterval, err := time.ParseDuration(cfg.TelemetryPollInterval)
 	if err != nil {
 		logger.Fatalf("config: invalid SPARKY_TELEMETRY_POLL_INTERVAL %q: %v", cfg.TelemetryPollInterval, err)
 	}
 
-	// Bare-metal (Spark) runtime backend selection is v0.2.0 work
-	// (CLAUDE.md Current Focus) - only Docker/Podman exists today.
+	// Bare-metal runtime backend selection (for hosts without GPU
+	// passthrough) is v0.2.0 work (CLAUDE.md Current Focus) - only
+	// Docker/Podman exists today.
 	runtimeBackend, err := containers.New()
 	if err != nil {
 		logger.Fatalf("runtime backend: %v", err)

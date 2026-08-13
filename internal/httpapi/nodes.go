@@ -32,12 +32,12 @@ type nodesPageData struct {
 }
 
 type nodeRow struct {
-	Name        string
-	Hostname    string
-	NodeType    string
-	AgentStatus string
-	GPUMemoryGB float64
-	CPUMemoryGB float64
+	Name           string
+	Hostname       string
+	RuntimeBackend string
+	AgentStatus    string
+	GPUMemoryGB    float64
+	CPUMemoryGB    float64
 }
 
 func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
@@ -53,12 +53,12 @@ func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
 	rows := make([]nodeRow, 0, len(nodeList))
 	for _, n := range nodeList {
 		rows = append(rows, nodeRow{
-			Name:        n.Name,
-			Hostname:    n.Hostname,
-			NodeType:    string(n.NodeType),
-			AgentStatus: string(n.AgentStatus),
-			GPUMemoryGB: n.GPUMemoryGB,
-			CPUMemoryGB: n.CPUMemoryGB,
+			Name:           n.Name,
+			Hostname:       n.Hostname,
+			RuntimeBackend: string(n.RuntimeBackend),
+			AgentStatus:    string(n.AgentStatus),
+			GPUMemoryGB:    n.GPUMemoryGB,
+			CPUMemoryGB:    n.CPUMemoryGB,
 		})
 	}
 
@@ -88,13 +88,12 @@ type registerNodePageData struct {
 }
 
 type registerNodeFormValues struct {
-	Name             string
-	Hostname         string
-	IPAddress        string
-	NodeType         string
-	ContainerRuntime string
-	GPUMemoryGB      string
-	CPUMemoryGB      string
+	Name           string
+	Hostname       string
+	IPAddress      string
+	RuntimeBackend string
+	GPUMemoryGB    string
+	CPUMemoryGB    string
 }
 
 // nodeRegisteredPageData is the post-registration confirmation page's
@@ -143,13 +142,12 @@ func (a *API) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	form := registerNodeFormValues{
-		Name:             r.PostFormValue("name"),
-		Hostname:         r.PostFormValue("hostname"),
-		IPAddress:        r.PostFormValue("ip_address"),
-		NodeType:         r.PostFormValue("node_type"),
-		ContainerRuntime: r.PostFormValue("container_runtime"),
-		GPUMemoryGB:      r.PostFormValue("gpu_memory_gb"),
-		CPUMemoryGB:      r.PostFormValue("cpu_memory_gb"),
+		Name:           r.PostFormValue("name"),
+		Hostname:       r.PostFormValue("hostname"),
+		IPAddress:      r.PostFormValue("ip_address"),
+		RuntimeBackend: r.PostFormValue("runtime_backend"),
+		GPUMemoryGB:    r.PostFormValue("gpu_memory_gb"),
+		CPUMemoryGB:    r.PostFormValue("cpu_memory_gb"),
 	}
 
 	gpuMemoryGB, err := strconv.ParseFloat(form.GPUMemoryGB, 64)
@@ -163,20 +161,13 @@ func (a *API) handleRegisterNode(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var containerRuntime *db.ContainerRuntime
-	if form.ContainerRuntime != "" {
-		cr := db.ContainerRuntime(form.ContainerRuntime)
-		containerRuntime = &cr
-	}
-
 	params := nodes.RegisterNodeParams{
-		Name:             form.Name,
-		Hostname:         form.Hostname,
-		IPAddress:        form.IPAddress,
-		NodeType:         db.NodeType(form.NodeType),
-		ContainerRuntime: containerRuntime,
-		GPUMemoryGB:      gpuMemoryGB,
-		CPUMemoryGB:      cpuMemoryGB,
+		Name:           form.Name,
+		Hostname:       form.Hostname,
+		IPAddress:      form.IPAddress,
+		RuntimeBackend: db.RuntimeBackend(form.RuntimeBackend),
+		GPUMemoryGB:    gpuMemoryGB,
+		CPUMemoryGB:    cpuMemoryGB,
 	}
 
 	actor, err := a.actorFromIdentity(ctx, identity)

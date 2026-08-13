@@ -19,19 +19,15 @@
     <input type="text" id="ip_address" name="ip_address" value="{{.Data.Form.IPAddress}}" required>
   </p>
   <p>
-    <label for="node_type">Node type</label><br>
-    <select id="node_type" name="node_type">
-      <option value="spark" {{if eq .Data.Form.NodeType "spark"}}selected{{end}}>spark</option>
-      <option value="docker-gpu" {{if eq .Data.Form.NodeType "docker-gpu"}}selected{{end}}>docker-gpu</option>
+    <label for="runtime_backend">Runtime backend</label><br>
+    <select id="runtime_backend" name="runtime_backend">
+      <option value="docker" {{if eq .Data.Form.RuntimeBackend "docker"}}selected{{end}}>docker</option>
+      <option value="podman" {{if eq .Data.Form.RuntimeBackend "podman"}}selected{{end}}>podman</option>
+      <option value="bare-metal" {{if eq .Data.Form.RuntimeBackend "bare-metal"}}selected{{end}}>bare-metal</option>
     </select>
-  </p>
-  <p>
-    <label for="container_runtime">Container runtime (docker-gpu only)</label><br>
-    <select id="container_runtime" name="container_runtime">
-      <option value="" {{if eq .Data.Form.ContainerRuntime ""}}selected{{end}}>(none - spark only)</option>
-      <option value="docker" {{if eq .Data.Form.ContainerRuntime "docker"}}selected{{end}}>docker</option>
-      <option value="podman" {{if eq .Data.Form.ContainerRuntime "podman"}}selected{{end}}>podman</option>
-    </select>
+    <br><small>docker/podman: GPU passthrough via CDI. bare-metal: direct process
+    exec, for hosts without viable passthrough (e.g. a single-GPU workstation
+    already using that GPU for its own host session) - see SCHEMA.md Nodes.</small>
   </p>
   <p>
     <label for="gpu_memory_gb">GPU memory (GB)</label><br>

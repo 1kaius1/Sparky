@@ -1493,15 +1493,25 @@ the current active work, see Current Sprint / Active Work below.
     item above.
   - [ ] Bare-metal install script (apt + dnf)
 
-- [ ] **v0.2.0** - Spark bare-metal support
-  - [ ] Agent: bare-metal runtime backend for Spark (`serviceloop`, direct process exec)
+- [ ] **v0.2.0** - Bare-metal runtime backend, and Spark hardware validation
+  - [ ] Agent: bare-metal runtime backend (`serviceloop`, direct process exec) -
+        for hosts where GPU passthrough isn't viable (e.g. a single-GPU
+        workstation already using that GPU for its own host session), not
+        specific to DGX Spark hardware. Validated against this project's own RTX
+        4090 laptop, the concrete hardware in hand for this case - see
+        PLANNING.md's 2026-08-13 Decisions Log entry
   - [ ] `sparky-agent setup` subcommand - creates/verifies the `serviceloop` system
         account and its GPU-passthrough group membership (`video`/`render`,
         distro-dependent), idempotent, supports both environment-variable-driven and
         interactive invocation; `scripts/install.sh` is trimmed to placing the binary
         and systemd unit and delegates account provisioning to this subcommand rather
         than running `useradd`/`usermod` itself
-  - [ ] Validate the full stack against real Spark hardware
+  - [ ] Validate the Docker/Podman runtime backend (real CDI GPU passthrough)
+        against real DGX Spark hardware - the GB10 GPU supports passthrough to
+        a container without affecting a display connected to it (NVIDIA's
+        supported use case for that hardware), unlike the dev laptop, so
+        expected to be the more straightforward CDI validation target once real
+        hardware is available
 
 - [ ] **v0.3.0** - Multi-Spark clustering
   - [ ] Fabric groups, physical linkage tracking
@@ -1680,6 +1690,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-13 | Dashboard UI's "Phase 10 and beyond" bundle (profile create/edit form plus SSE wiring plus `OnMessage` dispatcher consolidation) was split, and only the profile create/edit form was built as Phase 10 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the eight prior phase-scoping entries (now nine times): the bundle was still two genuinely distinct pieces of work even after node registration's own scoping (Phase 9) narrowed it. Profile create/edit was offered as completing all four originally-planned write/action forms except instance load/unload, with its own explicitly-named wrinkle (free-form `engine_params` JSON) rather than presented as uniformly simple; the `OnMessage`-plus-SSE option was offered too, explicitly flagged as unblocking instance load/unload as the *next* slice rather than being that form itself | The `OnMessage` consolidation plus SSE wiring instead (offered as the only other option; user chose the profile form) |
 | 2026-08-13 | `profiles.Service` gained a new `GetProfile` method (wrapping `ProfileRepository.FindByID`, already exported at the repository layer but previously unexposed through the Service) rather than the edit form's prefill reusing `ListProfiles` and filtering client-side for the matching ID | `ListProfiles` already exists specifically for the read-only list page and returns every profile; filtering a full list down to one record in the HTTP handler to prefill a form is presentation-layer plumbing standing in for what should be a real single-record Service read, the same category of thing `nodes.Service`/`rbac.Service` already expose for their own single-record needs (`FindByID`/`FindByADSID` equivalents). Unlike Phases 8 and 9, which needed zero domain-package changes because the write methods pre-existed complete, this phase's read-side gap was real and worth closing properly rather than working around in the wrong layer | Filtering `ListProfiles`'s full result in `handleEditProfileForm` (rejected: technically works for a "handful of nodes" scale roster, per CLAUDE.md Project Overview, but is exactly the kind of misplaced business-logic-in-a-handler CLAUDE.md's Handler -> Service Layer -> Repository pattern exists to prevent, and leaves `ProfileRepository.FindByID` sitting unused at the Service layer for no reason) |
 | 2026-08-13 | Dashboard UI Phase 11's SSE wiring builds the full server-side broker (`internal/events`) and `GET /events` endpoint, plus a minimal client (`web/static/js/sse.js`) that triggers a debounced htmx refetch of the current page on a relevant event - not fine-grained live DOM patching and not a server-only stub with no client wiring - confirmed with the user as an explicit multi-option choice | Unlike every prior "Phase N and beyond" scoping decision in this log (nine times now), this was not a question of which independent slice to build next - PLANNING.md's own Phase 11 entry already named `OnMessage` consolidation, the load/unload form, and SSE wiring as one hard dependency chain, no longer splittable. The remaining choice was how much of SSE's own scope to build: a server-only stub would leave this phase's stated goal (seeing a load/unload/transfer/telemetry change without a manual reload) undelivered; fine-grained live DOM patching (a live-appended Chart.js point, an in-place progress bar/status badge update) was rejected as substantially more frontend JS to write and reason about with no browser available in this sandboxed environment to visually verify it, and a full-page-content refetch already fully solves what this phase needs without it | Fine-grained live DOM patching per event type (rejected: more JS, unverifiable here); broker + endpoint with no client consumption yet, deferred to a later phase (rejected: would leave the phase's own live-update goal undelivered) |
+| 2026-08-13 | `nodes.node_type` (`spark` / `docker-gpu`) + `container_runtime` (`docker` / `podman`, CHECK-paired) collapsed into a single `runtime_backend` enum (`docker` / `podman` / `bare-metal`, migration `000014_nodes_collapse_runtime_backend`); "spark" retired as a schema value entirely | The 2026-08-06 design (see that date's entry below) conflated a hardware label with a runtime-mechanism choice, backwards: it assumed Spark needs the bare-metal (no-container, direct-exec) backend and non-Spark hosts use Docker/Podman. A DGX Spark's GB10 GPU supports passthrough to a container without affecting a display connected to it - NVIDIA's supported use case for that hardware, confirmed with the user rather than assumed, though neither of us has independently verified the underlying mechanism - so CDI GPU passthrough into a container should work fine there; the RTX 4090 laptop - this project's own primary v0.1.0 dev/test hardware - is the case that actually needs bare-metal, since its GPU is already claimed by the host OS's own session and can't be handed to a container at all, independent of whether the hardware happens to be a Spark. Separately, the two-column CHECK-constrained shape only ever expressed one 3-way choice (`docker-gpu` was never meaningful without a paired `container_runtime`) behind a constraint rejecting the other five combinations - collapsing to one column makes those states unrepresentable instead of merely rejected, and matches ARCHITECTURE.md's own pre-existing "Runtime Backends: Bare-metal, Docker/Podman" vocabulary exactly. Nothing else in the system (GPU/CPU memory equality, ARM64 cross-compilation, v0.3.0 fabric-group clustering) needs a discrete "is-this-hardware-a-Spark" flag - a descriptive `name` (already free text, e.g. `spark-1`) covers the human-labeling need with zero special-casing, same as before. `SPARKY_NODE_TYPE`/`SPARKY_CONTAINER_RUNTIME` (agent env vars) collapsed to `SPARKY_RUNTIME_BACKEND` the same way, though the agent doesn't yet branch on this value for backend selection either way - that's still real v0.2.0 work. `SPARKY_MODEL_STORAGE_PATH`'s documented default (`/home/serviceloop/models`) is kept as-is, only its stated reasoning changes (a bare-metal host, not "on Spark") - confirmed with the user, since nothing implements that default yet regardless (PLANNING.md Known Issues). PLANNING.md's Milestones v0.2.0 entry and Dependencies and Blockers are corrected to match (also confirmed with the user); already-completed Phase write-ups describing the old schema as it was actually built (Node registry, Model transfers Phase 1's CHECK-pairing mention, Dashboard UI Phase 9's registration-form entry) are deliberately left unedited - they're an accurate historical record of what those PRs built at the time, matching this project's existing never-rewrite-history discipline (migrations are never edited after creation; CHANGELOG corrections get a new entry, not a rewrite of the old one) | A minimal rename only (`node_type`'s `spark` value renamed to `bare-metal` via `ALTER TYPE ... RENAME VALUE`, `container_runtime` left as a second column) - considered and explicitly offered to the user as the smaller, lower-risk option; rejected in favor of the collapse once raised, since it would have kept the CHECK-constrained two-column pattern in place for something that's really one concept, and the collapse's own diff (while larger) is still fully contained to the `nodes` table and its direct Go/HTTP/template callers |
 
 ---
 
@@ -1711,14 +1722,23 @@ Two questions originally tracked here have moved on, not been deleted outright:
   "Agent: Docker/Podman runtime backend" item's top-level checkbox, not v0.4.0
   (Historical metrics, an unrelated milestone - this line originally misstated
   that). The laptop (RTX 4090) and Dell Precision (RTX 3080Ti) are both already in
-  hand and in active use as this project's primary dev/test hardware - they are
-  not a pending dependency. What's actually still needed is a working CDI setup
-  to test against: as of 2026-08-11 a separate laptop GPU the user has access to
-  couldn't be assigned via CDI because its nvidia drivers aren't loaded, and this
-  environment's own dev sandbox has no GPU at all - see the CDI Known Issues row.
-- Real DGX Spark hardware is needed for v0.2.0's bare-metal validation - separate
-  from the CDI/Podman blocker above, which concerns the Docker/Podman backend
-  only.
+  hand and in active use as this project's primary dev/test hardware. As of
+  2026-08-13, the laptop is understood to be a permanent bare-metal case, not a
+  pending CDI fix - its GPU is already claimed by its own host OS session and
+  can't be passed through to a container at all, independent of drivers or CDI
+  configuration (see this date's Decisions Log entry). What (if anything) still
+  validates the Docker/Podman backend's CDI passthrough for this checkbox is an
+  open question, not asserted either way - the Dell Precision's own
+  GPU-passthrough situation (headless/dedicated vs. also host-session-bound) is
+  unconfirmed, and it's similarly unconfirmed whether the "separate laptop GPU"
+  the 2026-08-11 Decisions Log entry describes (nvidia drivers not loaded, a
+  different blocker than the RTX 4090's) refers to the same machine or a third
+  one - this environment's own dev sandbox has no GPU at all either way - see
+  the CDI Known Issues row.
+- Real DGX Spark hardware is needed for v0.2.0's Docker/Podman-backend CDI
+  validation (not, as previously stated here, the bare-metal backend - see the
+  2026-08-13 Decisions Log entry) - separate from the CDI/Podman blocker above,
+  which concerns hardware already in hand.
 
 ---
 

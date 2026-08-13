@@ -472,7 +472,7 @@ func TestHandleDashboard_ListNodesFails(t *testing.T) {
 
 func TestHandleNodes_ListsRegisteredNodes(t *testing.T) {
 	nodes := &fakeNodeLister{nodes: []*db.Node{
-		{ID: "node-1", Name: "spark-1", Hostname: "spark-1.local", NodeType: db.NodeTypeSpark, AgentStatus: db.AgentStatusOnline, GPUMemoryGB: 128, CPUMemoryGB: 128},
+		{ID: "node-1", Name: "spark-1", Hostname: "spark-1.local", RuntimeBackend: db.RuntimeBackendBareMetal, AgentStatus: db.AgentStatusOnline, GPUMemoryGB: 128, CPUMemoryGB: 128},
 	}}
 	api := newTestDashboardAPI(t, nodes, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
 
@@ -1512,12 +1512,12 @@ func TestHandleRegisterNodeForm_Unauthenticated(t *testing.T) {
 
 func registerNodeForm(overrides url.Values) url.Values {
 	form := url.Values{
-		"name":          {"spark-1"},
-		"hostname":      {"spark-1.internal"},
-		"ip_address":    {"10.0.0.11"},
-		"node_type":     {"spark"},
-		"gpu_memory_gb": {"128"},
-		"cpu_memory_gb": {"128"},
+		"name":            {"spark-1"},
+		"hostname":        {"spark-1.internal"},
+		"ip_address":      {"10.0.0.11"},
+		"runtime_backend": {"bare-metal"},
+		"gpu_memory_gb":   {"128"},
+		"cpu_memory_gb":   {"128"},
 	}
 	for k, v := range overrides {
 		form[k] = v
@@ -1546,24 +1546,21 @@ func TestHandleRegisterNode_Success(t *testing.T) {
 		t.Fatalf("RegisterNode called %d times, want 1", len(registrar.calls))
 	}
 	params := registrar.calls[0].params
-	if params.Name != "spark-1" || params.Hostname != "spark-1.internal" || params.NodeType != db.NodeTypeSpark {
+	if params.Name != "spark-1" || params.Hostname != "spark-1.internal" || params.RuntimeBackend != db.RuntimeBackendBareMetal {
 		t.Errorf("RegisterNode params = %+v, want the submitted form values", params)
 	}
 	if params.GPUMemoryGB != 128 || params.CPUMemoryGB != 128 {
 		t.Errorf("RegisterNode params memory = %v/%v, want 128/128", params.GPUMemoryGB, params.CPUMemoryGB)
 	}
-	if params.ContainerRuntime != nil {
-		t.Errorf("ContainerRuntime = %v, want nil for a spark node with no container_runtime submitted", *params.ContainerRuntime)
-	}
 }
 
-func TestHandleRegisterNode_DockerGPUWithContainerRuntime(t *testing.T) {
+func TestHandleRegisterNode_DockerGPURuntimeBackend(t *testing.T) {
 	viewer := newFakeUserLister()
 	viewer.byID["admin-1"] = &db.User{ID: "admin-1", Tier: db.TierAdmin}
 	registrar := &fakeNodeRegistrar{node: &db.Node{Name: "workstation-1"}, bearerToken: "token"}
 	api := newTestDashboardAPIWithRegistrar(t, &fakeNodeLister{}, registrar, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
 
-	form := registerNodeForm(url.Values{"node_type": {"docker-gpu"}, "container_runtime": {"podman"}})
+	form := registerNodeForm(url.Values{"runtime_backend": {"podman"}})
 	req := newAuthenticatedFormRequest(t, "/nodes/register", "admin-1", form)
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
@@ -1575,8 +1572,8 @@ func TestHandleRegisterNode_DockerGPUWithContainerRuntime(t *testing.T) {
 		t.Fatalf("RegisterNode called %d times, want 1", len(registrar.calls))
 	}
 	params := registrar.calls[0].params
-	if params.ContainerRuntime == nil || *params.ContainerRuntime != db.ContainerRuntimePodman {
-		t.Errorf("ContainerRuntime = %v, want podman", params.ContainerRuntime)
+	if params.RuntimeBackend != db.RuntimeBackendPodman {
+		t.Errorf("RuntimeBackend = %v, want podman", params.RuntimeBackend)
 	}
 }
 
