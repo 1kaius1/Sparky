@@ -221,3 +221,40 @@ func TestUserRepository_UpdateTier_NotFound(t *testing.T) {
 		t.Errorf("UpdateTier() error = %v, want ErrUserNotFound", err)
 	}
 }
+
+func TestUserRepository_List(t *testing.T) {
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+
+	adSIDA := uniqueADSID(t)
+	adSIDB := uniqueADSID(t)
+	cleanupUser(t, repo, adSIDA)
+	cleanupUser(t, repo, adSIDB)
+
+	a, err := repo.Create(ctx, adSIDA, "List Test User A", TierReadOnly)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	b, err := repo.Create(ctx, adSIDB, "List Test User B", TierDeveloper)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+
+	got, err := repo.List(ctx)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	var foundA, foundB bool
+	for _, u := range got {
+		if u.ID == a.ID {
+			foundA = true
+		}
+		if u.ID == b.ID {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("List() = %d users, missing one or both of the two just created", len(got))
+	}
+}

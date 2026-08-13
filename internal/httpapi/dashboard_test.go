@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/rbac"
 	"github.com/1kaius1/Sparky/internal/session"
 )
 
@@ -73,6 +74,48 @@ func (f *fakeTransferLister) ListTransfers(context.Context) ([]*db.ModelTransfer
 	return f.transfers, nil
 }
 
+// fakeUserLister implements userLister for tests.
+type fakeUserLister struct {
+	byID    map[string]*db.User
+	users   []*db.User
+	findErr error
+	listErr error
+}
+
+func newFakeUserLister() *fakeUserLister {
+	return &fakeUserLister{byID: make(map[string]*db.User)}
+}
+
+func (f *fakeUserLister) FindByID(_ context.Context, id string) (*db.User, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	if u, ok := f.byID[id]; ok {
+		return u, nil
+	}
+	return nil, db.ErrUserNotFound
+}
+
+func (f *fakeUserLister) List(context.Context) ([]*db.User, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.users, nil
+}
+
+// fakeAuditLister implements auditLister for tests.
+type fakeAuditLister struct {
+	records []*db.AuditRecord
+	err     error
+}
+
+func (f *fakeAuditLister) List(context.Context, rbac.Actor) ([]*db.AuditRecord, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.records, nil
+}
+
 // newAuthenticatedRequest builds a GET request carrying a valid session
 // cookie for userID, so RequireSession-gated handlers can be exercised
 // directly (via httptest.NewRecorder + api.Router()) without a full
@@ -90,9 +133,14 @@ func newAuthenticatedRequest(t *testing.T, method, target, userID string) *http.
 
 func newTestDashboardAPI(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister) *API {
 	t.Helper()
+	return newTestDashboardAPIWithAdmin(t, nodes, profiles, instances, transfers, newFakeUserLister(), &fakeAuditLister{})
+}
+
+func newTestDashboardAPIWithAdmin(t *testing.T, nodes *fakeNodeLister, profiles *fakeProfileLister, instances *fakeInstanceLister, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister) *API {
+	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), testSessionSecret, nil, nodes, profiles, instances, transfers, users, auditLog, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -343,6 +391,138 @@ func TestHandleTransfers_Unauthenticated(t *testing.T) {
 	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
 
 	req := httptest.NewRequest(http.MethodGet, "/transfers", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusUnauthorized {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+}
+
+func TestHandleAuditLog_AdminAccess_ResolvesActorName(t *testing.T) {
+	users := newFakeUserLister()
+	users.byID["user-1"] = &db.User{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin}
+	users.users = []*db.User{
+		{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin},
+		{ID: "user-2", DisplayName: "Sam Developer", Tier: db.TierDeveloper},
+	}
+	actorID := "user-2"
+	auditLog := &fakeAuditLister{records: []*db.AuditRecord{
+		{ID: "audit-1", ActorID: &actorID, Action: "elevated_user", ObjectType: "user", ObjectID: "user-3"},
+	}}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, auditLog)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/audit-log", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Sam Developer") {
+		t.Errorf("response does not resolve actor_id to the user's display name: %s", body)
+	}
+	if !strings.Contains(body, "elevated_user") {
+		t.Errorf("response does not mention the record's action: %s", body)
+	}
+}
+
+func TestHandleAuditLog_SuperAdminAction_ShowsSuperAdminLabel(t *testing.T) {
+	users := newFakeUserLister()
+	users.byID["user-1"] = &db.User{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin}
+	auditLog := &fakeAuditLister{records: []*db.AuditRecord{
+		{ID: "audit-1", IsSuperAdminAction: true, Action: "set_superadmin_password", ObjectType: "break_glass_credential", ObjectID: "n/a"},
+	}}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, auditLog)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/audit-log", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "SuperAdmin") {
+		t.Errorf("response does not show the SuperAdmin actor label for an is_superadmin_action record: %s", rec.Body.String())
+	}
+}
+
+func TestHandleAuditLog_SuperAdminSession_Access(t *testing.T) {
+	auditLog := &fakeAuditLister{records: []*db.AuditRecord{{ID: "audit-1", Action: "elevated_user"}}}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), auditLog)
+
+	cookieValue, err := session.Sign(testSessionSecret, session.NewSuperAdmin(sessionDuration))
+	if err != nil {
+		t.Fatalf("session.Sign() error: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/audit-log", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d - a SuperAdmin session must not need a FindByID tier lookup to pass", rec.Code, http.StatusOK)
+	}
+}
+
+func TestHandleAuditLog_NonAdmin_Forbidden(t *testing.T) {
+	// The real RBAC decision (which tiers may view the audit log) is
+	// internal/audit.Recorder.List's own responsibility, fully covered by
+	// that package's tests (TestRecorder_List_NotPermittedBelowAdmin).
+	// fakeAuditLister doesn't reimplement that decision - it directly
+	// returns rbac.ErrNotPermitted here to test handleAuditLog's own job:
+	// translating that error into a 403 response.
+	users := newFakeUserLister()
+	users.byID["user-1"] = &db.User{ID: "user-1", DisplayName: "Regular Dev", Tier: db.TierDeveloper}
+	auditLog := &fakeAuditLister{err: rbac.ErrNotPermitted}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, auditLog)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/audit-log", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+func TestHandleAuditLog_Empty(t *testing.T) {
+	users := newFakeUserLister()
+	users.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, &fakeAuditLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/audit-log", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "No audit records yet") {
+		t.Error("empty-state message missing from response")
+	}
+}
+
+func TestHandleAuditLog_ListFails(t *testing.T) {
+	users := newFakeUserLister()
+	users.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	auditLog := &fakeAuditLister{err: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, auditLog)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/audit-log", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleAuditLog_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/audit-log", nil)
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 

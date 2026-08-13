@@ -516,6 +516,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   compiled `sparky-server` binary with a real node/transfer row inserted
   directly via SQL (no write path exists yet to create one through the
   app itself).
+- Dashboard UI Phase 4: the Audit log sidebar section as a fifth read-only
+  page - the first whose sidebar tier floor is Admin, not Read-only, so
+  the first needing a real RBAC check rather than just a session check.
+  `rbac.CanViewAuditLog` (Admin/SuperAdmin only, no override path).
+  `db.AuditRepository` gains `List` (most recently created first) and
+  `db.UserRepository` gains `List` (ordered by display name) - the latter
+  resolves both the viewer's own tier for the RBAC check and each audit
+  record's `actor_id` to a display name. `audit.Recorder`'s internal
+  `writer` dependency is renamed `store` and widened to cover both `Write`
+  and the new `List(ctx, actor rbac.Actor)`, which checks
+  `CanViewAuditLog` and returns `rbac.ErrNotPermitted` internally - the
+  RBAC decision lives in the Service-layer method itself, not only at the
+  HTTP layer, matching `transfers.Service.InitiateTransfer`'s own
+  internal-check precedent. New `internal/httpapi/audit.go` resolves the
+  viewer's tier via a new `actorFromIdentity` helper (the session cookie
+  deliberately carries no tier) and maps `rbac.ErrNotPermitted` to a 403.
+  The sidebar's `Audit log` link is shown to every authenticated viewer
+  regardless of tier, same as every other nav link - a non-Admin who
+  clicks it gets a JSON 403, not a hidden link or a friendlier page; see
+  PLANNING.md Known Issues. Verified with new unit tests across
+  `internal/rbac`, `internal/audit`, and `internal/httpapi` (permit/deny,
+  actor-name resolution, empty state, list failure, forbidden,
+  unauthenticated), new `AuditRepository.List`/`UserRepository.List`
+  integration tests against a real Postgres instance, and a genuine
+  end-to-end pass against the actual compiled `sparky-server` binary with
+  a real Admin user, a real Developer (non-Admin) user, and a real audit
+  record inserted directly via SQL.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

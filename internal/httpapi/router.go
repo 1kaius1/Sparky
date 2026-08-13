@@ -29,6 +29,8 @@ type API struct {
 	profiles  profileLister
 	instances instanceLister
 	transfers transferLister
+	users     userLister
+	audit     auditLister
 	templates map[string]*template.Template
 	static    http.Handler
 	logger    *log.Logger
@@ -43,15 +45,18 @@ type API struct {
 // Agent-Communication Layer) - it is a plain http.Handler here, not a
 // concrete type, so this package doesn't need to depend on
 // internal/agentconn's other exports. nodes/profiles/instances/transfers
-// back the Dashboard UI's read-only pages (Dashboard, Nodes, Model
-// profiles, Transfers - see PLANNING.md's Dashboard UI milestone item);
-// logger is used for rendering/query failures a handler can't turn into a
-// useful HTTP response on its own. Returns an error if the embedded
-// templates (web.FS) fail to parse - a template syntax error is a
-// build-time bug, caught here rather than surfacing as a broken page on
-// first request.
+// back the Dashboard UI's Read-only-tier pages (Dashboard, Nodes, Model
+// profiles, Transfers); users/audit back the Audit log page, the first
+// whose sidebar tier sits above Read-only (CLAUDE.md Frontend
+// Conventions: "Audit log (Admin)") - users resolves both the viewer's own
+// tier for that RBAC check and each audit record's actor_id to a display
+// name (see PLANNING.md's Dashboard UI milestone item); logger is used
+// for rendering/query failures a handler can't turn into a useful HTTP
+// response on its own. Returns an error if the embedded templates
+// (web.FS) fail to parse - a template syntax error is a build-time bug,
+// caught here rather than surfacing as a broken page on first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, profiles profileLister, instances instanceLister, transfers transferLister, users userLister, auditLog auditLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -71,6 +76,8 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		profiles:               profiles,
 		instances:              instances,
 		transfers:              transfers,
+		users:                  users,
+		audit:                  auditLog,
 		templates:              templates,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
@@ -130,6 +137,11 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Get("/nodes", a.handleNodes)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
+	// /audit-log's floor is Admin, not Read-only - RequireSession only
+	// confirms a session exists; the actual tier check happens inside
+	// handleAuditLog via audit.Recorder.List (see its own doc comment for
+	// why the RBAC check lives there and not in a second middleware).
+	r.With(a.RequireSession).Get("/audit-log", a.handleAuditLog)
 
 	// Static assets (CSS, vendored htmx) - public, no session required,
 	// same reasoning a login page's own assets would need if one existed.

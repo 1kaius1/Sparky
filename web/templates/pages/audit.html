@@ -1,0 +1,30 @@
+{{define "content"}}
+<h1>Audit log</h1>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Actor</th>
+      <th>Action</th>
+      <th>Object type</th>
+      <th>Object ID</th>
+      <th>Detail</th>
+      <th>Created at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Records}}
+    <tr>
+      <td>{{.Actor}}</td>
+      <td>{{.Action}}</td>
+      <td>{{.ObjectType}}</td>
+      <td>{{.ObjectID}}</td>
+      <td>{{.Detail}}</td>
+      <td>{{.CreatedAt}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="6" class="empty">No audit records yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

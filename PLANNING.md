@@ -60,13 +60,13 @@ into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
 RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
 telemetry collection and ingestion, no historical retention yet -
 `agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-3 are done (base layout/sidebar shell, session-gated
-routing, four working read-only pages - Dashboard overview, Nodes, Model
-profiles, Transfers; a real HTML login page and a logout control - no
-write/action forms, the remaining four sidebar sections, or SSE wiring yet).
-The bare-metal install script has not been started - Dashboard UI Phase 4 (the
-remaining sidebar sections and write forms) is the current active work, see
-Current Sprint / Active Work below.
+Dashboard UI Phases 1-4 are done (base layout/sidebar shell, session-gated
+routing, five working read-only pages - Dashboard overview, Nodes, Model
+profiles, Transfers, Audit log; a real HTML login page and a logout control -
+no write/action forms, the remaining three sidebar sections, or SSE wiring
+yet). The bare-metal install script has not been started - Dashboard UI Phase
+5 (the remaining sidebar sections and write forms) is the current active
+work, see Current Sprint / Active Work below.
 
 ---
 
@@ -971,10 +971,66 @@ Current Sprint / Active Work below.
           partial correctly omits the sidebar; and the sidebar's own
           `Transfers` link renders correctly from another authenticated
           page.
-    - [ ] Phase 4 and beyond (not started): the remaining four sidebar
-          sections (Metrics, Users & permissions, Audit log, Settings),
-          write/action forms for the three Phase 1 pages (profile
-          create/edit, node registration, instance load/unload -
+    - [x] Phase 4: the Audit log sidebar section as a fifth read-only
+          page - the first slice of "Phase 4 and beyond," scoped down
+          the same way Phases 2 and 3 were (confirmed with the user via
+          an explicit multi-option choice - see this date's Decisions
+          Log entry). Unlike the four prior read-only pages, Audit log's
+          sidebar tier floor is Admin, not Read-only (CLAUDE.md Frontend
+          Conventions), so this phase is also the first Dashboard UI
+          page needing a real RBAC check, not just a session check.
+          Complete when the compiled binary, driven with real HTTP
+          requests against a real Postgres instance, serves a real Audit
+          log page gated by actual tier, not just session presence.
+          Done - `rbac.CanViewAuditLog` (Admin/SuperAdmin only, no
+          override path, same shape as `CanManageNodes`).
+          `db.AuditRepository` gained `List` (most recently created
+          first - the `created_at` index already existed for exactly
+          this query, added back when `audit_log` was first migrated).
+          `db.UserRepository` gained `List` too, ordered by display
+          name - the future Users & permissions page's roster, and in
+          the meantime this page's source for resolving each record's
+          `actor_id` to a display name (the by-now-familiar
+          map-of-names pattern from Model profiles/Transfers, applied to
+          users instead of nodes). `audit.Recorder` (renamed internal
+          `writer` dependency to `store`, since it now covers both the
+          append and list paths to `audit_log`) gained `List(ctx, actor
+          rbac.Actor)`, checking `CanViewAuditLog` and returning the
+          existing `rbac.ErrNotPermitted` internally - the RBAC decision
+          lives in the Service-layer method itself, not only at the HTTP
+          layer, matching `transfers.Service.InitiateTransfer`'s own
+          internal-check precedent, so the guarantee travels with the
+          method regardless of caller. New `internal/httpapi/audit.go`
+          resolves the viewer's own tier via a new `actorFromIdentity`
+          helper (the session cookie deliberately carries no tier - see
+          `internal/session`'s own doc comment - so every RBAC-gated
+          handler resolves it fresh via `FindByID`), and maps
+          `rbac.ErrNotPermitted` to a 403. The sidebar's `Audit log` link
+          is shown unconditionally to every authenticated viewer, same
+          as every other nav link - a non-Admin who clicks it gets a
+          JSON 403, not a friendlier redirect or a hidden link; see this
+          phase's Known Issues row for why that gap was deliberately not
+          closed here. Verified two ways: new unit tests (RBAC
+          permit/deny in `internal/rbac` and `internal/audit`, actor-name
+          resolution/empty-state/list-failure/forbidden/unauthenticated
+          handling in `internal/httpapi`) plus integration tests for
+          `AuditRepository.List`/`UserRepository.List` against a real
+          Postgres instance, and a genuine end-to-end pass through the
+          actual compiled `sparky-server` binary - a real Admin user, a
+          real Developer (non-Admin) user, and a real audit record
+          inserted directly via SQL (no write path exists yet to
+          produce a session for either user through the app itself, so
+          a session cookie was signed directly via `internal/session`
+          with the running process's own `SESSION_SECRET`), confirming
+          the Admin session gets a real 200 with the record's action and
+          resolved actor name, the Developer session gets a real 403,
+          the break-glass SuperAdmin session gets 200 without needing a
+          tier lookup at all, an unauthenticated request gets 401, and
+          the `HX-Request` partial correctly omits the sidebar.
+    - [ ] Phase 5 and beyond (not started): the remaining three sidebar
+          sections (Metrics, Users & permissions, Settings), write/action
+          forms for the three Phase 1 pages (profile create/edit, node
+          registration, instance load/unload -
           `internal/profiles.Service`/`internal/nodes.Service`/
           `internal/lifecycle.Service` already have the RBAC-gated
           mutation methods these forms would call), SSE wiring for live
@@ -1035,11 +1091,12 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next up: Dashboard UI Phase 4 - the remaining four sidebar sections
-  (Metrics, Users & permissions, Audit log, Settings) and write/action forms
-  for the three Phase 1 pages. Phases 1 (base layout, session-gated routing,
-  Dashboard/Nodes/Model profiles read views), 2 (login page, logout control),
-  and 3 (Transfers read view) are done.
+- Next up: Dashboard UI Phase 5 - the remaining three sidebar sections
+  (Metrics, Users & permissions, Settings) and write/action forms for the
+  three Phase 1 pages. Phases 1 (base layout, session-gated routing,
+  Dashboard/Nodes/Model profiles read views), 2 (login page, logout
+  control), 3 (Transfers read view), and 4 (Audit log read view, the first
+  Admin-tier-gated page) are done.
 
 ---
 
@@ -1138,6 +1195,9 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-12 | Neither CSRF protection nor authentication-endpoint rate limiting was added as part of the login page, despite CLAUDE.md Security Considerations calling for both | Both are pre-existing, app-wide gaps that predate this task and span every POST route already built (profile create/edit, node registration, transfers, instance load/unload, not just login) - fixing either one properly means a coordinated pass across every existing write route, not something to bolt onto one new form as a side effect. Flagged explicitly in Known Issues rather than silently left unaddressed | Adding CSRF protection to just the new login form (rejected: inconsistent - every other existing POST route stays unprotected, giving false confidence about this one); adding a rate limiter now (rejected: CLAUDE.md requires discussing a new Go module dependency first, and a hand-rolled version is a real design decision on its own, not a login-page side effect) |
 | 2026-08-12 | Dashboard UI's "Phase 3 and beyond" bundle (four remaining sidebar sections, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Transfers section was built as Phase 3 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the two prior phase-scoping entries (2026-08-12, twice): the bundle as PLANNING.md described it was several genuinely distinct pieces of work. Transfers specifically was chosen as "smallest, most direct continuation of what's already proven to work" - it's the same read-only-list shape Phase 1 already established for three other domains | Building all five remaining sections at once, write/action forms for the three Phase 1 pages, or the `OnMessage` dispatcher consolidation instead (all three offered as explicit alternatives; user chose Transfers) |
 | 2026-08-12 | `internal/transfers.Service` is constructed in `cmd/sparky-server/main.go` for the first time by this phase, but `HandleTransferProgress` is still not wired as `agentconn`'s `onMessage` callback | The Transfers page's `ListTransfers` is a pure read from `ModelTransferRepository.List` - it has no dependency on live agent dispatch or progress reporting at all. Wiring `onMessage` is a separate, already-identified unit of work (the OnMessage dispatcher consolidation option this phase's own scoping choice explicitly declined) with its own three-way combination logic (`HandleTransferProgress`/`HandleInstanceResult`/`HandleTelemetry`) - conflating it with a read-only page would blur two unrelated decisions into one commit | Wiring `onMessage` now since a real `Service` instance exists anyway (rejected: `Service` existing and `onMessage` needing it are unrelated - the constructor call was already going to happen the moment any HTTP-facing caller needed the `Service`, read or write) |
+| 2026-08-12 | Dashboard UI's "Phase 4 and beyond" bundle (four remaining sidebar sections, write forms, SSE wiring, `OnMessage` dispatcher consolidation) was split, and only the Audit log section was built as Phase 4 - confirmed with the user rather than assumed, presented as an explicit multi-option choice | Same reasoning as the three prior phase-scoping entries (2026-08-12, three times now): the bundle was several genuinely distinct pieces of work. Audit log specifically was offered as "of the four remaining sections, most similar in shape to what's already built - a straightforward list, no aggregation or charting" (unlike Metrics or Settings) | Building all four remaining sections at once, write/action forms for the three Phase 1 pages, or the `OnMessage` dispatcher consolidation instead (all three offered as explicit alternatives; user chose Audit log) |
+| 2026-08-12 | Audit log's RBAC check (`rbac.CanViewAuditLog`) lives inside `audit.Recorder.List` itself, not in a separate HTTP middleware (`RequireAdmin` was considered and not built) | Matches this codebase's existing precedent for every write action already gated (`transfers.Service.InitiateTransfer`, `rbac.Service.ElevateTier`, etc.): the permission check happens inside the Service-layer method, which takes `rbac.Actor` as a real parameter and returns `rbac.ErrNotPermitted` on refusal, so the guarantee travels with the method regardless of caller - a CLI tool or a different code path calling `Recorder.List` directly gets the same protection an HTTP middleware would only enforce for requests that happen to pass through it | A dedicated `RequireAdmin` middleware chained after `RequireSession` (rejected: would duplicate the authorization decision in two places - the middleware and, eventually, any other caller of `Recorder.List` - for no benefit over checking once, in the one place that's always on the path) |
+| 2026-08-12 | `internal/audit`'s `writer` interface (and the `Recorder` field backing it) was renamed to `store`, widened to require both `Write` and `List` | `Recorder` is `audit_log`'s single sanctioned access point for both directions now, not writer-only - its own doc comment already framed it that way ("the only sanctioned path to the audit log," not "the only sanctioned way to write to it"). One interface matches that framing; `*db.AuditRepository` (the only real implementation) already satisfies both methods naturally, so no production call site changed, only the package's own test fake gained a `List` method | Two separate interfaces (a `writer` for `Record` and a distinct `reader` for `List`), composed via two fields on `Recorder` (rejected: `Recorder` has exactly one backing store either way - `*db.AuditRepository` - so two fields pointing at the same real value in production adds indirection with no actual decoupling benefit) |
 
 ---
 
@@ -1157,6 +1217,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | No CSRF protection exists anywhere in the app, despite CLAUDE.md Security Considerations calling for it on every state-changing endpoint | Medium | App-wide, pre-existing gap spanning every POST route already built (login, logout, profile create/edit, node registration, transfers, instance load/unload) - not specific to Dashboard UI Phase 2's login form. Retrofitting it means a coordinated pass across every existing write route at once, not something to bolt onto one form as a side effect of an unrelated task; deliberately not attempted this pass (confirmed with the user) |
 | No rate limiting exists on any authentication endpoint (`/login`, `/login/break-glass`), despite CLAUDE.md Security Considerations calling for it | Medium | Same app-wide, pre-existing category as the CSRF gap above. Implementing it means either a new Go module dependency (CLAUDE.md: never added without discussion first) or hand-rolled in-memory/store-backed logic - a real design decision on its own, not attempted this pass |
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
+| The sidebar's `Audit log` link is shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks it gets a raw JSON 403 (`handleAuditLog`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding one nav link by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just Audit log's own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case |
 
 ---
 
