@@ -925,6 +925,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hardware, real Spark ARM64 execution, and true bare-metal PID 1 behavior
   remain unverified - a container's systemd is a reasonable proxy, not
   identical to real hardware.
+- Agent bare-metal runtime backend (`agent/runtime/baremetal`) - direct
+  process exec for hosts where GPU passthrough isn't viable, per
+  ARCHITECTURE.md Runtime Backends. Introduced a shared `agent/runtime`
+  package (`Spec`, `Backend` interface with `Start`/`Stop`/`Shutdown`) so
+  `agent/connection` no longer branches on which concrete runtime backend
+  it holds; the existing `agent/runtime/containers` backend was refactored
+  onto this interface with no behavior change. `cmd/sparky-agent` now
+  actually branches on `SPARKY_RUNTIME_BACKEND` (`docker`/`podman` ->
+  containers, `bare-metal` -> the new backend), failing fast on an
+  unrecognized value - previously loaded but never validated or dispatched
+  on. `agentproto.LoadInstance` gained an `EngineType` field so the agent
+  can resolve a local executable per engine type via two new optional env
+  vars, `SPARKY_LLAMACPP_BINARY_PATH`/`SPARKY_VLLM_BINARY_PATH` (only
+  `vllm`/`llamacpp` have adapters today) - a load for an engine type with
+  no configured path fails clearly via the existing `InstanceResult`
+  `status=failed` path. `SPARKY_MODEL_STORAGE_PATH`'s documented
+  bare-metal default (`/home/serviceloop/models`) is now actually applied
+  in `agent/config.Load` when unset. On agent shutdown (SIGTERM/SIGINT),
+  every process the bare-metal backend is still tracking is sent SIGTERM,
+  given a grace period, then SIGKILLed if still running - closing the gap
+  docs/AGENT.md's Signal Handling section previously described only as a
+  statement of intent; the containers backend's own `Shutdown` stays a
+  no-op, since a Running instance's container is deliberately left running
+  across an agent restart. Verified via `go test -race` across every
+  touched package, including new tests exercising real process lifecycle
+  (SIGTERM, SIGKILL escalation, concurrent multi-process shutdown) against
+  harmless real binaries - no GPU or real engine binary needed for that.
+  Real hardware validation against this project's own RTX 4090 laptop, and
+  whether an engine adapter's existing launch arguments (built assuming a
+  container image's own entrypoint) are also correct for that engine's raw
+  bare-metal binary - confirmed fine for llama.cpp, unverified for vLLM -
+  remain open, tracked in PLANNING.md.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

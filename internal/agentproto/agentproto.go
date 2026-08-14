@@ -162,20 +162,26 @@ type TransferProgress struct {
 
 // LoadInstance is TypeLoadInstance's payload. Image and Args are already
 // fully resolved server-side by internal/engines' adapter registry (see
-// engines.Adapter.BuildLaunchSpec) - the agent does not need any
-// engine-specific knowledge, only how to run a container. There is no
-// model path field: only the agent knows its own local model storage
-// layout (SPARKY_MODEL_STORAGE_PATH), so it resolves ModelRef to a local
-// path itself, the same way its TypeStartTransfer handling already does
-// for downloads. RequiresFullGPUResidency tells the agent whether that
-// local path should be the model's whole directory (vLLM-style,
-// Transformers format) or a single .gguf file within it
-// (llama.cpp-style, partial offload) - reusing the same capability flag
-// SCHEMA.md's Model profiles already defines, rather than the agent
-// needing to know engine type names.
+// engines.Adapter.BuildLaunchSpec). Image is meaningful only to the
+// containers runtime backend (a Docker image reference) - the bare-metal
+// backend ignores it, resolving a local executable from EngineType
+// instead (per-engine-type SPARKY_<ENGINE>_BINARY_PATH configuration on
+// the node - see docs/AGENT.md Configuration), since a binary's on-disk
+// location is inherently host-specific and not something the central app
+// can know. EngineType is a plain string, not internal/db.ProfileEngineType,
+// for the same reason as TransferProgress.Status/InstanceResult.Status:
+// this package has no dependency on internal/db. There is no model path
+// field: only the agent knows its own local model storage layout
+// (SPARKY_MODEL_STORAGE_PATH), so it resolves ModelRef to a local path
+// itself, the same way its TypeStartTransfer handling already does for
+// downloads. RequiresFullGPUResidency tells the agent whether that local
+// path should be the model's whole directory (vLLM-style, Transformers
+// format) or a single .gguf file within it (llama.cpp-style, partial
+// offload).
 type LoadInstance struct {
 	InstanceID               string   `json:"instance_id"`
 	ModelRef                 string   `json:"model_ref"`
+	EngineType               string   `json:"engine_type"`
 	Image                    string   `json:"image"`
 	Args                     []string `json:"args,omitempty"`
 	Port                     int      `json:"port"`

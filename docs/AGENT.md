@@ -197,11 +197,19 @@ already-loaded model that may be serving real requests and took real time to loa
 Graceful shutdown for this backend is limited to what Run's `sync.WaitGroup`s already
 cover: letting an in-flight `load_instance`/`unload_instance`/transfer goroutine reach
 a safe stopping point, then closing the WebSocket connection - see
-`agent/connection.Conn.Run`. The bare-metal backend (v0.2.0, direct process exec) is
-where this row's literal meaning applies: an exec'd engine process is a real child of
-the agent, so an unclean agent exit risks orphaning or corrupting it - that backend
-does not exist yet, so this is a statement of intent for it, not something already
-implemented.
+`agent/connection.Conn.Run`. The bare-metal backend (`agent/runtime/baremetal`,
+direct process exec) is where this row's literal meaning applies: an exec'd engine
+process is a real child of the agent, so an unclean agent exit risks orphaning or
+corrupting it. `Run`'s exit path calls the runtime backend's `Shutdown` method after
+its in-flight `load_instance`/`unload_instance` goroutines finish (so a still-starting
+load can't race a shutdown that's already stopping everything) - a no-op for
+Docker/Podman (containers are deliberately left running, as above), but for
+bare-metal this sends SIGTERM to every process it's still tracking, waits up to a
+grace period for a clean exit, then escalates to SIGKILL for anything still running.
+A crash or `kill -9` of the agent itself still orphans a bare-metal-managed process -
+nothing short of a supervising process tree (out of scope here) closes that gap
+entirely - but a normal SIGTERM/SIGINT-driven shutdown (a `systemctl stop`, a
+deploy) does not.
 
 ---
 
@@ -224,6 +232,8 @@ come from Secrets, identically to the server.
 | `SPARKY_NODE_NAME`               | Yes      | -       | Must match this node's registered name in the central app |
 | `SPARKY_RUNTIME_BACKEND`         | Yes      | -       | `docker`, `podman`, or `bare-metal` - see `SCHEMA.md` Nodes |
 | `SPARKY_MODEL_STORAGE_PATH`      | No       | `/home/serviceloop/models` on a bare-metal host | Per-`runtime_backend` configurable, not hardcoded |
+| `SPARKY_LLAMACPP_BINARY_PATH`    | No       | -       | Bare-metal only - local `llama.cpp` server executable for a `llamacpp` `load_instance`. Unset means this node doesn't run that engine type |
+| `SPARKY_VLLM_BINARY_PATH`        | No       | -       | Bare-metal only - local vLLM executable/entrypoint for a `vllm` `load_instance`. Unset means this node doesn't run that engine type |
 | `SPARKY_TELEMETRY_POLL_INTERVAL` | No       | `5s`    | How often telemetry is collected and pushed              |
 | `LOG_LEVEL`                      | No       | `info`  | |
 | `LOG_FORMAT`                     | No       | `json`  | |
