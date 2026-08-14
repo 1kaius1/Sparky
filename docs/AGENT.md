@@ -45,7 +45,15 @@ agent/
   - containers/      # Docker/Podman: shared Docker-Engine-API-compatible backend
 - telemetry/          # nvidia-smi and /proc collectors
 cmd/sparky-agent/      # Entry point
-deploy/systemd/        # sparky-agent.service unit template
+deploy/
+- systemd/sparky-agent.service   # Unit file, shared by all three install methods below
+- secrets.env.template            # Config template - see Configuration and Data Storage
+scripts/
+- install_agent.sh     # Tarball installer
+- uninstall_agent.sh   # Tarball uninstaller (--purge to also remove serviceloop/secrets.env)
+- build_packages.sh    # Builds all three artifacts (amd64 + arm64) into dist/ - maintainer-facing
+- packaging/            # nfpm config, scriptlets, and the shared install logic they call -
+                        # see Install (bare metal) below
 ```
 
 ---
@@ -68,40 +76,91 @@ GOOS=linux GOARCH=amd64 go build -o bin/sparky-agent-amd64 ./cmd/sparky-agent
 
 ### Install (bare metal)
 
-The one-script installer (`scripts/install.sh`) automates all of this; documented
-here for what it actually does:
+Three install methods, all producing the same end state (binary, systemd unit,
+`serviceloop` service account, GPU-group membership, an empty `secrets.env` to
+fill in) - built by `scripts/build_packages.sh` via [nfpm](https://nfpm.goreleaser.com)
+into `dist/` (see PLANNING.md Decisions Log for why nfpm over hand-rolled
+`dpkg-deb`/`rpmbuild` or GoReleaser). All three land the binary at
+`/opt/sparky/bin/sparky-agent`, with a `/usr/local/bin/sparky-agent` symlink for
+convenience (`/opt/sparky/bin` isn't on any distro's default `$PATH`).
 
-<!-- Steps 1-2 (serviceloop account creation and group membership) are planned to
-move into a `sparky-agent setup` subcommand alongside the v0.2.0 bare-metal runtime
-backend, with install.sh delegating to it instead of calling useradd/usermod
-directly - see PLANNING.md Decisions Log, 2026-08-07. Not yet implemented; the steps
-below still reflect what install.sh actually does today. -->
+<!-- Steps 1-2 below (serviceloop account creation and group membership) are
+planned to move into a `sparky-agent setup` subcommand alongside the v0.2.0
+bare-metal runtime backend - see PLANNING.md Decisions Log, 2026-08-07. Not yet
+implemented; all three install methods still do this work directly, in
+scripts/packaging/lib/agent-common.sh, shared by every method rather than
+duplicated. -->
+
+**.deb** (Debian/Ubuntu):
 
 ```bash
-# 1. Create the dedicated service account (bare-metal hosts use `serviceloop` - see SCHEMA.md Nodes)
-sudo useradd --system --no-create-home --shell /usr/sbin/nologin serviceloop
-
-# 2. Add it to the group that gates GPU device access (video or render, depending on distro)
-sudo usermod -aG video serviceloop
-
-# 3. Install the binary
-sudo cp bin/sparky-agent /usr/local/bin/sparky-agent
-
-# 4. Create the secrets directory and file - 0600, owned by the service account
-sudo mkdir -p /etc/sparky-agent
-sudo cp secrets.env.template /etc/sparky-agent/secrets.env
-sudo chown serviceloop:serviceloop /etc/sparky-agent/secrets.env
-sudo chmod 0600 /etc/sparky-agent/secrets.env
-# Fill in the real values - see Configuration below
-
-# 5. Install and enable the systemd unit
-sudo cp deploy/systemd/sparky-agent.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now sparky-agent
+sudo apt install ./sparky-agent_<version>_<arch>.deb
 ```
+
+**.rpm** (RHEL/Fedora/Rocky/Alma):
+
+```bash
+sudo dnf install ./sparky-agent-<version>-1.<arch>.rpm
+```
+
+RPM has no equivalent of `apt purge` - `%postun` scriptlets only ever receive a
+numeric install-count, with no "and delete everything" signal the way dpkg's
+`purge` argument provides. `dnf remove` stops and disables the service and
+removes the binary, same as `apt remove`, but leaves `serviceloop` and
+`/etc/sparky-agent` in place; a copy of `purge_rpm.sh` is left behind at
+`/usr/local/sbin/sparky-agent-purge.sh` specifically so a full cleanup command is
+always available on the box after removal:
+
+```bash
+sudo dnf remove sparky-agent
+sudo /usr/local/sbin/sparky-agent-purge.sh   # optional - removes serviceloop + /etc/sparky-agent
+```
+
+**Tarball** (any systemd-based distro):
+
+```bash
+tar xzf sparky-agent-<version>-linux-<arch>.tar.gz
+cd sparky-agent-<version>-linux-<arch>
+sudo ./install_agent.sh
+```
+
+Not package-manager-owned, so the systemd unit installs to
+`/etc/systemd/system/sparky-agent.service` instead of the `.deb`/`.rpm` packages'
+`/usr/lib/systemd/system/sparky-agent.service`. `sudo ./uninstall_agent.sh
+[--purge]` reverses it - a copy is also persisted at
+`/opt/sparky/share/sparky-agent/uninstall_agent.sh` so it can be run later even if
+the original tarball is gone.
+
+All three methods:
+- Create the `serviceloop` service account (bare-metal hosts use this account -
+  see SCHEMA.md Nodes) and join it to whichever of the `video`/`render` groups
+  actually exist on this distro/driver combination (both are joined if both
+  exist - which one actually gates GPU device access varies)
+- Install `/etc/sparky-agent/secrets.env` (0600, owned by `serviceloop`) from the
+  packaged template, but only if it doesn't already exist - an upgrade never
+  overwrites an already-configured secrets file
+- Enable the systemd unit but deliberately do **not** start it - an unconfigured
+  `secrets.env` would just crash-loop. Fill in the real values (see Configuration
+  below), then:
+  ```bash
+  sudo systemctl start sparky-agent
+  ```
+- On an upgrade of an already-running install, safely restart the service onto
+  the new binary automatically - see Signal Handling below for why an agent
+  restart doesn't disrupt an already-loaded model on the container-runtime
+  backend
 
 Only the owning service account and root can read `secrets.env` - see
 `ARCHITECTURE.md` Security Considerations for the reasoning.
+
+Verified via `nfpm`-built packages installed/upgraded/removed/purged inside
+disposable Debian and Rocky Linux podman containers running real systemd
+(`--systemd=always /sbin/init`), covering both `video`-only and `video`+`render`
+group-detection cases. Real GPU hardware, real Spark ARM64 execution, and true
+bare-metal PID 1 behavior (journald integration, udev device-permission timing,
+real boot ordering) remain unverified - a container's systemd is a reasonable
+proxy, not identical to real hardware, same honest gap already on record for CDI
+passthrough verification.
 
 ---
 
@@ -198,12 +257,17 @@ reach a safe stopping point rather than killing a transfer mid-write.
 ## Init and Service Manager Files
 
 ```
-deploy/systemd/
-- sparky-agent.service
+deploy/
+- systemd/sparky-agent.service
+- secrets.env.template
 ```
 
-When agent startup, shutdown, or dependency behavior changes, update this file in the
-same change - do not let it drift from what the binary actually does.
+When agent startup, shutdown, or dependency behavior changes, update
+`sparky-agent.service` in the same change - do not let it drift from what the
+binary actually does. When a configuration environment variable is added, removed,
+or changes its default, update `secrets.env.template` in the same change too - see
+Configuration and Data Storage below for the full variable list this template
+must stay in sync with.
 
 ---
 
