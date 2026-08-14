@@ -1491,7 +1491,70 @@ the current active work, see Current Sprint / Active Work below.
 
     All eleven phases done - checking off the top-level "Dashboard UI"
     item above.
-  - [ ] Bare-metal install script (apt + dnf)
+  - [x] Bare-metal install script (apt + dnf) - agent-only; the central app has
+        no packaged installer (see this date's Decisions Log entry and
+        ARCHITECTURE.md Deployment Model, corrected in this same change).
+        Complete when a `.deb`, an `.rpm`, and a tarball each independently
+        produce the same end state (binary, systemd unit, `serviceloop`
+        account, GPU-group membership, an unconfigured `secrets.env` ready to
+        fill in), and remove/upgrade/purge all behave correctly. Done -
+        packaged via `nfpm` (single static Go binary, one YAML config
+        produces both `.deb` and `.rpm`, never touches `go.mod`) into
+        `scripts/build_packages.sh`'s `dist/` output; binary at
+        `/opt/sparky/bin/sparky-agent` for all three methods (the user's
+        explicit choice, see this date's Decisions Log entry), with a
+        `/usr/local/bin/sparky-agent` convenience symlink since `/opt` isn't
+        on any distro's default `$PATH`. New `deploy/systemd/sparky-agent.service`
+        and `deploy/secrets.env.template` - both long referenced by
+        `docs/AGENT.md` but never actually committed until now.
+        `scripts/packaging/lib/agent-common.sh` is the single implementation
+        of the idempotent `serviceloop` account creation and `video`/`render`
+        GPU-group detection, shared by all three methods (shipped as real
+        package content at `/opt/sparky/share/sparky-agent/agent-common.sh`
+        for the `.deb`/`.rpm` paths, since nfpm reads script files at build
+        time and embeds them into the package - a raw path reference to a
+        repo checkout that won't exist on the target host wouldn't work).
+        Fresh installs are enabled but never auto-started (an unconfigured
+        `secrets.env` would crash-loop); an already-running agent is safely
+        restarted on upgrade, relying on nothing more than a
+        `systemctl is-active` check rather than parsing either package
+        manager's differing upgrade-vs-install argument conventions.
+        `apt remove`/`dnf remove` stop and disable the service and remove the
+        binary, but deliberately leave `serviceloop` and
+        `/etc/sparky-agent/secrets.env` in place; `apt purge` removes both.
+        RPM has no native purge concept at all - confirmed by reading its
+        actual scriptlet argument semantics, not assumed - so
+        `scripts/packaging/purge_rpm.sh` is copied out to
+        `/usr/local/sbin/sparky-agent-purge.sh` by the `preremove` scriptlet
+        just before removal deletes everything else the package owns, and
+        `docs/AGENT.md` documents running it by hand as the RPM equivalent.
+        No CI wiring and no signed package repository - both explicitly out
+        of scope for this pass (see this date's Decisions Log entry).
+        Verified two ways: `dpkg-deb`/`rpm -qlp` inspection of both packages'
+        contents and embedded control scripts against what was actually
+        written, byte-for-byte where checkable, plus a genuine end-to-end
+        pass inside disposable Debian and Rocky Linux podman containers
+        running real systemd (`--systemd=always /sbin/init`, not a faked
+        init) - install, start with a syntactically valid but unreachable
+        `secrets.env` (confirmed the agent retries the WebSocket dial with
+        backoff and stays `active (running)` rather than crash-looping),
+        upgrade a running install (confirmed the PID changed and
+        `secrets.env` was byte-identical before and after), `remove`
+        (confirmed `serviceloop`/`secrets.env` survived, everything else
+        didn't), and `purge`/`purge_rpm.sh` (confirmed full cleanup, no
+        stray files anywhere - this specific check caught a real bug during
+        development: `purge_rpm.sh` was initially just ordinary package
+        content, so a plain `dnf remove` deleted it before it could ever be
+        run; fixed by having `preremove.sh` copy it out to a
+        package-unowned path first). The Debian container naturally only has
+        a `video` group and the Rocky container naturally has both `video`
+        and `render`, so both branches of the group-detection loop were
+        exercised without needing to fabricate either. Real GPU hardware,
+        real Spark ARM64 execution, and true bare-metal PID 1 behavior
+        (journald integration, udev device-permission timing, real boot
+        ordering) remain unverified - a container's systemd is a reasonable
+        proxy, not identical to real hardware, same honest gap already on
+        record for CDI passthrough.
 
 - [ ] **v0.2.0** - Bare-metal runtime backend, and Spark hardware validation
   - [ ] Agent: bare-metal runtime backend (`serviceloop`, direct process exec) -
@@ -1570,8 +1633,14 @@ duplicate checklist.
   `UpdateProfile` their first HTTP callers, and adding the new
   `GetProfile` read method the edit form's own prefill needed) were
   already done.
-- Next up: the bare-metal install script (apt + dnf) - the one remaining
-  v0.1.0 item once Dashboard UI closed out.
+- The bare-metal install script (apt + dnf) is done - see that item's own
+  entry above. Agent-only; the central app has no packaged bare-metal
+  installer (`ARCHITECTURE.md` Deployment Model and `README.md` Quick Start
+  corrected to match, in the same change).
+- v0.1.0's only remaining open item is "Agent: Docker/Podman runtime
+  backend... CDI GPU passthrough," blocked on hardware/verification this
+  sandbox doesn't have - see Dependencies and Blockers below, not something
+  to pick up as "next up" in the usual sense.
 
 ---
 
@@ -1693,6 +1762,11 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-13 | `nodes.node_type` (`spark` / `docker-gpu`) + `container_runtime` (`docker` / `podman`, CHECK-paired) collapsed into a single `runtime_backend` enum (`docker` / `podman` / `bare-metal`, migration `000014_nodes_collapse_runtime_backend`); "spark" retired as a schema value entirely | The 2026-08-06 design (see that date's entry below) conflated a hardware label with a runtime-mechanism choice, backwards: it assumed Spark needs the bare-metal (no-container, direct-exec) backend and non-Spark hosts use Docker/Podman. A DGX Spark's GB10 GPU supports passthrough to a container without affecting a display connected to it - NVIDIA's supported use case for that hardware, confirmed with the user rather than assumed, though neither of us has independently verified the underlying mechanism - so CDI GPU passthrough into a container should work fine there; the RTX 4090 laptop - this project's own primary v0.1.0 dev/test hardware - is the case that actually needs bare-metal, since its GPU is already claimed by the host OS's own session and can't be handed to a container at all, independent of whether the hardware happens to be a Spark. Separately, the two-column CHECK-constrained shape only ever expressed one 3-way choice (`docker-gpu` was never meaningful without a paired `container_runtime`) behind a constraint rejecting the other five combinations - collapsing to one column makes those states unrepresentable instead of merely rejected, and matches ARCHITECTURE.md's own pre-existing "Runtime Backends: Bare-metal, Docker/Podman" vocabulary exactly. Nothing else in the system (GPU/CPU memory equality, ARM64 cross-compilation, v0.3.0 fabric-group clustering) needs a discrete "is-this-hardware-a-Spark" flag - a descriptive `name` (already free text, e.g. `spark-1`) covers the human-labeling need with zero special-casing, same as before. `SPARKY_NODE_TYPE`/`SPARKY_CONTAINER_RUNTIME` (agent env vars) collapsed to `SPARKY_RUNTIME_BACKEND` the same way, though the agent doesn't yet branch on this value for backend selection either way - that's still real v0.2.0 work. `SPARKY_MODEL_STORAGE_PATH`'s documented default (`/home/serviceloop/models`) is kept as-is, only its stated reasoning changes (a bare-metal host, not "on Spark") - confirmed with the user, since nothing implements that default yet regardless (PLANNING.md Known Issues). PLANNING.md's Milestones v0.2.0 entry and Dependencies and Blockers are corrected to match (also confirmed with the user); already-completed Phase write-ups describing the old schema as it was actually built (Node registry, Model transfers Phase 1's CHECK-pairing mention, Dashboard UI Phase 9's registration-form entry) are deliberately left unedited - they're an accurate historical record of what those PRs built at the time, matching this project's existing never-rewrite-history discipline (migrations are never edited after creation; CHANGELOG corrections get a new entry, not a rewrite of the old one) | A minimal rename only (`node_type`'s `spark` value renamed to `bare-metal` via `ALTER TYPE ... RENAME VALUE`, `container_runtime` left as a second column) - considered and explicitly offered to the user as the smaller, lower-risk option; rejected in favor of the collapse once raised, since it would have kept the CHECK-constrained two-column pattern in place for something that's really one concept, and the collapse's own diff (while larger) is still fully contained to the `nodes` table and its direct Go/HTTP/template callers |
 | 2026-08-13 | The new break-glass IP allowlist (`BREAKGLASS_ALLOWED_IPS`, gating the new `/login/break-glass` GUI page and its existing JSON API contract) determines the client's IP from `r.RemoteAddr` (the direct TCP peer), not `X-Forwarded-For`/`X-Real-IP` - confirmed with the user rather than assumed | Not spoofable by the client, unlike a header the client itself can set; correct for this control's actual motivating use case (direct-connection local/break-glass testing without AD). The reverse-proxy-in-front topology ARCHITECTURE.md's Request Lifecycle documents means `RemoteAddr` is the proxy's own address there, not the real client's - an accepted, documented tradeoff, not solved here; no trusted-proxy-config concept is introduced | Trusting `X-Forwarded-For` (rejected: client-controllable unless a trusted-proxy concept is introduced to strip/validate it, which this codebase has no precedent for anywhere - defeats the whitelist's purpose entirely for anyone who can reach the app directly or add an arbitrary header) |
 | 2026-08-13 | `BREAKGLASS_ALLOWED_IPS` unset/empty allows from anywhere (the whitelist becomes a no-op) rather than defaulting to deny-all - confirmed with the user rather than assumed | Matches this project's existing "optional security control, off by default" precedent (`AUDIT_FORWARD_ENABLED`) - an unset value on upgrade must not silently lock out every existing break-glass caller (JSON API scripts, ops runbooks already depending on `/login/break-glass` with no IP restriction) | Deny-by-default when unset (rejected: a breaking change for every existing deployment on upgrade, with no migration path other than requiring every operator to set this before updating) |
+| 2026-08-13 | The bare-metal install script is agent-only (`sparky-agent`); the central app has no packaged bare-metal installer at all - `go run ./cmd/sparky-server`/a built binary, no `scripts/install.sh`-equivalent. `ARCHITECTURE.md`'s Deployment Model bullet and `README.md`'s Quick Start, which both implied a single unified installer for both binaries, are corrected in this same change | `CLAUDE.md`'s own detailed Build and Run section never described a server installer anywhere, and the user's own framing of this task was exclusively agent-scoped ("the bare metal **agent** will be distributed in 3 ways") - the two higher-level docs had simply drifted out of sync with that reality. Left uncorrected, they'd reference a script name (`scripts/install.sh`) that doesn't exist under that name after this change at all - the real script is `install_agent.sh`, and it only ever installs the agent | Building a matching packaged installer for the central app too (not raised as a real option - out of scope for what was asked, and no prior detailed doc ever described one existing) |
+| 2026-08-13 | `sparky-agent`'s binary installs to `/opt/sparky/bin/sparky-agent` for all three distribution methods (`.deb`, `.rpm`, tarball) | User's explicit choice, overriding an initial `/usr/bin` (packaged) / `/usr/local/bin` (tarball) recommendation - FHS reserves `/usr` for package-manager-owned files and `/usr/local` for locally-installed software, which would have meant two different binary paths depending on install method; the user preferred one consistent path for all three instead. Since `/opt/sparky/bin` isn't on any distro's default `$PATH`, a `/usr/local/bin/sparky-agent` symlink is shipped alongside it (package-tracked for `.deb`/`.rpm`, created/removed explicitly by `install_agent.sh`/`uninstall_agent.sh` for the tarball) so the binary is still invokable by name for ad hoc use (diagnostics; the future v0.2.0 `sparky-agent setup` subcommand) | `/usr/bin` (packaged) + `/usr/local/bin` (tarball) as originally recommended (user declined in favor of one path for all three) |
+| 2026-08-13 | Packaging built via `nfpm` (a single static Go binary, one YAML config producing both `.deb` and `.rpm`) rather than hand-rolled `dpkg-deb`/`rpmbuild` control files or GoReleaser | Matches this project's own "own it, don't add dependencies you don't need" pattern already on record for `chi`/`golang-migrate`: nfpm is a build-time-only CLI tool (`go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`, same install shape as the already-documented `golang-migrate`), never imported into `go.mod`, and avoids maintaining two per-distro toolchains (`rpmbuild` specifically needs a real build environment) in sync by hand. Its actual config semantics were verified empirically against a real installed `nfpm`, not assumed from documentation alone - two real surprises found this way and designed around: `contents[].src`/`scripts.*` paths resolve relative to nfpm's own working directory at invocation time, not relative to the config file's location, and `${VAR}`-style env expansion only applies to certain top-level fields (`arch`/`version`/`maintainer`/etc.), not to `contents[].src` - `scripts/build_packages.sh` always invokes `nfpm` from the repo root and stages the per-arch binary at a fixed non-arch-suffixed path (`dist/build/sparky-agent`) before each invocation to work within both constraints | GoReleaser (rejected: does everything nfpm does via nfpm internally, plus GitHub-release/changelog automation this task never asked for - meaningfully heavier than needed); hand-rolled `dpkg-deb`/`rpmbuild` (rejected: real duplication keeping two distro-native toolchains' control files in sync by hand, and `rpmbuild` specifically needs a full build environment this project's own minimal-infrastructure philosophy would otherwise avoid) |
+| 2026-08-13 | Distribution is raw artifacts only for now (`.deb`/`.rpm`/`.tar.gz` files, e.g. attached to releases, installed via `dpkg -i`/`rpm -i`/tarball extraction) - no signed apt/dnf repository, no GPG key infrastructure | User's explicit call: revisit a real repository "if the project's popularity shows there's a need." `scripts/build_packages.sh`'s output is kept flat and SemVer-clean specifically so a future `reprepro`/`createrepo`-based repo-publish step, if it's ever needed, is an addition on top of this build, not a restructuring of it | Building signed repository infrastructure now (rejected: real, ongoing maintenance overhead - key management, repo metadata generation, hosting - unlikely to be worth it yet at CLAUDE.md's own stated "handful of nodes, single internal team" scale) |
+| 2026-08-13 | `apt remove`/`dnf remove` stop and disable the service and remove the binary, but leave `serviceloop` and `/etc/sparky-agent/secrets.env` in place; only `apt purge` (native dpkg semantics) removes both. RPM has no equivalent purge concept at all - researched directly (`%preun`/`%postun` scriptlets only ever receive a numeric install-count, 0 or 1+, with no separate "and delete everything" signal `dnf`/`rpm` can produce, unlike dpkg's own `purge` argument) rather than assumed - so `scripts/packaging/purge_rpm.sh` is copied to a package-unowned path (`/usr/local/sbin/sparky-agent-purge.sh`) by the `preremove` scriptlet just before removal deletes everything else the package owns, specifically so a real cleanup command still exists on the box afterward, and `docs/AGENT.md` states the RPM gap plainly rather than pretending purge works the same way there | Standard Debian/RPM packaging convention for the deb side (avoids orphaned file ownership and accidental credential loss on a routine `remove`); the RPM half is an honest answer to a real platform limitation, not a workaround - discovered mid-implementation when a first attempt at `purge_rpm.sh` was ordinary package content and got deleted by a plain `dnf remove` before it could ever run, caught by the container-based verification pass (see this milestone's own "Done" writeup) and fixed by copying it out before removal rather than by loosening what plain `remove` does | A plain `remove` that also deletes `serviceloop`/`secrets.env` (rejected: diverges from standard packaging conventions and risks silently destroying a real bearer token on a routine removal someone expected to be reversible) |
 
 ---
 

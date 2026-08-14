@@ -1,0 +1,83 @@
+# nfpm config for sparky-agent - see docs/AGENT.md Build and Install and
+# scripts/build_packages.sh, which invokes this twice per architecture
+# (--packager deb, --packager rpm) with ARCH/VERSION set in the environment.
+#
+# preinstall/postinstall/preremove/postremove are a single set of scripts
+# nfpm embeds into both deb's preinst/postinst/prerm/postrm and rpm's
+# %pre/%post/%preun/%postun - one implementation, both formats.
+#
+# contents[].src paths are relative to nfpm's own working directory at
+# invocation time (confirmed empirically, not assumed - nfpm does NOT
+# resolve them relative to this config file's own location), and do NOT
+# support ${VAR} expansion the way top-level fields like arch/version do
+# (also confirmed empirically). scripts/build_packages.sh always invokes
+# nfpm from the repo root, so every src below is repo-root-relative, and
+# stages the per-arch binary at a fixed non-arch-suffixed path
+# (dist/build/sparky-agent) before each invocation rather than trying to
+# reference dist/build/sparky-agent-linux-${ARCH} directly here.
+
+name: sparky-agent
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+maintainer: Sparky <noreply@sparky.internal>
+description: |
+  Per-node agent daemon for Sparky - manages inference engine lifecycle,
+  hardware telemetry, and model transfers on behalf of the central app.
+  See https://github.com/1kaius1/Sparky/blob/main/docs/AGENT.md
+vendor: Sparky
+homepage: https://github.com/1kaius1/Sparky
+license: AGPL-3.0-or-later
+section: net
+priority: optional
+
+depends:
+  - systemd
+
+contents:
+  - src: dist/build/sparky-agent
+    dst: /opt/sparky/bin/sparky-agent
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: deploy/systemd/sparky-agent.service
+    dst: /usr/lib/systemd/system/sparky-agent.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  - src: deploy/secrets.env.template
+    dst: /opt/sparky/share/sparky-agent/secrets.env.template
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  - src: scripts/packaging/lib/agent-common.sh
+    dst: /opt/sparky/share/sparky-agent/agent-common.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: scripts/packaging/purge_rpm.sh
+    dst: /opt/sparky/share/sparky-agent/purge_rpm.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  # Not on any distro's default $PATH - see scripts/packaging/lib/agent-common.sh's
+  # own doc comment and PLANNING.md Decisions Log for why this exists.
+  - src: /opt/sparky/bin/sparky-agent
+    dst: /usr/local/bin/sparky-agent
+    type: symlink
+
+scripts:
+  preinstall: scripts/packaging/preinstall.sh
+  postinstall: scripts/packaging/postinstall.sh
+  preremove: scripts/packaging/preremove.sh
+  postremove: scripts/packaging/postremove.sh

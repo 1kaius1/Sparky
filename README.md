@@ -39,9 +39,22 @@ model.
 
 ### Bare metal (Debian/Ubuntu or RHEL/Fedora)
 
+**Central app** - no packaged installer yet; build and run the binary directly,
+then complete first-run setup (see `CLAUDE.md` Build and Run for the full
+sequence):
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/1kaius1/Sparky/main/scripts/install.sh | sudo bash
-sparky-server setup
+go run ./cmd/sparky-server setup
+go run ./cmd/sparky-server
+```
+
+**Node agent** - install via `.deb`, `.rpm`, or a tarball (see `docs/AGENT.md`
+Build and Install for all three and full configuration details):
+
+```bash
+sudo apt install ./sparky-agent_<version>_<arch>.deb      # Debian/Ubuntu
+sudo dnf install ./sparky-agent-<version>-1.<arch>.rpm     # RHEL/Fedora/Rocky/Alma
+tar xzf sparky-agent-<version>-linux-<arch>.tar.gz && cd sparky-agent-<version>-linux-<arch> && sudo ./install_agent.sh
 ```
 
 ### Kubernetes

@@ -889,6 +889,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   page's render/redirect/re-render paths; and that a wrong-password attempt
   from a non-whitelisted IP gets 403 `IP_NOT_ALLOWED` before the credential
   check ever runs, not 401).
+- Bare-metal packaging for `sparky-agent` (v0.1.0's "Bare-metal install
+  script" item) - agent-only, built via `nfpm` into a `.deb`, an `.rpm`, and
+  a tarball with `install_agent.sh`, covering both `amd64` and `arm64`
+  (`scripts/build_packages.sh`). Binary installs to
+  `/opt/sparky/bin/sparky-agent` for all three methods, with a
+  `/usr/local/bin/sparky-agent` convenience symlink since `/opt/sparky/bin`
+  isn't on any distro's default `$PATH`. New `deploy/systemd/sparky-agent.service`
+  and `deploy/secrets.env.template` - both long referenced by `docs/AGENT.md`
+  but never actually committed until now. `scripts/packaging/lib/agent-common.sh`
+  is the single implementation of the idempotent `serviceloop` account
+  creation and `video`/`render` GPU-group detection, shared by all three
+  install methods. Fresh installs are enabled but never auto-started (an
+  unconfigured `secrets.env` would crash-loop); an already-running agent is
+  safely restarted on upgrade. `apt remove`/`dnf remove` stop and disable
+  the service and remove the binary but leave `serviceloop`/`secrets.env`
+  in place; `apt purge` removes both. RPM has no native purge concept at
+  all (confirmed, not assumed) - `scripts/packaging/purge_rpm.sh` is copied
+  to `/usr/local/sbin/sparky-agent-purge.sh` just before removal so a real
+  cleanup command survives on the box, and `docs/AGENT.md` documents
+  running it by hand. No CI wiring and no signed package repository -
+  both explicitly deferred. `ARCHITECTURE.md`'s Deployment Model and
+  `README.md`'s Quick Start, which both implied a single unified installer
+  for both binaries, are corrected in the same change - the central app has
+  no packaged bare-metal installer at all. Verified via `nfpm`-built
+  packages installed/upgraded/removed/purged inside disposable Debian and
+  Rocky Linux podman containers running real systemd (`--systemd=always
+  /sbin/init`) - install, start against a syntactically valid but
+  unreachable `secrets.env` (confirmed the agent retries with backoff
+  rather than crash-looping), upgrade a running install (confirmed restart
+  and an untouched `secrets.env`), `remove`, and `purge`/`purge_rpm.sh`
+  (confirmed full cleanup - this caught a real bug during development,
+  where `purge_rpm.sh` was initially ordinary package content and got
+  deleted by a plain `dnf remove` before it could ever run). Real GPU
+  hardware, real Spark ARM64 execution, and true bare-metal PID 1 behavior
+  remain unverified - a container's systemd is a reasonable proxy, not
+  identical to real hardware.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable

@@ -185,14 +185,19 @@ sparky/
   - static/
 - migrations/
 - deploy/
-  - systemd/
+  - systemd/            # sparky-agent.service - see docs/AGENT.md
+  - secrets.env.template # sparky-agent config template - see docs/AGENT.md
   - helm/
 - scripts/
-  - install.sh
+  - install_agent.sh    # sparky-agent tarball installer - agent-only, see docs/AGENT.md
+  - uninstall_agent.sh
+  - build_packages.sh   # builds the .deb/.rpm/tarball artifacts via nfpm - maintainer-facing
+  - packaging/           # nfpm config, scriptlets, shared install logic - see docs/AGENT.md
 - tests/
 - docs/
   - AGENT.md
 - .env.example
+- VERSION               # single line, e.g. "0.1.0" - read by scripts/build_packages.sh
 - ARCHITECTURE.md
 - SCHEMA.md
 - CHANGELOG.md

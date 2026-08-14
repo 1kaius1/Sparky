@@ -1,0 +1,31 @@
+# Sparky agent systemd unit - see docs/AGENT.md Build and Install.
+#
+# Installed at /usr/lib/systemd/system/sparky-agent.service by the .deb/.rpm
+# packages (package-manager-owned path), or at /etc/systemd/system/sparky-agent.service
+# by scripts/install_agent.sh (the tarball path, not package-manager-owned) -
+# see scripts/packaging/nfpm.yaml and scripts/install_agent.sh.
+
+[Unit]
+Description=Sparky per-node agent daemon
+Documentation=https://github.com/1kaius1/Sparky/blob/main/docs/AGENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=serviceloop
+Group=serviceloop
+EnvironmentFile=/etc/sparky-agent/secrets.env
+ExecStart=/opt/sparky/bin/sparky-agent
+Restart=on-failure
+RestartSec=5s
+
+# Modest hardening only - not ProtectSystem=strict/ReadWritePaths=, since
+# SPARKY_MODEL_STORAGE_PATH is operator-configured and its location isn't
+# knowable at packaging time; stricter sandboxing here would silently break
+# a legitimately-configured install.
+NoNewPrivileges=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target

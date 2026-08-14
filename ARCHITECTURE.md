@@ -336,9 +336,14 @@ Service Layer -> Agent-Communication Layer -> WebSocket message (JSON, request I
 Three supported targets, one binary each, sharing the same environment-variable
 configuration surface:
 
-- **Bare metal**: one-script installer (apt and dnf both supported), dedicated
-  purpose-built host assumption for the central app, systemd units for both binaries,
-  Postgres installed locally by the script or pointed at a remote instance via config
+- **Bare metal**: no packaged installer for the central app itself - a dedicated
+  purpose-built host, a built binary run directly (`go run ./cmd/sparky-server` or
+  a compiled artifact - see `CLAUDE.md` Build and Run), Postgres installed locally
+  or pointed at a remote instance via config. The node agent has its own
+  independent packaged install path - `.deb`/`.rpm` (built via `nfpm`) or a
+  tarball with `install_agent.sh` - see `docs/AGENT.md` Build and Install. These
+  are deliberately separate install stories, not a shared one: agents and the
+  central app never run on the same host anyway (see below)
 - **Podman**: preferred runtime for compute nodes using the Docker/Podman backend
   (`SCHEMA.md` Nodes' `runtime_backend`); Docker-Engine-API compatibility means the
   agent's container-management code does not fork per runtime
