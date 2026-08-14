@@ -23,7 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	"github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
 	"github.com/1kaius1/Sparky/internal/agentproto"
@@ -48,13 +48,13 @@ const (
 	defaultMaxBackoff = 30 * time.Second
 )
 
-// runtimeBackend is the subset of *containers.Backend this package's
-// TypeLoadInstance/TypeUnloadInstance dispatch calls into - narrow enough
-// to fake in tests.
-type runtimeBackend interface {
-	StartContainer(ctx context.Context, spec containers.Spec) (string, error)
-	StopContainer(ctx context.Context, containerID string) error
-}
+// runtimeBackend is runtime.Backend, aliased locally so this package's own
+// doc comments and test fakes read as this package's concern - the
+// concrete implementation (agent/runtime/containers or
+// agent/runtime/baremetal) is chosen once at startup by cmd/sparky-agent
+// based on the node's configured runtime_backend (SCHEMA.md Nodes), and
+// this package never branches on which one it has.
+type runtimeBackend = runtime.Backend
 
 // transferExecutor is the subset of *transfer.Executor this package
 // needs - narrow enough to fake in tests without a real HTTP download.
@@ -84,6 +84,17 @@ type Config struct {
 	// like any other, so an empty one is passed straight through to
 	// filepath.Join rather than silently substituted.
 	ModelStoragePath string
+
+	// EngineBinaryPaths maps an engine type ("vllm" / "llamacpp" - the
+	// same string values as internal/db.ProfileEngineType) to the local
+	// executable to run for it, on nodes configured for the bare-metal
+	// runtime backend - SPARKY_LLAMACPP_BINARY_PATH/SPARKY_VLLM_BINARY_PATH,
+	// per docs/AGENT.md Configuration. Unused by the containers backend.
+	// An engine type absent from this map (or mapped to "") means this
+	// node doesn't run that engine - a load_instance for it fails clearly
+	// via agent/runtime/baremetal.Backend.Start's own error, reported back
+	// as a failed InstanceResult like any other real launch failure.
+	EngineBinaryPaths map[string]string
 
 	// TelemetryPollInterval is how often the telemetry goroutine takes
 	// and pushes a reading - SPARKY_TELEMETRY_POLL_INTERVAL, per
@@ -154,8 +165,17 @@ func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, coll
 // method's ctx, not a per-connection one, so it keeps running (and gets a
 // chance to finish or fail cleanly) across a mere WebSocket reconnect -
 // only this method's own cancellation (agent shutdown) stops it.
+//
+// c.runtime.Shutdown runs after instanceWG.Wait (so no in-flight runLoad
+// can still be starting a process while Shutdown is stopping everything)
+// and before transferWG.Wait (unrelated - order between the two doesn't
+// matter, kept last to preserve this method's existing structure). A
+// no-op for the containers backend; for bare-metal, this is what stops
+// every still-running exec'd engine process on a clean agent exit - see
+// docs/AGENT.md Signal Handling.
 func (c *Conn) Run(ctx context.Context) {
 	defer c.transferWG.Wait()
+	defer c.shutdownRuntime()
 	defer c.instanceWG.Wait()
 
 	backoff := c.minBackoff
@@ -183,6 +203,25 @@ func (c *Conn) Run(ctx context.Context) {
 		if backoff > c.maxBackoff {
 			backoff = c.maxBackoff
 		}
+	}
+}
+
+// runtimeShutdownTimeout bounds how long Run's exit path waits for
+// c.runtime.Shutdown - generous headroom under the systemd unit's default
+// TimeoutStopSec (90s), matching agent/runtime/baremetal's own
+// stopGracePeriod reasoning.
+const runtimeShutdownTimeout = 30 * time.Second
+
+// shutdownRuntime stops whatever this Conn's runtime backend is still
+// tracking, as Run exits - see Run's own doc comment for why this fits
+// between instanceWG.Wait and transferWG.Wait in the defer order. Any
+// error is logged, not returned - Run's shutdown path has no caller left
+// to hand an error back to.
+func (c *Conn) shutdownRuntime() {
+	ctx, cancel := context.WithTimeout(context.Background(), runtimeShutdownTimeout)
+	defer cancel()
+	if err := c.runtime.Shutdown(ctx); err != nil {
+		c.logger.Printf("agent connection: runtime shutdown: %v", err)
 	}
 }
 
@@ -500,9 +539,9 @@ func (c *Conn) resolveModelPath(modelRef string, requiresFullGPUResidency bool) 
 	return matches[0], nil
 }
 
-// runLoad starts a Running instance's container - one goroutine per
-// load/unload command, same reasoning as runTransfer, so a slow image
-// pull never blocks readLoop's command handling. The outcome is always
+// runLoad starts a Running instance - one goroutine per load/unload
+// command, same reasoning as runTransfer, so a slow image pull or process
+// start never blocks readLoop's command handling. The outcome is always
 // reported back as an instance_result message, success or failure - never
 // silently dropped, since the central app has no other way to learn what
 // actually happened on this node.
@@ -514,36 +553,39 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		return
 	}
 
-	cmd := append([]string{"--model", modelPath, "--port", strconv.Itoa(load.Port), "--host", "0.0.0.0"}, load.Args...)
-	spec := containers.Spec{
-		Image: load.Image,
-		Name:  containers.InstanceContainerName(load.InstanceID),
-		Cmd:   cmd,
-		Port:  load.Port,
+	args := append([]string{"--model", modelPath, "--port", strconv.Itoa(load.Port), "--host", "0.0.0.0"}, load.Args...)
+	spec := runtime.Spec{
+		InstanceID: load.InstanceID,
+		EngineType: load.EngineType,
+		Image:      load.Image,
+		BinaryPath: c.cfg.EngineBinaryPaths[load.EngineType],
+		Args:       args,
+		Port:       load.Port,
 		// Read-only: the agent already owns writing to this directory
-		// (runTransfer above) - the engine container only ever needs to
-		// read the model files back out. Mounted at the identical path
-		// inside the container as on the host, so modelPath (resolved
+		// (runTransfer above) - the containers backend's engine only ever
+		// needs to read the model files back out. Mounted at the identical
+		// path inside the container as on the host, so modelPath (resolved
 		// above from this same host path) needs no translation to also
-		// resolve inside the container.
+		// resolve inside the container. Unused by the bare-metal backend,
+		// which already has direct filesystem access.
 		Mounts: []string{c.cfg.ModelStoragePath + ":" + c.cfg.ModelStoragePath + ":ro"},
 	}
 
-	if _, err := c.runtime.StartContainer(ctx, spec); err != nil {
-		c.logger.Printf("agent connection: start container for instance %s: %v", load.InstanceID, err)
+	if _, err := c.runtime.Start(ctx, spec); err != nil {
+		c.logger.Printf("agent connection: start instance %s: %v", load.InstanceID, err)
 		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
 		return
 	}
 	c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusRunning, load.Port, "")
 }
 
-// runUnload stops and removes a Running instance's container, identified
-// by the same deterministic name runLoad started it under - see
-// containers.InstanceContainerName.
+// runUnload stops a Running instance, identified by InstanceID - each
+// backend derives its own internal identity from it (see
+// containers.InstanceContainerName and agent/runtime/baremetal.Backend's
+// own tracking map).
 func (c *Conn) runUnload(ctx context.Context, conn *websocket.Conn, unload agentproto.UnloadInstance) {
-	name := containers.InstanceContainerName(unload.InstanceID)
-	if err := c.runtime.StopContainer(ctx, name); err != nil {
-		c.logger.Printf("agent connection: stop container for instance %s: %v", unload.InstanceID, err)
+	if err := c.runtime.Stop(ctx, unload.InstanceID); err != nil {
+		c.logger.Printf("agent connection: stop instance %s: %v", unload.InstanceID, err)
 		c.sendInstanceResult(ctx, conn, unload.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
 		return
 	}

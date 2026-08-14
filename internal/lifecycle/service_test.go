@@ -240,11 +240,11 @@ func TestService_LoadInstance_PermittedByDeveloper(t *testing.T) {
 		t.Fatalf("decode load_instance payload: %v", err)
 	}
 	want := agentproto.LoadInstance{
-		InstanceID: "instance-1", ModelRef: "meta-llama/Llama-3-8B", Image: "vllm/vllm-openai:latest",
+		InstanceID: "instance-1", ModelRef: "meta-llama/Llama-3-8B", EngineType: "vllm", Image: "vllm/vllm-openai:latest",
 		Args: []string{"--tensor-parallel-size", "1"}, Port: 8000, RequiresFullGPUResidency: true,
 	}
-	if payload.InstanceID != want.InstanceID || payload.ModelRef != want.ModelRef || payload.Image != want.Image ||
-		payload.Port != want.Port || payload.RequiresFullGPUResidency != want.RequiresFullGPUResidency {
+	if payload.InstanceID != want.InstanceID || payload.ModelRef != want.ModelRef || payload.EngineType != want.EngineType ||
+		payload.Image != want.Image || payload.Port != want.Port || payload.RequiresFullGPUResidency != want.RequiresFullGPUResidency {
 		t.Errorf("load_instance payload = %+v, want %+v", payload, want)
 	}
 

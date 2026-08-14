@@ -19,7 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
-	"github.com/1kaius1/Sparky/agent/runtime/containers"
+	agentruntime "github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
 	"github.com/1kaius1/Sparky/internal/agentproto"
@@ -28,25 +28,29 @@ import (
 // fakeRuntimeBackend implements runtimeBackend, recording calls and
 // letting a test control each result - used by the load_instance/
 // unload_instance dispatch tests below, and as a working no-op backend
-// for tests that don't care about it.
+// for tests that don't care about it. Imported as agentruntime, not
+// runtime, since many test functions below already use "runtime" as a
+// local variable name for an instance of this fake.
 type fakeRuntimeBackend struct {
-	mu         sync.Mutex
-	startCalls []containers.Spec
-	startErr   error
-	startID    string
-	stopCalls  []string
-	stopErr    error
+	mu            sync.Mutex
+	startCalls    []agentruntime.Spec
+	startErr      error
+	startID       string
+	stopCalls     []string
+	stopErr       error
+	shutdownErr   error
+	shutdownCalls int
 
-	// block, if non-nil, is closed by a test to let a blocked
-	// StartContainer/StopContainer call proceed; called, if non-nil, is
-	// closed the moment that call is entered - lets a test control
-	// exactly when a load/unload "finishes" without a sleep-based poll,
-	// same pattern as fakeTransferExecutor's block/started.
+	// block, if non-nil, is closed by a test to let a blocked Start/Stop
+	// call proceed; called, if non-nil, is closed the moment that call is
+	// entered - lets a test control exactly when a load/unload "finishes"
+	// without a sleep-based poll, same pattern as fakeTransferExecutor's
+	// block/started.
 	block  chan struct{}
 	called chan struct{}
 }
 
-func (f *fakeRuntimeBackend) StartContainer(_ context.Context, spec containers.Spec) (string, error) {
+func (f *fakeRuntimeBackend) Start(_ context.Context, spec agentruntime.Spec) (string, error) {
 	f.mu.Lock()
 	f.startCalls = append(f.startCalls, spec)
 	f.mu.Unlock()
@@ -59,9 +63,9 @@ func (f *fakeRuntimeBackend) StartContainer(_ context.Context, spec containers.S
 	return f.startID, f.startErr
 }
 
-func (f *fakeRuntimeBackend) StopContainer(_ context.Context, containerID string) error {
+func (f *fakeRuntimeBackend) Stop(_ context.Context, instanceID string) error {
 	f.mu.Lock()
-	f.stopCalls = append(f.stopCalls, containerID)
+	f.stopCalls = append(f.stopCalls, instanceID)
 	f.mu.Unlock()
 	if f.called != nil {
 		close(f.called)
@@ -70,6 +74,13 @@ func (f *fakeRuntimeBackend) StopContainer(_ context.Context, containerID string
 		<-f.block
 	}
 	return f.stopErr
+}
+
+func (f *fakeRuntimeBackend) Shutdown(_ context.Context) error {
+	f.mu.Lock()
+	f.shutdownCalls++
+	f.mu.Unlock()
+	return f.shutdownErr
 }
 
 // fakeTransferExecutor implements transferExecutor without a real HTTP
@@ -496,23 +507,23 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 	}
 
 	if len(runtime.startCalls) != 1 {
-		t.Fatalf("StartContainer called %d times, want 1", len(runtime.startCalls))
+		t.Fatalf("Start called %d times, want 1", len(runtime.startCalls))
 	}
 	spec := runtime.startCalls[0]
 	if spec.Image != "vllm/vllm-openai:latest" {
 		t.Errorf("Image = %q, want %q", spec.Image, "vllm/vllm-openai:latest")
 	}
-	if spec.Name != "sparky-instance-instance-1" {
-		t.Errorf("Name = %q, want %q", spec.Name, "sparky-instance-instance-1")
+	if spec.InstanceID != "instance-1" {
+		t.Errorf("InstanceID = %q, want %q", spec.InstanceID, "instance-1")
 	}
 	if spec.Port != 8000 {
 		t.Errorf("Port = %d, want 8000", spec.Port)
 	}
 	// RequiresFullGPUResidency true - --model should point at the whole
 	// destDir, not a specific file within it (there is no glob step).
-	wantCmd := []string{"--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
-	if !reflect.DeepEqual(spec.Cmd, wantCmd) {
-		t.Errorf("Cmd = %v, want %v", spec.Cmd, wantCmd)
+	wantArgs := []string{"--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	if !reflect.DeepEqual(spec.Args, wantArgs) {
+		t.Errorf("Args = %v, want %v", spec.Args, wantArgs)
 	}
 	wantMounts := []string{"/models:/models:ro"}
 	if !reflect.DeepEqual(spec.Mounts, wantMounts) {
@@ -523,7 +534,7 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 func TestConn_Dispatch_LoadInstance_PartialOffload_NoGGUFFile_ReportsFailed(t *testing.T) {
 	// requires_full_gpu_residency false with no matching .gguf file on
 	// local storage (nothing was ever downloaded here) - resolveModelPath
-	// must fail before ever calling StartContainer.
+	// must fail before ever calling Start.
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-gguf-model",
@@ -577,11 +588,11 @@ func TestConn_Dispatch_LoadInstance_PartialOffload_NoGGUFFile_ReportsFailed(t *t
 		t.Errorf("instance_result = %+v, want Status=failed with a non-empty ErrorMessage", result)
 	}
 	if len(runtime.startCalls) != 0 {
-		t.Error("StartContainer was called despite no .gguf file existing to resolve --model to")
+		t.Error("Start was called despite no .gguf file existing to resolve --model to")
 	}
 }
 
-func TestConn_Dispatch_LoadInstance_StartContainerFails_ReportsFailed(t *testing.T) {
+func TestConn_Dispatch_LoadInstance_StartFails_ReportsFailed(t *testing.T) {
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-model",
@@ -683,8 +694,8 @@ func TestConn_Dispatch_UnloadInstance_StopsContainerAndReportsStopped(t *testing
 	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusStopped {
 		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=stopped", result)
 	}
-	if len(runtime.stopCalls) != 1 || runtime.stopCalls[0] != "sparky-instance-instance-1" {
-		t.Errorf("stopCalls = %v, want [sparky-instance-instance-1]", runtime.stopCalls)
+	if len(runtime.stopCalls) != 1 || runtime.stopCalls[0] != "instance-1" {
+		t.Errorf("stopCalls = %v, want [instance-1]", runtime.stopCalls)
 	}
 }
 
@@ -723,7 +734,7 @@ func TestConn_Run_WaitsForInFlightLoadOnShutdown(t *testing.T) {
 	select {
 	case <-runtime.called:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for StartContainer to be called")
+		t.Fatal("timed out waiting for Start to be called")
 	}
 
 	cancel()
@@ -740,6 +751,89 @@ func TestConn_Run_WaitsForInFlightLoadOnShutdown(t *testing.T) {
 	case <-done:
 	case <-time.After(1 * time.Second):
 		t.Fatal("Run() did not return promptly after the in-flight load finished")
+	}
+}
+
+// TestConn_Run_CallsRuntimeShutdownOnExit confirms Run's exit path stops
+// whatever the runtime backend is still tracking (agent/runtime/baremetal's
+// whole reason for existing - docs/AGENT.md Signal Handling) after
+// in-flight load/unload goroutines have already finished, not before.
+func TestConn_Run_CallsRuntimeShutdownOnExit(t *testing.T) {
+	app := newTestCentralApp(true, "")
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-app.receivedHello:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for the handshake")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	runtime.mu.Lock()
+	shutdownCalls := runtime.shutdownCalls
+	runtime.mu.Unlock()
+	if shutdownCalls != 1 {
+		t.Errorf("Shutdown called %d times, want 1", shutdownCalls)
+	}
+}
+
+// TestConn_Run_RuntimeShutdownError_Logged confirms a Shutdown error
+// doesn't stop Run from returning - shutdownRuntime has nowhere left to
+// hand an error back to once the agent is exiting, so it logs and moves
+// on rather than blocking process exit.
+func TestConn_Run_RuntimeShutdownError_Logged(t *testing.T) {
+	app := newTestCentralApp(true, "")
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{shutdownErr: errors.New("stop failed")}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-app.receivedHello:
+	case <-time.After(1 * time.Second):
+		t.Fatal("timed out waiting for the handshake")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation despite a Shutdown error")
 	}
 }
 

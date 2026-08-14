@@ -1563,6 +1563,50 @@ the current active work, see Current Sprint / Active Work below.
         specific to DGX Spark hardware. Validated against this project's own RTX
         4090 laptop, the concrete hardware in hand for this case - see
         PLANNING.md's 2026-08-13 Decisions Log entry
+    - [x] The backend itself (`agent/runtime/baremetal`) - a shared
+          `agent/runtime.Backend` interface (`Start`/`Stop`/`Shutdown`)
+          introduced so `agent/connection` no longer branches on which
+          concrete backend (containers or bare-metal) it holds, satisfied by
+          both `agent/runtime/containers` (refactored onto it, no behavior
+          change) and the new `agent/runtime/baremetal` (`exec.Command`,
+          a mutex-guarded `instanceID -> process` map, SIGTERM-then-
+          grace-period-then-SIGKILL stop, `Shutdown` stopping every tracked
+          process concurrently on agent exit - see docs/AGENT.md Signal
+          Handling, now updated from "statement of intent" to describe
+          this). `cmd/sparky-agent` picks the concrete backend once at
+          startup from `SPARKY_RUNTIME_BACKEND`, also closing a real,
+          separately-discovered gap: that value was loaded but never
+          validated against its enum or dispatched on anywhere before this.
+          Since an engine adapter's `LaunchSpec.Image` is a Docker image
+          reference with no bare-metal meaning, `agentproto.LoadInstance`
+          gained an `EngineType` field (server already has
+          `profile.EngineType` in scope where it builds this payload) and
+          the agent resolves a local executable via one new optional env
+          var per engine type (`SPARKY_LLAMACPP_BINARY_PATH` /
+          `SPARKY_VLLM_BINARY_PATH` - only `vllm`/`llamacpp` have adapters
+          today) - both design forks confirmed with the user before
+          building, see the 2026-08-13 Decisions Log entries below.
+          `SPARKY_MODEL_STORAGE_PATH`'s bare-metal default
+          (`/home/serviceloop/models`) is now actually implemented in
+          `agent/config.Load`, closing the Known Issues row that named
+          this exact gap. Verified via `go test -race` across every
+          touched package, including new `agent/runtime/baremetal` tests
+          exercising real process lifecycle (SIGTERM, SIGKILL escalation
+          on a SIGTERM-ignoring process, `Shutdown` stopping multiple
+          tracked processes concurrently) against harmless real binaries
+          (`/bin/sh`) already present on any Linux box - no GPU or real
+          engine binary needed for that.
+    - [ ] Real hardware validation against the RTX 4090 laptop - not done
+          this pass. This sandbox has no GPU and no real vLLM/llama.cpp
+          install (same already-documented gap as CDI passthrough and
+          `nvidia-smi` telemetry verification). A new Known Issues row
+          names the specific, real uncertainty this leaves open: whether
+          an engine adapter's existing `Args` (built assuming a container
+          image's own baked-in entrypoint) are also correct as a raw
+          bare-metal command line - confirmed fine for llama.cpp (its
+          server binary takes flags directly), genuinely unverified for
+          vLLM (whose CLI has used both a flag-only form and a `vllm
+          serve <model>` subcommand form across versions).
   - [ ] `sparky-agent setup` subcommand - creates/verifies the `serviceloop` system
         account and its GPU-passthrough group membership (`video`/`render`,
         distro-dependent), idempotent, supports both environment-variable-driven and
@@ -1641,6 +1685,13 @@ duplicate checklist.
   backend... CDI GPU passthrough," blocked on hardware/verification this
   sandbox doesn't have - see Dependencies and Blockers below, not something
   to pick up as "next up" in the usual sense.
+- v0.2.0's bare-metal runtime backend (`agent/runtime/baremetal`) itself is
+  built and unit-tested - see that item's own entry above. Its own
+  checkbox stays open pending real hardware validation against the RTX
+  4090 laptop, which this sandbox can't do (no GPU, no real vLLM/llama.cpp
+  install). The `sparky-agent setup` subcommand and the Docker/Podman
+  backend's own real-hardware CDI validation remain separate, still-open
+  v0.2.0 items - see Dependencies and Blockers below.
 
 ---
 
@@ -1767,6 +1818,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-13 | Packaging built via `nfpm` (a single static Go binary, one YAML config producing both `.deb` and `.rpm`) rather than hand-rolled `dpkg-deb`/`rpmbuild` control files or GoReleaser | Matches this project's own "own it, don't add dependencies you don't need" pattern already on record for `chi`/`golang-migrate`: nfpm is a build-time-only CLI tool (`go install github.com/goreleaser/nfpm/v2/cmd/nfpm@latest`, same install shape as the already-documented `golang-migrate`), never imported into `go.mod`, and avoids maintaining two per-distro toolchains (`rpmbuild` specifically needs a real build environment) in sync by hand. Its actual config semantics were verified empirically against a real installed `nfpm`, not assumed from documentation alone - two real surprises found this way and designed around: `contents[].src`/`scripts.*` paths resolve relative to nfpm's own working directory at invocation time, not relative to the config file's location, and `${VAR}`-style env expansion only applies to certain top-level fields (`arch`/`version`/`maintainer`/etc.), not to `contents[].src` - `scripts/build_packages.sh` always invokes `nfpm` from the repo root and stages the per-arch binary at a fixed non-arch-suffixed path (`dist/build/sparky-agent`) before each invocation to work within both constraints | GoReleaser (rejected: does everything nfpm does via nfpm internally, plus GitHub-release/changelog automation this task never asked for - meaningfully heavier than needed); hand-rolled `dpkg-deb`/`rpmbuild` (rejected: real duplication keeping two distro-native toolchains' control files in sync by hand, and `rpmbuild` specifically needs a full build environment this project's own minimal-infrastructure philosophy would otherwise avoid) |
 | 2026-08-13 | Distribution is raw artifacts only for now (`.deb`/`.rpm`/`.tar.gz` files, e.g. attached to releases, installed via `dpkg -i`/`rpm -i`/tarball extraction) - no signed apt/dnf repository, no GPG key infrastructure | User's explicit call: revisit a real repository "if the project's popularity shows there's a need." `scripts/build_packages.sh`'s output is kept flat and SemVer-clean specifically so a future `reprepro`/`createrepo`-based repo-publish step, if it's ever needed, is an addition on top of this build, not a restructuring of it | Building signed repository infrastructure now (rejected: real, ongoing maintenance overhead - key management, repo metadata generation, hosting - unlikely to be worth it yet at CLAUDE.md's own stated "handful of nodes, single internal team" scale) |
 | 2026-08-13 | `apt remove`/`dnf remove` stop and disable the service and remove the binary, but leave `serviceloop` and `/etc/sparky-agent/secrets.env` in place; only `apt purge` (native dpkg semantics) removes both. RPM has no equivalent purge concept at all - researched directly (`%preun`/`%postun` scriptlets only ever receive a numeric install-count, 0 or 1+, with no separate "and delete everything" signal `dnf`/`rpm` can produce, unlike dpkg's own `purge` argument) rather than assumed - so `scripts/packaging/purge_rpm.sh` is copied to a package-unowned path (`/usr/local/sbin/sparky-agent-purge.sh`) by the `preremove` scriptlet just before removal deletes everything else the package owns, specifically so a real cleanup command still exists on the box afterward, and `docs/AGENT.md` states the RPM gap plainly rather than pretending purge works the same way there | Standard Debian/RPM packaging convention for the deb side (avoids orphaned file ownership and accidental credential loss on a routine `remove`); the RPM half is an honest answer to a real platform limitation, not a workaround - discovered mid-implementation when a first attempt at `purge_rpm.sh` was ordinary package content and got deleted by a plain `dnf remove` before it could ever run, caught by the container-based verification pass (see this milestone's own "Done" writeup) and fixed by copying it out before removal rather than by loosening what plain `remove` does | A plain `remove` that also deletes `serviceloop`/`secrets.env` (rejected: diverges from standard packaging conventions and risks silently destroying a real bearer token on a routine removal someone expected to be reversible) |
+| 2026-08-13 | The bare-metal runtime backend (`agent/runtime/baremetal`) and the existing Docker/Podman backend now share one `agent/runtime.Backend` interface (`Start`/`Stop`/`Shutdown`, plus a generalized `runtime.Spec` superseding the old `containers.Spec`), rather than `agent/connection` branching on `cfg.RuntimeBackend` between two differently-shaped interfaces - confirmed with the user as an explicit two-option choice | Matches the one-interface/swap-the-concrete-implementation pattern already used for `transferExecutor`/`telemetryCollector` in the same package - `agent/connection` stays backend-agnostic, and `cmd/sparky-agent` picks the concrete implementation once at startup from `cfg.RuntimeBackend`. `containers.Backend` was refactored onto the shared interface with no behavior change (`Start`/`Stop` derive the container name internally via the existing `InstanceContainerName`, same as before; `Shutdown` is a no-op, matching the already-documented "containers survive an agent restart" design) | Two separate interfaces with `connection.go` branching between them (offered as the lower-upfront-restructuring alternative; rejected in favor of keeping backend-type awareness out of `connection.go` entirely) |
+| 2026-08-13 | `agentproto.LoadInstance` gained an `EngineType` field (plain string, e.g. `"vllm"`/`"llamacpp"` - same values as `db.ProfileEngineType`, carried without an `internal/db` import per this package's existing `TransferProgress.Status`/`InstanceResult.Status` convention), and the bare-metal backend resolves which local executable to exec via one new optional env var per engine type (`SPARKY_LLAMACPP_BINARY_PATH`/`SPARKY_VLLM_BINARY_PATH`, only `vllm`/`llamacpp` having adapters today) - confirmed with the user as an explicit two-option choice | `engines.LaunchSpec.Image` is a Docker image reference with no bare-metal meaning at all - there was no field anywhere telling the agent which local binary to run for a given engine, a real protocol gap this milestone's research surfaced rather than something `agent/connection` could work around on its own. `internal/lifecycle.Service.LoadInstance` already has `profile.EngineType` in scope where it builds this payload, so populating the new field cost one line. A binary's on-disk location is inherently host-specific (venv paths, install locations vary per machine), so the agent - not the central app - is the right place to resolve it; a load request for an engine type with no configured path on that node fails clearly through the existing `InstanceResult` `status=failed` path, the same mechanism already used for every other real launch failure | A single `SPARKY_ENGINE_BIN_DIR` directory convention with fixed expected binary names inside it (e.g. `llama-server`, `vllm`) instead of one env var per engine type - offered as the lower-config-sprawl alternative as more engines are added later; rejected in favor of an explicit named path per engine type, consistent with every other environment variable in this project being explicitly named rather than convention-based |
 
 ---
 
@@ -1777,7 +1830,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | Mid-session behavior when a user loses AD access-group membership is undefined | Low | Not a stated priority during auth design; existing session likely persists until natural expiry |
 | CDI GPU passthrough via Podman's Docker-Engine-API-compatible socket not yet verified on target hardware/Podman version - neither Docker API mechanism for requesting a CDI device (`HostConfig.DeviceRequests` with `Driver: "cdi"`, or `HostConfig.Devices` with a CDI name as `PathOnHost`) triggered CDI resolution against a real local Podman 4.9.3 daemon, even though Podman's own CLI resolves CDI names correctly - see 2026-08-10 Decisions Log entry for the full empirical finding | Medium | Requires the actual target Podman version (likely much newer than the 4.9.3 available here) and real GPU hardware to determine whether this is fixed upstream or still needs a workaround; `agent/runtime/containers` implements the documented, correct Docker API contract regardless, which is right for Docker and the best available attempt for Podman |
 | `agent_status` never reaches `unreachable` - `internal/agentconn` only ever sets `online` (on a successful handshake) or `offline` (on any disconnect, clean or not), even though SCHEMA.md's third state exists for a connection that's still technically open but has gone silent | Low | `agent/connection.Conn` sends a `heartbeat` envelope every 30s as of Phase 5 (agent runtime/WebSocket work), but `internal/agentconn` doesn't read-deadline or otherwise track them yet - the server-side timeout/detection logic to actually consume those heartbeats and flip a stale connection to `unreachable` still doesn't exist. Revisit when there's a concrete reason to distinguish `unreachable` from `offline` operationally |
-| `agent/config`'s `SPARKY_MODEL_STORAGE_PATH` has no default - docs/AGENT.md documents `/home/serviceloop/models` as the Spark default, but that depends on `SPARKY_NODE_TYPE` at runtime and isn't implemented yet | Low | No bare-metal runtime backend exists yet to consume this default; implement alongside the v0.2.0 backend and `sparky-agent setup` work |
+| Whether an engine adapter's existing `LaunchSpec.Args` (built assuming a container image's own baked-in entrypoint, e.g. `vllm/vllm-openai:latest`) are also correct as a raw command line for that engine's bare-metal binary is unverified - no real vLLM install exists in this environment (same gap already on record for CDI passthrough and `nvidia-smi`). `llama.cpp`'s server binary takes flags directly (`--model`/`--port`/`--gpu-layers`/etc, no subcommand), so this looks fine as-is; vLLM's CLI has used both a flag-only form and a `vllm serve <model>` subcommand form across versions | Medium | Requires a real vLLM install (or at minimum its documentation for the specific pinned version this project targets) to confirm either way - part of the RTX-4090-laptop bare-metal validation PLANNING.md's v0.2.0 entry already names as the concrete next hardware-bound step for this backend |
 | `rbac.Service.ElevateTier`'s tier update and its audit-log write are two separate calls, not one database transaction - a tier change can persist while its audit record fails to write (surfaced to the caller as an error after the fact, but not rolled back) | Low | No cross-repository transaction pattern exists anywhere else in the codebase yet to extend; the failure mode requires the audit Postgres write itself to fail immediately after a successful update, which is rare enough not to block this pass |
 | `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
@@ -1815,6 +1868,14 @@ Two questions originally tracked here have moved on, not been deleted outright:
   validation (not, as previously stated here, the bare-metal backend - see the
   2026-08-13 Decisions Log entry) - separate from the CDI/Podman blocker above,
   which concerns hardware already in hand.
+- The bare-metal runtime backend's own remaining checkbox (real-hardware
+  validation against the RTX 4090 laptop) is blocked the same way the CDI
+  items above are - no GPU and no real vLLM/llama.cpp install exist in this
+  sandbox. The backend mechanics themselves (process lifecycle, SIGTERM/
+  SIGKILL handling, config wiring) are already built and verified here
+  against harmless real processes; what's blocked is confirming a real
+  engine actually starts and serves under it, and the vLLM CLI-argument-
+  shape question the Known Issues table now tracks.
 
 ---
 

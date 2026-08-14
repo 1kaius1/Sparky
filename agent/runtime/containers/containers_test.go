@@ -15,6 +15,8 @@ import (
 	"github.com/moby/moby/api/types/jsonstream"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+
+	"github.com/1kaius1/Sparky/agent/runtime"
 )
 
 // fakeDockerClient implements dockerClient for tests without a real
@@ -66,8 +68,8 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ client.Image
 
 func (f *fakeDockerClient) Close() error { return nil }
 
-// fakePullResponse implements client.ImagePullResponse. StartContainer's
-// pullImage only ever calls Wait, so the rest are unused no-ops.
+// fakePullResponse implements client.ImagePullResponse. Start's pullImage
+// only ever calls Wait, so the rest are unused no-ops.
 type fakePullResponse struct{}
 
 func (f *fakePullResponse) Read(_ []byte) (int, error)   { return 0, io.EOF }
@@ -81,7 +83,7 @@ func newImageNotFoundErr() error {
 	return cerrdefs.ErrNotFound.WithMessage("no such image")
 }
 
-func TestStartContainer_Success(t *testing.T) {
+func TestStart_Success(t *testing.T) {
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, _ client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
 			return client.ContainerCreateResult{ID: "container-1"}, nil
@@ -89,9 +91,9 @@ func TestStartContainer_Success(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	id, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	id, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 	if id != "container-1" {
 		t.Errorf("id = %q, want %q", id, "container-1")
@@ -104,7 +106,7 @@ func TestStartContainer_Success(t *testing.T) {
 	}
 }
 
-func TestStartContainer_PullsMissingImageThenRetries(t *testing.T) {
+func TestStart_PullsMissingImageThenRetries(t *testing.T) {
 	firstAttempt := true
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, _ client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -117,9 +119,9 @@ func TestStartContainer_PullsMissingImageThenRetries(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	id, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	id, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 	if id != "container-1" {
 		t.Errorf("id = %q, want %q", id, "container-1")
@@ -132,7 +134,7 @@ func TestStartContainer_PullsMissingImageThenRetries(t *testing.T) {
 	}
 }
 
-func TestStartContainer_PullFails(t *testing.T) {
+func TestStart_PullFails(t *testing.T) {
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, _ client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
 			return client.ContainerCreateResult{}, newImageNotFoundErr()
@@ -141,16 +143,16 @@ func TestStartContainer_PullFails(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err == nil {
-		t.Fatal("StartContainer() succeeded despite a pull failure")
+		t.Fatal("Start() succeeded despite a pull failure")
 	}
 	if fake.createCalls != 1 {
 		t.Errorf("createCalls = %d, want 1 (no retry after a failed pull)", fake.createCalls)
 	}
 }
 
-func TestStartContainer_CreateFails_NonNotFound_NoPullAttempted(t *testing.T) {
+func TestStart_CreateFails_NonNotFound_NoPullAttempted(t *testing.T) {
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, _ client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
 			return client.ContainerCreateResult{}, errors.New("invalid container config")
@@ -158,16 +160,16 @@ func TestStartContainer_CreateFails_NonNotFound_NoPullAttempted(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err == nil {
-		t.Fatal("StartContainer() succeeded despite a create failure")
+		t.Fatal("Start() succeeded despite a create failure")
 	}
 	if fake.pullCalls != 0 {
 		t.Errorf("pullCalls = %d, want 0 - a non-not-found error must not trigger a pull", fake.pullCalls)
 	}
 }
 
-func TestStartContainer_StartFails(t *testing.T) {
+func TestStart_StartFails(t *testing.T) {
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, _ client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
 			return client.ContainerCreateResult{ID: "container-1"}, nil
@@ -176,13 +178,13 @@ func TestStartContainer_StartFails(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err == nil {
-		t.Fatal("StartContainer() succeeded despite a start failure")
+		t.Fatal("Start() succeeded despite a start failure")
 	}
 }
 
-func TestStartContainer_SetsCDIDeviceRequest(t *testing.T) {
+func TestStart_SetsCDIDeviceRequest(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -192,12 +194,12 @@ func TestStartContainer_SetsCDIDeviceRequest(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{
+	_, err := b.Start(context.Background(), runtime.Spec{
 		Image:      "example/engine:latest",
 		CDIDevices: []string{"nvidia.com/gpu=all"},
 	})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 
 	if captured.HostConfig == nil {
@@ -215,7 +217,7 @@ func TestStartContainer_SetsCDIDeviceRequest(t *testing.T) {
 	}
 }
 
-func TestStartContainer_NoCDIDevices_NoDeviceRequest(t *testing.T) {
+func TestStart_NoCDIDevices_NoDeviceRequest(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -225,16 +227,16 @@ func TestStartContainer_NoCDIDevices_NoDeviceRequest(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 	if len(captured.HostConfig.DeviceRequests) != 0 {
 		t.Errorf("DeviceRequests = %v, want empty when Spec.CDIDevices is empty", captured.HostConfig.DeviceRequests)
 	}
 }
 
-func TestStartContainer_SetsCmd(t *testing.T) {
+func TestStart_SetsArgsAsCmd(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -244,12 +246,12 @@ func TestStartContainer_SetsCmd(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{
+	_, err := b.Start(context.Background(), runtime.Spec{
 		Image: "example/engine:latest",
-		Cmd:   []string{"--model", "/models/repo/model.gguf", "--port", "8000"},
+		Args:  []string{"--model", "/models/repo/model.gguf", "--port", "8000"},
 	})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 	want := []string{"--model", "/models/repo/model.gguf", "--port", "8000"}
 	if !reflect.DeepEqual(captured.Config.Cmd, want) {
@@ -257,7 +259,7 @@ func TestStartContainer_SetsCmd(t *testing.T) {
 	}
 }
 
-func TestStartContainer_SetsPortBinding(t *testing.T) {
+func TestStart_SetsPortBinding(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -267,9 +269,9 @@ func TestStartContainer_SetsPortBinding(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{Image: "example/engine:latest", Port: 8000})
+	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/engine:latest", Port: 8000})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 
 	port := network.MustParsePort("8000/tcp")
@@ -282,7 +284,7 @@ func TestStartContainer_SetsPortBinding(t *testing.T) {
 	}
 }
 
-func TestStartContainer_NoPort_NoPortBinding(t *testing.T) {
+func TestStart_NoPort_NoPortBinding(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -292,9 +294,9 @@ func TestStartContainer_NoPort_NoPortBinding(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{Image: "example/image:latest"})
+	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 	if len(captured.Config.ExposedPorts) != 0 {
 		t.Errorf("ExposedPorts = %v, want empty when Spec.Port is zero", captured.Config.ExposedPorts)
@@ -304,7 +306,7 @@ func TestStartContainer_NoPort_NoPortBinding(t *testing.T) {
 	}
 }
 
-func TestStartContainer_SetsMounts(t *testing.T) {
+func TestStart_SetsMounts(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -314,16 +316,36 @@ func TestStartContainer_SetsMounts(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	_, err := b.StartContainer(context.Background(), Spec{
+	_, err := b.Start(context.Background(), runtime.Spec{
 		Image:  "example/engine:latest",
 		Mounts: []string{"/srv/models:/srv/models:ro"},
 	})
 	if err != nil {
-		t.Fatalf("StartContainer() error: %v", err)
+		t.Fatalf("Start() error: %v", err)
 	}
 	want := []string{"/srv/models:/srv/models:ro"}
 	if !reflect.DeepEqual(captured.HostConfig.Binds, want) {
 		t.Errorf("Binds = %v, want %v", captured.HostConfig.Binds, want)
+	}
+}
+
+func TestStart_NamesContainerFromInstanceID(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.Start(context.Background(), runtime.Spec{InstanceID: "instance-1", Image: "example/engine:latest"})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	want := InstanceContainerName("instance-1")
+	if captured.Name != want {
+		t.Errorf("Name = %q, want %q", captured.Name, want)
 	}
 }
 
@@ -335,30 +357,38 @@ func TestInstanceContainerName(t *testing.T) {
 	}
 }
 
-func TestStopContainer_Success(t *testing.T) {
+func TestStop_Success(t *testing.T) {
 	fake := &fakeDockerClient{}
 	b := &Backend{cli: fake}
 
-	if err := b.StopContainer(context.Background(), "container-1"); err != nil {
-		t.Fatalf("StopContainer() error: %v", err)
+	if err := b.Stop(context.Background(), "instance-1"); err != nil {
+		t.Fatalf("Stop() error: %v", err)
 	}
 }
 
-func TestStopContainer_StopFails(t *testing.T) {
+func TestStop_StopFails(t *testing.T) {
 	fake := &fakeDockerClient{stopErr: errors.New("stop failed")}
 	b := &Backend{cli: fake}
 
-	if err := b.StopContainer(context.Background(), "container-1"); err == nil {
-		t.Fatal("StopContainer() succeeded despite a stop failure")
+	if err := b.Stop(context.Background(), "instance-1"); err == nil {
+		t.Fatal("Stop() succeeded despite a stop failure")
 	}
 }
 
-func TestStopContainer_RemoveFails(t *testing.T) {
+func TestStop_RemoveFails(t *testing.T) {
 	fake := &fakeDockerClient{removeErr: errors.New("remove failed")}
 	b := &Backend{cli: fake}
 
-	if err := b.StopContainer(context.Background(), "container-1"); err == nil {
-		t.Fatal("StopContainer() succeeded despite a remove failure")
+	if err := b.Stop(context.Background(), "instance-1"); err == nil {
+		t.Fatal("Stop() succeeded despite a remove failure")
+	}
+}
+
+func TestShutdown_NoOp(t *testing.T) {
+	b := &Backend{cli: &fakeDockerClient{}}
+
+	if err := b.Shutdown(context.Background()); err != nil {
+		t.Errorf("Shutdown() error: %v, want nil - containers are deliberately left running", err)
 	}
 }
 

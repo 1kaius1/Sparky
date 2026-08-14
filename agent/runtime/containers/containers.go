@@ -15,6 +15,8 @@ import (
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
+
+	"github.com/1kaius1/Sparky/agent/runtime"
 )
 
 // cdiDriver is the device driver name the daemon registers for CDI device
@@ -24,46 +26,12 @@ import (
 // Backend for a real gap found testing this against Podman.
 const cdiDriver = "cdi"
 
-// Spec describes a container to start.
-type Spec struct {
-	Image string
-	Name  string
-	Env   []string
-
-	// Cmd is the command-line arguments passed to the container's
-	// entrypoint - e.g. an engine adapter's LaunchSpec.Args, plus
-	// whatever --model/--port flags the caller has already resolved. Nil
-	// means run the image's own default command.
-	Cmd []string
-
-	// Port, if nonzero, is published from the container to the identical
-	// port number on the host - Sparky always runs an engine's server on
-	// the same port number inside the container as the profile declares
-	// (SCHEMA.md Running instances' actual_port), so there is only ever
-	// one port number to track, not a separate host/container pair. Zero
-	// means no port is published.
-	Port int
-
-	// Mounts are bind mounts in "hostPath:containerPath[:mode]" form
-	// (Docker's -v syntax) - used to give the container access to the
-	// agent's local model storage directory at the identical path inside
-	// the container as on the host, so a --model flag resolved against
-	// the host path needs no translation to also resolve inside the
-	// container.
-	Mounts []string
-
-	// CDIDevices are CDI-qualified device names (e.g. "nvidia.com/gpu=all")
-	// - see docs/AGENT.md Tech Stack and ARCHITECTURE.md Runtime Backends.
-	// Nil/empty means no GPU passthrough.
-	CDIDevices []string
-}
-
 // InstanceContainerName returns the deterministic container name Sparky
-// uses for a Running instance. StartContainer (via Spec.Name) and
-// StopContainer (which the Docker Engine API accepts a name for
-// interchangeably with an ID) both key off this same value, so the
-// central app never needs to track a live container ID of its own - see
-// agent/connection's load_instance/unload_instance dispatch.
+// uses for a Running instance. Start and Stop (which the Docker Engine API
+// accepts a name for interchangeably with an ID) both key off this same
+// value, so neither this package nor the central app needs to track a live
+// container ID of its own - see agent/connection's load_instance/
+// unload_instance dispatch.
 func InstanceContainerName(instanceID string) string {
 	return "sparky-instance-" + instanceID
 }
@@ -123,12 +91,14 @@ func (b *Backend) Close() error {
 	return b.cli.Close()
 }
 
-// StartContainer creates and starts a container from spec, returning its
-// ID. If spec.Image is not already present on the node, it is pulled
-// first - unlike the `docker run` CLI, the raw Engine API's ContainerCreate
-// does not pull a missing image itself, confirmed empirically against a
-// real daemon rather than assumed.
-func (b *Backend) StartContainer(ctx context.Context, spec Spec) (string, error) {
+// Start creates and starts a container from spec, returning its ID. If
+// spec.Image is not already present on the node, it is pulled first -
+// unlike the `docker run` CLI, the raw Engine API's ContainerCreate does
+// not pull a missing image itself, confirmed empirically against a real
+// daemon rather than assumed. The container is named deterministically
+// from spec.InstanceID (InstanceContainerName) so Stop can address it
+// without this package tracking any state of its own.
+func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) {
 	var hostConfig container.HostConfig
 	if len(spec.CDIDevices) > 0 {
 		hostConfig.DeviceRequests = []container.DeviceRequest{
@@ -145,7 +115,7 @@ func (b *Backend) StartContainer(ctx context.Context, spec Spec) (string, error)
 	config := &container.Config{
 		Image: spec.Image,
 		Env:   spec.Env,
-		Cmd:   spec.Cmd,
+		Cmd:   spec.Args,
 	}
 	if spec.Port != 0 {
 		port, err := network.ParsePort(fmt.Sprintf("%d/tcp", spec.Port))
@@ -157,7 +127,7 @@ func (b *Backend) StartContainer(ctx context.Context, spec Spec) (string, error)
 	}
 
 	createOpts := client.ContainerCreateOptions{
-		Name:       spec.Name,
+		Name:       InstanceContainerName(spec.InstanceID),
 		Config:     config,
 		HostConfig: &hostConfig,
 	}
@@ -189,14 +159,25 @@ func (b *Backend) pullImage(ctx context.Context, image string) error {
 	return resp.Wait(ctx)
 }
 
-// StopContainer stops and removes a container by ID.
-func (b *Backend) StopContainer(ctx context.Context, containerID string) error {
-	if _, err := b.cli.ContainerStop(ctx, containerID, client.ContainerStopOptions{}); err != nil {
-		return fmt.Errorf("stop container %s: %w", containerID, err)
+// Stop stops and removes the container for instanceID - the same
+// deterministic name Start gave it (InstanceContainerName), so no state
+// needs to be tracked between the two calls.
+func (b *Backend) Stop(ctx context.Context, instanceID string) error {
+	name := InstanceContainerName(instanceID)
+	if _, err := b.cli.ContainerStop(ctx, name, client.ContainerStopOptions{}); err != nil {
+		return fmt.Errorf("stop container %s: %w", name, err)
 	}
-	if _, err := b.cli.ContainerRemove(ctx, containerID, client.ContainerRemoveOptions{}); err != nil {
-		return fmt.Errorf("remove container %s: %w", containerID, err)
+	if _, err := b.cli.ContainerRemove(ctx, name, client.ContainerRemoveOptions{}); err != nil {
+		return fmt.Errorf("remove container %s: %w", name, err)
 	}
+	return nil
+}
+
+// Shutdown is a no-op: a Running instance's container is managed by the
+// container runtime daemon independent of the agent's own process
+// lifetime, and is deliberately left running across an agent restart - see
+// docs/AGENT.md Signal Handling.
+func (b *Backend) Shutdown(ctx context.Context) error {
 	return nil
 }
 

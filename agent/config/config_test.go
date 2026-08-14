@@ -83,6 +83,82 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	}
 }
 
+func TestLoad_EngineBinaryPaths(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("SPARKY_LLAMACPP_BINARY_PATH", "/opt/llama.cpp/llama-server")
+	t.Setenv("SPARKY_VLLM_BINARY_PATH", "/opt/venvs/vllm/bin/vllm")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.LlamaCPPBinaryPath != "/opt/llama.cpp/llama-server" {
+		t.Errorf("LlamaCPPBinaryPath = %q, want %q", cfg.LlamaCPPBinaryPath, "/opt/llama.cpp/llama-server")
+	}
+	if cfg.VLLMBinaryPath != "/opt/venvs/vllm/bin/vllm" {
+		t.Errorf("VLLMBinaryPath = %q, want %q", cfg.VLLMBinaryPath, "/opt/venvs/vllm/bin/vllm")
+	}
+}
+
+func TestLoad_EngineBinaryPaths_UnsetByDefault(t *testing.T) {
+	setAllRequired(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.LlamaCPPBinaryPath != "" {
+		t.Errorf("LlamaCPPBinaryPath = %q, want empty (no default)", cfg.LlamaCPPBinaryPath)
+	}
+	if cfg.VLLMBinaryPath != "" {
+		t.Errorf("VLLMBinaryPath = %q, want empty (no default)", cfg.VLLMBinaryPath)
+	}
+}
+
+func TestLoad_BareMetalRuntimeBackend_DefaultsModelStoragePath(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("SPARKY_RUNTIME_BACKEND", "bare-metal")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.ModelStoragePath != "/home/serviceloop/models" {
+		t.Errorf("ModelStoragePath = %q, want the bare-metal default %q", cfg.ModelStoragePath, "/home/serviceloop/models")
+	}
+}
+
+func TestLoad_BareMetalRuntimeBackend_ExplicitModelStoragePathNotOverridden(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("SPARKY_RUNTIME_BACKEND", "bare-metal")
+	t.Setenv("SPARKY_MODEL_STORAGE_PATH", "/mnt/models")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.ModelStoragePath != "/mnt/models" {
+		t.Errorf("ModelStoragePath = %q, want the explicitly configured %q", cfg.ModelStoragePath, "/mnt/models")
+	}
+}
+
+func TestLoad_NonBareMetalRuntimeBackend_NoModelStoragePathDefault(t *testing.T) {
+	setAllRequired(t) // SPARKY_RUNTIME_BACKEND=podman
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.ModelStoragePath != "" {
+		t.Errorf("ModelStoragePath = %q, want empty - the bare-metal default must not apply to podman", cfg.ModelStoragePath)
+	}
+}
+
 func TestLoad_MissingRequired_ReturnsError(t *testing.T) {
 	for _, missing := range requiredVars {
 		t.Run(missing, func(t *testing.T) {

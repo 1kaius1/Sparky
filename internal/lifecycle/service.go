@@ -141,6 +141,7 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 	env, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               inst.ID,
 		ModelRef:                 profile.ModelRef,
+		EngineType:               string(profile.EngineType),
 		Image:                    spec.Image,
 		Args:                     spec.Args,
 		Port:                     profile.Port,
