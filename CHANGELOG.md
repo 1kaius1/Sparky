@@ -953,7 +953,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   docs/AGENT.md's Signal Handling section previously described only as a
   statement of intent; the containers backend's own `Shutdown` stays a
   no-op, since a Running instance's container is deliberately left running
-  across an agent restart. Verified via `go test -race` across every
+  across an agent restart. `deploy/systemd/sparky-agent.service` gained
+  `KillMode=mixed` after real-hardware validation found the unit's default
+  `control-group` mode double-signals a tracked bare-metal child (once from
+  systemd directly, once from the agent's own shutdown logic), which made a
+  real llama.cpp server abort instead of exiting cleanly on a second
+  SIGTERM arriving mid-shutdown - `mixed` leaves the agent's own per-child
+  signaling as the only path during a normal stop, confirmed by
+  reproducing and then re-verifying the exact same scenario against the
+  rebuilt package on real hardware. Verified via `go test -race` across every
   touched package, including new tests exercising real process lifecycle
   (SIGTERM, SIGKILL escalation, concurrent multi-process shutdown) against
   harmless real binaries - no GPU or real engine binary needed for that.

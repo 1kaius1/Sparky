@@ -20,6 +20,22 @@ ExecStart=/opt/sparky/bin/sparky-agent
 Restart=on-failure
 RestartSec=5s
 
+# KillMode=mixed - the default (control-group) sends SIGTERM to every
+# process in the unit's cgroup on stop, including any bare-metal-exec'd
+# engine child agent/runtime/baremetal is already tracking. That child then
+# gets SIGTERM twice - once from systemd directly, once from the agent's
+# own Shutdown() logic (agent/connection.Conn.Run) - and a second signal
+# arriving while an engine is still mid-graceful-shutdown from the first
+# can make it escalate to an abrupt abort instead of exiting cleanly
+# (confirmed against a real llama.cpp server: a second SIGTERM triggers its
+# own "second interrupt, terminating immediately" internal path). mixed
+# sends the stop signal to the main process only, leaving the agent's own
+# per-child SIGTERM-then-grace-period-then-SIGKILL logic as the only signal
+# path during a normal stop - systemd's cgroup-wide SIGKILL after
+# TimeoutStopSec still applies as a backstop if the agent process itself
+# hangs.
+KillMode=mixed
+
 # Modest hardening only - not ProtectSystem=strict/ReadWritePaths=, since
 # SPARKY_MODEL_STORAGE_PATH is operator-configured and its location isn't
 # knowable at packaging time; stricter sandboxing here would silently break
