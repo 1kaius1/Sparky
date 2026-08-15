@@ -973,8 +973,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing launch arguments are correct as a raw bare-metal command line
   for llama.cpp; vLLM's half of that question was deliberately not
   attempted this pass and remains open, tracked in PLANNING.md.
+- `sparky-agent setup` subcommand (`agent/provision`) - creates/verifies the
+  `serviceloop` system account, its model storage home directory, and
+  GPU-passthrough group membership, replacing the equivalent bash in
+  `scripts/packaging/lib/agent-common.sh` with a fakeable, unit-tested
+  implementation (mirroring `agent/telemetry`'s `commandRunner` seam).
+  Requires root, exits with a clear error otherwise. All three install
+  methods now call it automatically after placing the binary; also safe to
+  run by hand for diagnostics or to repair an already-provisioned node.
 
 ### Changed
+- `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
+  and `scripts/install_agent.sh`: account/group/model-storage-directory
+  provisioning moved into `sparky-agent setup` (see above) - the shell
+  library now only handles `secrets.env` materialization.
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
   `elevatedBy *string` instead of a required `string`, since a
   SuperAdmin-made change has no `Users` row to reference and

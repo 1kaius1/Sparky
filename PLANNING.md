@@ -1656,12 +1656,45 @@ the current active work, see Current Sprint / Active Work below.
         migrating to a dedicated repo later if warranted - see the 2026-08-15
         Decisions Log entry for the full design discussion (why a prebuilt
         binary rather than an agent-side source build; why GitHub Releases first)
-  - [ ] `sparky-agent setup` subcommand - creates/verifies the `serviceloop` system
+  - [x] `sparky-agent setup` subcommand - creates/verifies the `serviceloop` system
         account and its GPU-passthrough group membership (`video`/`render`,
         distro-dependent), idempotent, supports both environment-variable-driven and
         interactive invocation; `scripts/install.sh` is trimmed to placing the binary
         and systemd unit and delegates account provisioning to this subcommand rather
-        than running `useradd`/`usermod` itself
+        than running `useradd`/`usermod` itself.
+        Done - new `agent/provision` package (`Provisioner.EnsureServiceloopUser`/
+        `EnsureModelStorageDir`/`EnsureGPUGroupMembership`), a direct 1:1
+        translation of the three bash functions it replaces onto a fakeable
+        `runner` seam (mirroring `agent/telemetry`'s `commandRunner` idiom) -
+        real `go test` coverage this logic never had as bash, including branches
+        (user exists/missing, each GPU group present/absent independently,
+        command failures) the podman-based verification pass could only exercise
+        in combination, not in isolation. `cmd/sparky-agent setup` is the sole
+        caller: an explicit `os.Getuid() != 0` check (no existing Go code in
+        either binary had this precedent, though `install_agent.sh` already
+        checks this for itself) before calling into `agent/provision`, dispatched
+        in `main()` *before* `config.Load()` - `setup` needs none of the normal
+        agent env vars, and requiring them valid first would be circular, since
+        an operator typically hasn't gotten a bearer token to put in
+        `secrets.env` yet at the point they'd run this. `scripts/packaging/lib/agent-common.sh`
+        trimmed to keep only `ensure_secrets_file` (a different concern -
+        materializing a config file, never part of this migration);
+        `postinstall.sh`/`install_agent.sh` now call `/opt/sparky/bin/sparky-agent
+        setup` instead of the three removed bash functions. Verified two ways,
+        not just reasoned about: first, ran the compiled subcommand directly
+        against this project's own RTX 4090 laptop (no `serviceloop` account
+        existed at the time, having been fully purged after the earlier
+        hardware-validation pass) - confirmed it created the account, directory,
+        and group membership correctly, and that a second run was a true no-op.
+        Second, rebuilt the `.deb` with the wired-up packaging scripts and
+        re-ran the same disposable-Debian-podman-plus-real-systemd pass the
+        original packaging PR used, this time confirming `sparky-agent setup`'s
+        own banner actually appears in the install log, both `video`-only and
+        `video`+`render` group-detection branches still work (added a `render`
+        group mid-test, reinstalled, confirmed it joined), a reinstall stays
+        idempotent, and `apt purge` (untouched by this change) still behaves
+        exactly as before - `serviceloop` removed, `/opt/sparky/serviceloop`
+        deliberately left in place.
   - [ ] Validate the Docker/Podman runtime backend (real CDI GPU passthrough)
         against real DGX Spark hardware - the GB10 GPU supports passthrough to
         a container without affecting a display connected to it (NVIDIA's

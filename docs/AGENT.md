@@ -40,11 +40,12 @@ See `CLAUDE.md` for the full repo tree. Agent-specific code lives under:
 ```
 agent/
 - connection/          # Connection goroutine: dial, hello/auth handshake, heartbeat, reconnect-with-backoff
+- provision/           # serviceloop account, model storage dir, GPU-group membership - see `sparky-agent setup` below
 - runtime/
   - baremetal/      # Direct process exec, runs as `serviceloop` - for hosts without GPU passthrough, not specific to Spark
   - containers/      # Docker/Podman: shared Docker-Engine-API-compatible backend
 - telemetry/          # nvidia-smi and /proc collectors
-cmd/sparky-agent/      # Entry point
+cmd/sparky-agent/      # Entry point; `setup` subcommand (agent/provision's only caller)
 deploy/
 - systemd/sparky-agent.service   # Unit file, shared by all three install methods below
 - secrets.env.template            # Config template - see Configuration and Data Storage
@@ -83,13 +84,6 @@ into `dist/` (see PLANNING.md Decisions Log for why nfpm over hand-rolled
 `dpkg-deb`/`rpmbuild` or GoReleaser). All three land the binary at
 `/opt/sparky/bin/sparky-agent`, with a `/usr/local/bin/sparky-agent` symlink for
 convenience (`/opt/sparky/bin` isn't on any distro's default `$PATH`).
-
-<!-- Steps 1-2 below (serviceloop account creation and group membership) are
-planned to move into a `sparky-agent setup` subcommand alongside the v0.2.0
-bare-metal runtime backend - see PLANNING.md Decisions Log, 2026-08-07. Not yet
-implemented; all three install methods still do this work directly, in
-scripts/packaging/lib/agent-common.sh, shared by every method rather than
-duplicated. -->
 
 **.deb** (Debian/Ubuntu):
 
@@ -131,8 +125,9 @@ Not package-manager-owned, so the systemd unit installs to
 `/opt/sparky/share/sparky-agent/uninstall_agent.sh` so it can be run later even if
 the original tarball is gone.
 
-All three methods:
-- Create the `serviceloop` service account (bare-metal hosts use this account -
+All three methods invoke `sparky-agent setup` (see below) after placing the
+binary, which:
+- Creates the `serviceloop` service account (bare-metal hosts use this account -
   see SCHEMA.md Nodes), with its home directory at `/opt/sparky/serviceloop`
   (0750, owned by `serviceloop`) rather than the default `/home/serviceloop` -
   the systemd unit's `ProtectHome=true` makes `/home/*` inaccessible to the
@@ -160,6 +155,20 @@ All three methods:
 
 Only the owning service account and root can read `secrets.env` - see
 `ARCHITECTURE.md` Security Considerations for the reasoning.
+
+#### `sparky-agent setup`
+
+```bash
+sudo sparky-agent setup
+```
+
+Creates/verifies the `serviceloop` system account, its model storage home
+directory, and its GPU-passthrough group membership (`agent/provision`) -
+idempotent, safe to re-run. Requires root; exits with a clear error otherwise
+(no other subcommand in either binary self-checks this, but no other
+subcommand needs `useradd`/`usermod` either). All three install methods above
+call this automatically after placing the binary - running it by hand is only
+needed for diagnostics or to repair an already-provisioned node.
 
 Verified via `nfpm`-built packages installed/upgraded/removed/purged inside
 disposable Debian and Rocky Linux podman containers running real systemd
