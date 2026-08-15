@@ -2,16 +2,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # nfpm postinstall scriptlet (deb postinst / rpm %post) - see
-# scripts/packaging/nfpm.yaml. Sources the *installed* copy of
-# agent-common.sh (see that file's own doc comment for why) to perform the
-# same account/group/secrets-file setup every install method needs.
+# scripts/packaging/nfpm.yaml. `sparky-agent setup` (agent/provision)
+# creates/verifies the serviceloop account, its model storage directory,
+# and GPU-group membership; agent-common.sh's own ensure_secrets_file
+# handles the one remaining concern that subcommand doesn't - see that
+# file's own doc comment.
 set -e
+
+/opt/sparky/bin/sparky-agent setup
 
 . /opt/sparky/share/sparky-agent/agent-common.sh
 
-ensure_serviceloop_user
-ensure_model_storage_dir
-ensure_gpu_group_membership
 ensure_secrets_file /opt/sparky/share/sparky-agent/secrets.env.template
 
 systemctl daemon-reload
