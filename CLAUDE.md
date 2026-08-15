@@ -567,10 +567,18 @@ the user first - see `ARCHITECTURE.md` Audit Log for the existing scope
 
 See `PLANNING.md` for the full milestone breakdown and active goals.
 
-Currently targeting v0.1.0: core foundation built and validated against non-Spark
-hardware first (a laptop with an RTX 4090 and a Dell Precision workstation with an
-RTX 3080Ti), before the bare-metal runtime backend and real Spark-hardware
-validation in v0.2.0 - two separate goals, not one "Spark-specific" item; see
-`PLANNING.md` Decisions Log for why the sequencing runs this direction, and its
-2026-08-13 entry for why "Spark-specific" was never actually the right framing for
-the bare-metal backend itself.
+v0.1.0 (core foundation) is substantially complete, built and validated against
+non-Spark hardware first (a laptop with an RTX 4090 and a Dell Precision
+workstation with an RTX 3080Ti) - its one remaining item, CDI GPU passthrough
+verification for the Docker/Podman runtime backend, is blocked on real DGX Spark
+hardware not yet in hand, not unfinished work.
+
+v0.2.0's bare-metal runtime backend and its `sparky-agent setup` subcommand are
+also done, including real-hardware validation on that same RTX 4090 laptop - not
+just built and unit-tested, but actually run: a real inference engine loaded,
+served a request, and cleanly unloaded through it. Two real bugs that pass found
+and fixed are on record in `PLANNING.md`'s Decisions Log (2026-08-14/2026-08-15).
+v0.2.0's remaining items are engine-binary provisioning from GitHub Releases (not
+started) and the same Docker/Podman-on-Spark CDI validation v0.1.0 is waiting on -
+see `PLANNING.md` for the full milestone breakdown, decisions log, and what's
+next.
