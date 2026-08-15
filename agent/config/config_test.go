@@ -159,6 +159,48 @@ func TestLoad_NonBareMetalRuntimeBackend_NoModelStoragePathDefault(t *testing.T)
 	}
 }
 
+func TestLoad_BareMetalRuntimeBackend_DefaultsEngineInstallPath(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("SPARKY_RUNTIME_BACKEND", "bare-metal")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.EngineInstallPath != "/opt/sparky/serviceloop/engines" {
+		t.Errorf("EngineInstallPath = %q, want the bare-metal default %q", cfg.EngineInstallPath, "/opt/sparky/serviceloop/engines")
+	}
+}
+
+func TestLoad_BareMetalRuntimeBackend_ExplicitEngineInstallPathNotOverridden(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("SPARKY_RUNTIME_BACKEND", "bare-metal")
+	t.Setenv("SPARKY_ENGINE_INSTALL_PATH", "/mnt/engines")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.EngineInstallPath != "/mnt/engines" {
+		t.Errorf("EngineInstallPath = %q, want the explicitly configured %q", cfg.EngineInstallPath, "/mnt/engines")
+	}
+}
+
+func TestLoad_NonBareMetalRuntimeBackend_NoEngineInstallPathDefault(t *testing.T) {
+	setAllRequired(t) // SPARKY_RUNTIME_BACKEND=podman
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+
+	if cfg.EngineInstallPath != "" {
+		t.Errorf("EngineInstallPath = %q, want empty - the bare-metal default must not apply to podman", cfg.EngineInstallPath)
+	}
+}
+
 func TestLoad_MissingRequired_ReturnsError(t *testing.T) {
 	for _, missing := range requiredVars {
 		t.Run(missing, func(t *testing.T) {

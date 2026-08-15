@@ -14,6 +14,7 @@ import (
 
 	"github.com/1kaius1/Sparky/agent/config"
 	"github.com/1kaius1/Sparky/agent/connection"
+	"github.com/1kaius1/Sparky/agent/enginetransfer"
 	"github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/runtime/baremetal"
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
@@ -72,8 +73,9 @@ func main() {
 			"vllm":     cfg.VLLMBinaryPath,
 		},
 		ModelStoragePath:      cfg.ModelStoragePath,
+		EngineInstallPath:     cfg.EngineInstallPath,
 		TelemetryPollInterval: telemetryPollInterval,
-	}, runtimeBackend, transfer.New(), telemetry.NewCollector(), logger)
+	}, runtimeBackend, transfer.New(), enginetransfer.New(), telemetry.NewCollector(), logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

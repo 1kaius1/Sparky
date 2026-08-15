@@ -22,6 +22,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/config"
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/engineprovision"
 	"github.com/1kaius1/Sparky/internal/engines"
 	"github.com/1kaius1/Sparky/internal/events"
 	"github.com/1kaius1/Sparky/internal/httpapi"
@@ -94,6 +95,9 @@ func main() {
 	inventoryRepo := db.NewNodeModelInventoryRepository(pool)
 	overrideRepo := db.NewPermissionOverrideRepository(pool)
 
+	engineTransferRepo := db.NewEngineTransferRepository(pool)
+	engineInventoryRepo := db.NewNodeEngineInventoryRepository(pool)
+
 	// nodeService backs both the Nodes page's unguarded ListNodes read
 	// and, as of Dashboard UI Phase 9, the registration form's own write
 	// (RegisterNode) - the same value is passed twice below, once per
@@ -110,6 +114,16 @@ func main() {
 	// twice-passed-value reasoning as nodeService/profileService above.
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
 	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
+	// engineProvisionService has no HTTP caller yet - same "logic layer
+	// ahead of HTTP wiring" precedent as RBAC Phase B, the audit log, and
+	// the node registry originally shipped with (PLANNING.md), so it is
+	// not passed to httpapi.New below (unlike transferService, which
+	// already backs the Transfers page's read view). It is still
+	// constructed and wired into the onMessage dispatch below - the
+	// engine_transfer_progress handling direction is real infrastructure
+	// independent of whether anything can trigger a provisioning run via
+	// HTTP yet. See PLANNING.md's 2026-08-15 Decisions Log entry.
+	engineProvisionService := engineprovision.NewService(engineTransferRepo, engineInventoryRepo, agentRegistry, auditRecorder, logger)
 
 	// rbacService backs both the Users & permissions page's RBAC-gated
 	// roster read (ListUsers) and, as of Dashboard UI Phase 8, its
@@ -150,6 +164,9 @@ func main() {
 		switch env.Type {
 		case agentproto.TypeTransferProgress:
 			transferService.HandleTransferProgress(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypeEngineTransferProgress:
+			engineProvisionService.HandleEngineTransferProgress(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
 		case agentproto.TypeInstanceResult:
 			lifecycleService.HandleInstanceResult(nodeID, env)

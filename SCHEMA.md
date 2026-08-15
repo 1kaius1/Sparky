@@ -319,6 +319,56 @@ profiles (intent). This is what the launch-eligibility UI actually queries.
 | `placed_at` | timestamptz | |
 | `placed_via` | uuid, FK -> Model transfers.id | |
 
+---
+
+## Engine transfers
+
+Operation log for a compiled-engine binary provisioning run onto a node - the same
+shape as Model transfers (a long-running, progress-tracked transfer landing bytes on
+a specific node) but for engine software (llama.cpp today) rather than model weights.
+A separate table rather than folded into Model transfers: the source (Sparky's own
+maintainer-built GitHub Releases tarballs, checksum-verified) and destination shape
+(a versioned install directory, not a downloaded file tree) differ enough to warrant
+it, and conflating "model weights present on this node" with "engine binaries present
+on this node" would make Node model inventory's own meaning less precise. See
+`docs/AGENT.md` Engine binary provisioning for the on-disk layout this produces.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `dest_node_id` | uuid, FK -> Nodes.id | |
+| `engine_type` | enum | Reuses Model profiles' `engine_type` enum (`vllm` / `aphrodite` / `llamacpp`) - only `llamacpp` rows are realistic through this path today. Python-based engines get a different v0.3.0 clone-and-pip-install mechanism, not this one |
+| `version` | text | The release tag installed, e.g. `b4610` - always pinned, never a floating "latest" |
+| `status` | enum | `queued` / `transferring` / `completed` / `failed` / `cancelled` |
+| `bytes_transferred` / `bytes_total` | bigint | The compressed tarball download, not the installed size - see Node engine inventory's `size_bytes` for that |
+| `requested_by` | uuid, nullable, FK -> Users.id | Null when the break-glass SuperAdmin initiated the transfer - same reasoning as Model transfers' `requested_by` |
+| `requested_at` / `completed_at` | timestamptz | |
+| `error_message` | text, nullable | |
+
+---
+
+## Node engine inventory
+
+Current-state answer to "which engine binary versions are installed on this node
+right now" - the same shape as Node model inventory but for engine software, with one
+structural difference: multiple versions of the same engine are expected to coexist
+side by side on a node by design, not a transient state, so a newer provisioning run
+never deletes an older version's row. This is deliberate - it is what lets a future
+Model profile pin a specific engine version, so two otherwise-identical profiles can
+run against two different engine versions for direct comparison (not yet built - see
+`PLANNING.md`'s engine-version-pinning follow-up item).
+
+| Field | Type | Notes |
+|---|---|---|
+| `node_id` | uuid, FK -> Nodes.id | |
+| `engine_type` | enum | Same `engine_type` enum as Engine transfers |
+| `version` | text | Part of the primary key alongside `node_id`/`engine_type` - unlike Node model inventory's `(node_id, model_ref)` key, a second version does not overwrite the first |
+| `status` | enum | Reuses Node model inventory's `present` / `stale` / `removed` enum |
+| `install_path` | text | The node-local absolute path this version was installed to (`$SPARKY_ENGINE_INSTALL_PATH/<engine_type>/<version>`) - recorded so a later version-pinning resolution step can read it directly rather than reconstructing the on-disk convention |
+| `size_bytes` | bigint | The actual on-disk size after extraction - distinct from Engine transfers' `bytes_total` (the compressed download size) |
+| `placed_at` | timestamptz | |
+| `placed_via` | uuid, FK -> Engine transfers.id | |
+
 Clustered profiles require every participating node to have a full local copy of the
 model - most multi-node inference frameworks expect each rank to read the complete
 checkpoint from local disk. Launch-time node eligibility (Green / Blue / Red) is

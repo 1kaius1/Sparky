@@ -156,6 +156,88 @@ func TestEnvelope_RoundTrip_TransferProgress_WithError(t *testing.T) {
 	}
 }
 
+func TestEnvelope_RoundTrip_StartEngineTransfer(t *testing.T) {
+	want := StartEngineTransfer{TransferID: "engine-xfer-1", EngineType: "llamacpp", Version: "b4610"}
+
+	env, err := NewEnvelope(TypeStartEngineTransfer, "req-5", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got StartEngineTransfer
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("StartEngineTransfer = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_EngineTransferProgress(t *testing.T) {
+	want := EngineTransferProgress{
+		TransferID:       "engine-xfer-1",
+		BytesTransferred: 4096,
+		BytesTotal:       8192,
+		Status:           "transferring",
+	}
+
+	env, err := NewEnvelope(TypeEngineTransferProgress, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got EngineTransferProgress
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("EngineTransferProgress = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_EngineTransferProgress_Completed(t *testing.T) {
+	want := EngineTransferProgress{
+		TransferID:         "engine-xfer-1",
+		Status:             "completed",
+		InstallPath:        "/opt/sparky/serviceloop/engines/llamacpp/b4610",
+		InstalledSizeBytes: 123456,
+	}
+
+	env, err := NewEnvelope(TypeEngineTransferProgress, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got EngineTransferProgress
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("EngineTransferProgress = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_EngineTransferProgress_Failed(t *testing.T) {
+	want := EngineTransferProgress{
+		TransferID:   "engine-xfer-1",
+		Status:       "failed",
+		ErrorMessage: "checksum mismatch",
+	}
+
+	env, err := NewEnvelope(TypeEngineTransferProgress, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got EngineTransferProgress
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("EngineTransferProgress = %+v, want %+v", got, want)
+	}
+}
+
 func TestEnvelope_RoundTrip_LoadInstance(t *testing.T) {
 	want := LoadInstance{
 		InstanceID:               "instance-1",

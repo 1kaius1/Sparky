@@ -19,6 +19,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/1kaius1/Sparky/agent/enginetransfer"
 	agentruntime "github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
@@ -116,6 +117,45 @@ func (f *fakeTransferExecutor) Download(ctx context.Context, modelRef, destDir s
 }
 
 func (f *fakeTransferExecutor) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
+// fakeEngineTransferExecutor implements engineTransferExecutor without a
+// real HTTP download or `tar` shell-out - it records each call and, unless
+// told to block, immediately reports two progress calls (transferring, then
+// completed) through whatever ProgressFunc it's given, mirroring
+// fakeTransferExecutor.
+type fakeEngineTransferExecutor struct {
+	mu    sync.Mutex
+	calls []struct{ engineType, version, installRoot string }
+
+	// block/started - same purpose as fakeTransferExecutor's identically
+	// named fields.
+	block   chan struct{}
+	started chan struct{}
+}
+
+func (f *fakeEngineTransferExecutor) Provision(ctx context.Context, engineType, version, installRoot string, progress enginetransfer.ProgressFunc) (string, int64, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, struct{ engineType, version, installRoot string }{engineType, version, installRoot})
+	f.mu.Unlock()
+
+	if f.started != nil {
+		close(f.started)
+	}
+	if f.block != nil {
+		<-f.block
+	}
+
+	progress(enginetransfer.Progress{BytesTransferred: 0, BytesTotal: 100, Status: enginetransfer.StatusTransferring})
+	installPath := installRoot + "/" + engineType + "/" + version
+	progress(enginetransfer.Progress{BytesTransferred: 100, BytesTotal: 100, Status: enginetransfer.StatusCompleted, InstallPath: installPath, InstalledSizeBytes: 100})
+	return installPath, 100, nil
+}
+
+func (f *fakeEngineTransferExecutor) callCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.calls)
@@ -246,7 +286,7 @@ func TestConn_Run_SuccessfulHandshake_SendsCorrectHello(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -285,7 +325,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 	defer srv.Close()
 
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_bad-token", NodeName: "spark-1"}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -300,7 +340,7 @@ func TestConn_Run_RejectedHandshake_RetriesWithBackoff(t *testing.T) {
 
 func TestConn_Run_ContextCanceledBeforeDial_ReturnsPromptly(t *testing.T) {
 	cfg := Config{CentralURL: "ws://127.0.0.1:1/agent/connect", BearerToken: "spk_x", NodeName: "spark-1"}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 20 * time.Millisecond
 
@@ -337,7 +377,7 @@ func TestConn_Dispatch_StartTransfer_RunsDownloadAndReportsProgress(t *testing.T
 
 	exec := &fakeTransferExecutor{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, &fakeRuntimeBackend{}, exec, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, exec, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -412,7 +452,7 @@ func TestConn_Run_WaitsForInFlightTransferOnShutdown(t *testing.T) {
 
 	exec := &fakeTransferExecutor{block: make(chan struct{}), started: make(chan struct{})}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, &fakeRuntimeBackend{}, exec, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, exec, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -448,6 +488,135 @@ func TestConn_Run_WaitsForInFlightTransferOnShutdown(t *testing.T) {
 	}
 }
 
+func TestConn_Dispatch_StartEngineTransfer_RunsProvisionAndReportsProgress(t *testing.T) {
+	startEnv, err := agentproto.NewEnvelope(agentproto.TypeStartEngineTransfer, "", agentproto.StartEngineTransfer{
+		TransferID: "engine-xfer-1",
+		EngineType: "llamacpp",
+		Version:    "b4610",
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &startEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	exec := &fakeEngineTransferExecutor{}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", EngineInstallPath: "/opt/sparky/serviceloop/engines"}
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, exec, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var progressMsgs []agentproto.EngineTransferProgress
+	for i := 0; i < 2; i++ {
+		select {
+		case env := <-app.receivedMsgs:
+			if env.Type != agentproto.TypeEngineTransferProgress {
+				t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeEngineTransferProgress)
+			}
+			var p agentproto.EngineTransferProgress
+			if err := env.DecodePayload(&p); err != nil {
+				t.Fatalf("DecodePayload() error: %v", err)
+			}
+			progressMsgs = append(progressMsgs, p)
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out waiting for progress message %d", i+1)
+		}
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if got := exec.callCount(); got != 1 {
+		t.Fatalf("Provision was called %d times, want 1", got)
+	}
+	exec.mu.Lock()
+	call := exec.calls[0]
+	exec.mu.Unlock()
+	if call.engineType != "llamacpp" || call.version != "b4610" {
+		t.Errorf("call = %+v, want engineType=llamacpp version=b4610", call)
+	}
+	if call.installRoot != "/opt/sparky/serviceloop/engines" {
+		t.Errorf("installRoot = %q, want %q", call.installRoot, "/opt/sparky/serviceloop/engines")
+	}
+
+	if progressMsgs[0].TransferID != "engine-xfer-1" || progressMsgs[0].Status != enginetransfer.StatusTransferring {
+		t.Errorf("first progress message = %+v, want TransferID=engine-xfer-1 Status=%q", progressMsgs[0], enginetransfer.StatusTransferring)
+	}
+	if progressMsgs[1].Status != enginetransfer.StatusCompleted || progressMsgs[1].InstallPath == "" {
+		t.Errorf("second progress message = %+v, want Status=%q and a non-empty InstallPath", progressMsgs[1], enginetransfer.StatusCompleted)
+	}
+}
+
+func TestConn_Run_WaitsForInFlightEngineTransferOnShutdown(t *testing.T) {
+	startEnv, err := agentproto.NewEnvelope(agentproto.TypeStartEngineTransfer, "", agentproto.StartEngineTransfer{
+		TransferID: "engine-xfer-1",
+		EngineType: "llamacpp",
+		Version:    "b4610",
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &startEnv
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	exec := &fakeEngineTransferExecutor{block: make(chan struct{}), started: make(chan struct{})}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", EngineInstallPath: "/opt/sparky/serviceloop/engines"}
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, exec, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-exec.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for the engine transfer to start")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+		t.Fatal("Run() returned before its in-flight engine transfer finished, want it to wait")
+	case <-time.After(200 * time.Millisecond):
+	}
+
+	close(exec.block)
+
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return promptly after the in-flight engine transfer finished")
+	}
+}
+
 func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRunning(t *testing.T) {
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
@@ -469,7 +638,7 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 
 	runtime := &fakeRuntimeBackend{startID: "container-1"}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -554,7 +723,7 @@ func TestConn_Dispatch_LoadInstance_PartialOffload_NoGGUFFile_ReportsFailed(t *t
 
 	runtime := &fakeRuntimeBackend{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: t.TempDir()}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -612,7 +781,7 @@ func TestConn_Dispatch_LoadInstance_StartFails_ReportsFailed(t *testing.T) {
 
 	runtime := &fakeRuntimeBackend{startErr: errors.New("image pull failed")}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -661,7 +830,7 @@ func TestConn_Dispatch_UnloadInstance_StopsContainerAndReportsStopped(t *testing
 
 	runtime := &fakeRuntimeBackend{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -718,7 +887,7 @@ func TestConn_Run_WaitsForInFlightLoadOnShutdown(t *testing.T) {
 
 	runtime := &fakeRuntimeBackend{block: make(chan struct{}), called: make(chan struct{})}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -765,7 +934,7 @@ func TestConn_Run_CallsRuntimeShutdownOnExit(t *testing.T) {
 
 	runtime := &fakeRuntimeBackend{}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -810,7 +979,7 @@ func TestConn_Run_RuntimeShutdownError_Logged(t *testing.T) {
 
 	runtime := &fakeRuntimeBackend{shutdownErr: errors.New("stop failed")}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -852,7 +1021,7 @@ func TestConn_SendTelemetry_PushesReading(t *testing.T) {
 		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
 		TelemetryPollInterval: 20 * time.Millisecond,
 	}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, collector, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, collector, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -906,7 +1075,7 @@ func TestConn_SendTelemetry_ReadFails_NoMessageSent(t *testing.T) {
 		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
 		TelemetryPollInterval: 20 * time.Millisecond,
 	}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, collector, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, collector, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 
@@ -943,7 +1112,7 @@ func TestConn_SendTelemetry_ZeroInterval_DisabledNotPanicked(t *testing.T) {
 
 	// TelemetryPollInterval left at its zero value.
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
-	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
 	conn.maxBackoff = 50 * time.Millisecond
 

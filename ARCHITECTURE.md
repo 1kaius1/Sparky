@@ -165,6 +165,14 @@ Handles both Hugging Face downloads and peer-to-peer rsync replication over the
 cluster link, writing to Model transfers and updating Node model inventory on
 completion. Computes the free-space side of the Blue-state eligibility check.
 
+#### Engine Provisioning
+Dispatches a compiled-engine binary provisioning run to a node's Engine Transfer
+Executor, writing to Engine transfers and updating Node engine inventory on
+completion - the same shape as the Model Transfer Orchestrator above, but
+Admin/SuperAdmin-gated (node-level infrastructure provisioning, not a PowerDev-
+grantable capability like model store management) and with no HTTP handler or
+dashboard form yet - logic and agent-side mechanics only so far, see `PLANNING.md`.
+
 #### Metrics Ingestion & Retention
 Polls agents for telemetry on an interval, writes to Metrics, and runs two background
 jobs: downsampling raw data older than 6 months into aggregates, and exporting those
@@ -210,6 +218,16 @@ configurable path on Docker/Podman hosts). Deletion of a local model copy to fre
 space is a distinct action from unloading a running instance - see `SCHEMA.md`
 Permission overrides.
 
+#### Engine Transfer Executor
+Bare-metal only. Downloads a maintainer-built compiled-engine release tarball
+(`llamacpp` today) and its checksum from Sparky's own GitHub Releases, verifies it,
+and extracts into a versioned install directory under `SPARKY_ENGINE_INSTALL_PATH`,
+atomically repointing a `latest` symlink at the newly-installed version - see
+`docs/AGENT.md` Engine binary provisioning and `SCHEMA.md` Engine transfers / Node
+engine inventory. A separate component from the Transfer Executor above: different
+source, mandatory checksum verification, and a versioned-install destination shape
+rather than a plain downloaded file tree.
+
 ---
 
 ## Protocol
@@ -250,7 +268,8 @@ Browser -> Reverse Proxy (TLS termination) -> HTTP Listener
 
 ```
 Service Layer -> Agent-Communication Layer -> WebSocket message (JSON, request ID)
-              -> Agent Command Loop -> Runtime Backend / Transfer Executor / Telemetry
+              -> Agent Command Loop -> Runtime Backend / Transfer Executor /
+                 Engine Transfer Executor / Telemetry
               -> WebSocket response/stream -> Agent-Communication Layer -> Service Layer
 ```
 
