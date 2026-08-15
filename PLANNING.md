@@ -37,8 +37,8 @@ and its GPU/CPU/memory usage, and an admin can see exactly who did what, when.
 
 ## Current Status
 
-**Status:** v0.1.0 well underway - see Milestones below for the authoritative,
-phase-level detail; this is a summary only.
+**Status:** v0.1.0 substantially complete; v0.2.0 well underway - see Milestones
+below for the authoritative, phase-level detail; this is a summary only.
 
 Architecture and design are complete. Built and merged: AD/LDAP bind auth and
 session handling; Users/RBAC tiers/SuperAdmin break-glass; the `sparky setup` CLI
@@ -83,8 +83,25 @@ single dispatching callback `cmd/sparky-server/main.go` had been passing
 `nil` for, and added SSE wiring (a new `internal/events` broker plus
 `GET /events`) so the browser reflects a load/unload/transfer/telemetry
 change without a manual reload. Dashboard UI is now fully done - all
-eleven phases. The bare-metal install script has not been started - it is
-the current active work, see Current Sprint / Active Work below.
+eleven phases. v0.1.0's only remaining item is real-hardware CDI GPU
+passthrough verification for the Docker/Podman runtime backend, blocked
+on DGX Spark hardware not yet in hand - a known, documented gap, not
+unfinished work.
+
+v0.2.0 is well underway. Bare-metal packaging (`.deb`/`.rpm`/tarball,
+`scripts/build_packages.sh` via `nfpm`) is done. The bare-metal runtime
+backend itself (`agent/runtime/baremetal`) is done, including real-hardware
+validation - not just built and unit-tested, but actually run: a real
+`llamacpp` profile loaded as a genuine child process of `sparky-agent`
+running as `serviceloop` on this project's own RTX 4090 laptop, GPU
+offload confirmed via `nvidia-smi`, a real inference request served, and
+clean unload/shutdown confirmed - see the 2026-08-14/2026-08-15 Decisions
+Log entries for the two real bugs that validation pass found and fixed
+(the `/opt/sparky/serviceloop` home-directory fix, `KillMode=mixed`). The
+`sparky-agent setup` subcommand is also done, with its own real-hardware
+verification. v0.2.0's remaining items are engine-binary provisioning from
+GitHub Releases (not started) and the same Docker/Podman-on-Spark CDI
+validation v0.1.0 is waiting on - see Current Sprint / Active Work below.
 
 ---
 
@@ -1782,9 +1799,15 @@ duplicate checklist.
   done, including real-hardware validation against the RTX 4090 laptop -
   see that item's own entry above for the two real bugs found and fixed in
   the process (`/opt/sparky/serviceloop`, `KillMode=mixed`). The
-  `sparky-agent setup` subcommand and the Docker/Podman backend's own
-  real-hardware CDI validation remain separate, still-open v0.2.0 items -
-  see Dependencies and Blockers below.
+  `sparky-agent setup` subcommand is also done (`agent/provision`, real
+  `go test` coverage, verified both directly on that same laptop and via
+  the disposable-podman-plus-real-systemd technique - see that item's own
+  entry above). v0.2.0's remaining open items are engine-binary
+  provisioning from GitHub Releases (not started - see the 2026-08-15
+  Decisions Log entry for the design) and the Docker/Podman backend's own
+  real-hardware CDI validation, which - like v0.1.0's identical remaining
+  item - is blocked on real DGX Spark hardware, not something to pick up
+  as "next up" in the usual sense; see Dependencies and Blockers below.
 
 ---
 
