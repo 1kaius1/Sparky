@@ -205,7 +205,7 @@ that generalizes to any Linux box with an NVIDIA GPU without modification.
 
 #### Transfer Executor & Local Store Manager
 Executes downloads and rsync replications, writing to node-local storage
-(`/home/serviceloop/models/` on a bare-metal host; a per-`runtime_backend`
+(`/opt/sparky/serviceloop/models/` on a bare-metal host; a per-`runtime_backend`
 configurable path on Docker/Podman hosts). Deletion of a local model copy to free
 space is a distinct action from unloading a running instance - see `SCHEMA.md`
 Permission overrides.

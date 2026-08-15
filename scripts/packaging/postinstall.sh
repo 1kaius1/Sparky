@@ -10,6 +10,7 @@ set -e
 . /opt/sparky/share/sparky-agent/agent-common.sh
 
 ensure_serviceloop_user
+ensure_model_storage_dir
 ensure_gpu_group_membership
 ensure_secrets_file /opt/sparky/share/sparky-agent/secrets.env.template
 

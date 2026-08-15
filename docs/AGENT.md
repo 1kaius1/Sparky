@@ -133,9 +133,17 @@ the original tarball is gone.
 
 All three methods:
 - Create the `serviceloop` service account (bare-metal hosts use this account -
-  see SCHEMA.md Nodes) and join it to whichever of the `video`/`render` groups
-  actually exist on this distro/driver combination (both are joined if both
-  exist - which one actually gates GPU device access varies)
+  see SCHEMA.md Nodes), with its home directory at `/opt/sparky/serviceloop`
+  (0750, owned by `serviceloop`) rather than the default `/home/serviceloop` -
+  the systemd unit's `ProtectHome=true` makes `/home/*` inaccessible to the
+  running process, so this sidesteps that entirely instead of needing an
+  exception carved out. This is also the parent of
+  `SPARKY_MODEL_STORAGE_PATH`'s bare-metal default (see Configuration below) -
+  a purge deliberately leaves its contents (real downloaded model data) in
+  place, same reasoning as leaving `secrets.env` behind on a plain `remove`.
+  Also joins the account to whichever of the `video`/`render` groups actually
+  exist on this distro/driver combination (both are joined if both exist -
+  which one actually gates GPU device access varies)
 - Install `/etc/sparky-agent/secrets.env` (0600, owned by `serviceloop`) from the
   packaged template, but only if it doesn't already exist - an upgrade never
   overwrites an already-configured secrets file
@@ -231,7 +239,7 @@ come from Secrets, identically to the server.
 | `SPARKY_BEARER_TOKEN`            | Yes      | -       | Presented at connect time - see `ARCHITECTURE.md` Protocol |
 | `SPARKY_NODE_NAME`               | Yes      | -       | Must match this node's registered name in the central app |
 | `SPARKY_RUNTIME_BACKEND`         | Yes      | -       | `docker`, `podman`, or `bare-metal` - see `SCHEMA.md` Nodes |
-| `SPARKY_MODEL_STORAGE_PATH`      | No       | `/home/serviceloop/models` on a bare-metal host | Per-`runtime_backend` configurable, not hardcoded |
+| `SPARKY_MODEL_STORAGE_PATH`      | No       | `/opt/sparky/serviceloop/models` on a bare-metal host | Per-`runtime_backend` configurable, not hardcoded |
 | `SPARKY_LLAMACPP_BINARY_PATH`    | No       | -       | Bare-metal only - local `llama.cpp` server executable for a `llamacpp` `load_instance`. Unset means this node doesn't run that engine type |
 | `SPARKY_VLLM_BINARY_PATH`        | No       | -       | Bare-metal only - local vLLM executable/entrypoint for a `vllm` `load_instance`. Unset means this node doesn't run that engine type |
 | `SPARKY_TELEMETRY_POLL_INTERVAL` | No       | `5s`    | How often telemetry is collected and pushed              |

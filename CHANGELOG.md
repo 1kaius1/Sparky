@@ -941,8 +941,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `vllm`/`llamacpp` have adapters today) - a load for an engine type with
   no configured path fails clearly via the existing `InstanceResult`
   `status=failed` path. `SPARKY_MODEL_STORAGE_PATH`'s documented
-  bare-metal default (`/home/serviceloop/models`) is now actually applied
-  in `agent/config.Load` when unset. On agent shutdown (SIGTERM/SIGINT),
+  bare-metal default (`/opt/sparky/serviceloop/models`) is now actually
+  applied in `agent/config.Load` when unset - `serviceloop`'s home
+  directory moved there from `/home/serviceloop` (packaging's `useradd`
+  gained `--home-dir`, plus a new idempotent directory-creation step) after
+  real-hardware validation prep found the original path unreachable under
+  the systemd unit's `ProtectHome=true`, confirmed via a disposable
+  podman-plus-real-systemd install. On agent shutdown (SIGTERM/SIGINT),
   every process the bare-metal backend is still tracking is sent SIGTERM,
   given a grace period, then SIGKILLed if still running - closing the gap
   docs/AGENT.md's Signal Handling section previously described only as a

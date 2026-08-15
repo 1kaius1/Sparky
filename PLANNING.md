@@ -1587,26 +1587,40 @@ the current active work, see Current Sprint / Active Work below.
           today) - both design forks confirmed with the user before
           building, see the 2026-08-13 Decisions Log entries below.
           `SPARKY_MODEL_STORAGE_PATH`'s bare-metal default
-          (`/home/serviceloop/models`) is now actually implemented in
-          `agent/config.Load`, closing the Known Issues row that named
-          this exact gap. Verified via `go test -race` across every
+          (`/opt/sparky/serviceloop/models` - corrected from an initial
+          `/home/serviceloop/models`, see the dated Decisions Log entry
+          below for why) is now actually implemented in `agent/config.Load`,
+          closing the Known Issues row that named this exact gap. Verified via `go test -race` across every
           touched package, including new `agent/runtime/baremetal` tests
           exercising real process lifecycle (SIGTERM, SIGKILL escalation
           on a SIGTERM-ignoring process, `Shutdown` stopping multiple
           tracked processes concurrently) against harmless real binaries
           (`/bin/sh`) already present on any Linux box - no GPU or real
           engine binary needed for that.
-    - [ ] Real hardware validation against the RTX 4090 laptop - not done
-          this pass. This sandbox has no GPU and no real vLLM/llama.cpp
-          install (same already-documented gap as CDI passthrough and
-          `nvidia-smi` telemetry verification). A new Known Issues row
-          names the specific, real uncertainty this leaves open: whether
-          an engine adapter's existing `Args` (built assuming a container
-          image's own baked-in entrypoint) are also correct as a raw
-          bare-metal command line - confirmed fine for llama.cpp (its
-          server binary takes flags directly), genuinely unverified for
-          vLLM (whose CLI has used both a flag-only form and a `vllm
-          serve <model>` subcommand form across versions).
+    - [ ] Real hardware validation against the RTX 4090 laptop - in progress,
+          running directly on that machine (confirmed real GPU: an NVIDIA
+          GeForce RTX 4090 with 16GB VRAM, the mobile/laptop variant, already
+          driving the host's own Xorg session - exactly the "GPU already
+          claimed by the host OS" case bare-metal exists for). First finding,
+          before any GPU-specific step was even reached: the default model
+          storage path bug described above (`/home/serviceloop/models`
+          unreachable under `ProtectHome=true` and never created by
+          `useradd --no-create-home` in the first place) - fixed and
+          confirmed via the same disposable-podman-plus-real-systemd
+          technique the original packaging PR used, not by guessing: a
+          transient systemd unit run as `serviceloop` with `ProtectHome=true`
+          could write to the new `/opt/sparky/serviceloop/models` path and
+          got `Permission denied` on the old `/home/serviceloop` path,
+          reproducing and then closing the bug in the same pass. Remaining
+          steps (real model load, GPU offload confirmation via `nvidia-smi`,
+          the SIGTERM/SIGKILL shutdown path, telemetry cross-check) not yet
+          done. A new Known Issues row names the specific, real uncertainty
+          still open once those are: whether an engine adapter's existing
+          `Args` (built assuming a container image's own baked-in entrypoint)
+          are also correct as a raw bare-metal command line - confirmed fine
+          for llama.cpp (its server binary takes flags directly), genuinely
+          unverified for vLLM (whose CLI has used both a flag-only form and
+          a `vllm serve <model>` subcommand form across versions).
   - [ ] `sparky-agent setup` subcommand - creates/verifies the `serviceloop` system
         account and its GPU-passthrough group membership (`video`/`render`,
         distro-dependent), idempotent, supports both environment-variable-driven and
@@ -1820,6 +1834,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-13 | `apt remove`/`dnf remove` stop and disable the service and remove the binary, but leave `serviceloop` and `/etc/sparky-agent/secrets.env` in place; only `apt purge` (native dpkg semantics) removes both. RPM has no equivalent purge concept at all - researched directly (`%preun`/`%postun` scriptlets only ever receive a numeric install-count, 0 or 1+, with no separate "and delete everything" signal `dnf`/`rpm` can produce, unlike dpkg's own `purge` argument) rather than assumed - so `scripts/packaging/purge_rpm.sh` is copied to a package-unowned path (`/usr/local/sbin/sparky-agent-purge.sh`) by the `preremove` scriptlet just before removal deletes everything else the package owns, specifically so a real cleanup command still exists on the box afterward, and `docs/AGENT.md` states the RPM gap plainly rather than pretending purge works the same way there | Standard Debian/RPM packaging convention for the deb side (avoids orphaned file ownership and accidental credential loss on a routine `remove`); the RPM half is an honest answer to a real platform limitation, not a workaround - discovered mid-implementation when a first attempt at `purge_rpm.sh` was ordinary package content and got deleted by a plain `dnf remove` before it could ever run, caught by the container-based verification pass (see this milestone's own "Done" writeup) and fixed by copying it out before removal rather than by loosening what plain `remove` does | A plain `remove` that also deletes `serviceloop`/`secrets.env` (rejected: diverges from standard packaging conventions and risks silently destroying a real bearer token on a routine removal someone expected to be reversible) |
 | 2026-08-13 | The bare-metal runtime backend (`agent/runtime/baremetal`) and the existing Docker/Podman backend now share one `agent/runtime.Backend` interface (`Start`/`Stop`/`Shutdown`, plus a generalized `runtime.Spec` superseding the old `containers.Spec`), rather than `agent/connection` branching on `cfg.RuntimeBackend` between two differently-shaped interfaces - confirmed with the user as an explicit two-option choice | Matches the one-interface/swap-the-concrete-implementation pattern already used for `transferExecutor`/`telemetryCollector` in the same package - `agent/connection` stays backend-agnostic, and `cmd/sparky-agent` picks the concrete implementation once at startup from `cfg.RuntimeBackend`. `containers.Backend` was refactored onto the shared interface with no behavior change (`Start`/`Stop` derive the container name internally via the existing `InstanceContainerName`, same as before; `Shutdown` is a no-op, matching the already-documented "containers survive an agent restart" design) | Two separate interfaces with `connection.go` branching between them (offered as the lower-upfront-restructuring alternative; rejected in favor of keeping backend-type awareness out of `connection.go` entirely) |
 | 2026-08-13 | `agentproto.LoadInstance` gained an `EngineType` field (plain string, e.g. `"vllm"`/`"llamacpp"` - same values as `db.ProfileEngineType`, carried without an `internal/db` import per this package's existing `TransferProgress.Status`/`InstanceResult.Status` convention), and the bare-metal backend resolves which local executable to exec via one new optional env var per engine type (`SPARKY_LLAMACPP_BINARY_PATH`/`SPARKY_VLLM_BINARY_PATH`, only `vllm`/`llamacpp` having adapters today) - confirmed with the user as an explicit two-option choice | `engines.LaunchSpec.Image` is a Docker image reference with no bare-metal meaning at all - there was no field anywhere telling the agent which local binary to run for a given engine, a real protocol gap this milestone's research surfaced rather than something `agent/connection` could work around on its own. `internal/lifecycle.Service.LoadInstance` already has `profile.EngineType` in scope where it builds this payload, so populating the new field cost one line. A binary's on-disk location is inherently host-specific (venv paths, install locations vary per machine), so the agent - not the central app - is the right place to resolve it; a load request for an engine type with no configured path on that node fails clearly through the existing `InstanceResult` `status=failed` path, the same mechanism already used for every other real launch failure | A single `SPARKY_ENGINE_BIN_DIR` directory convention with fixed expected binary names inside it (e.g. `llama-server`, `vllm`) instead of one env var per engine type - offered as the lower-config-sprawl alternative as more engines are added later; rejected in favor of an explicit named path per engine type, consistent with every other environment variable in this project being explicitly named rather than convention-based |
+| 2026-08-14 | `serviceloop`'s home directory (and, with it, the bare-metal runtime backend's default `SPARKY_MODEL_STORAGE_PATH`) moved from `/home/serviceloop`/`/home/serviceloop/models` to `/opt/sparky/serviceloop`/`/opt/sparky/serviceloop/models` - `scripts/packaging/lib/agent-common.sh`'s `useradd` gained `--home-dir`, and a new `ensure_model_storage_dir` function (`install -d`, run after `ensure_serviceloop_user` specifically because `install -o serviceloop -g serviceloop` needs that account to already exist to resolve the ownership) creates it on every install and upgrade | Found by inspection, before any GPU hardware was touched, while preparing the real-hardware validation runbook: `deploy/systemd/sparky-agent.service`'s `ProtectHome=true` makes all of `/home/*` inaccessible to the running process, and `useradd --no-create-home` never created `/home/serviceloop` in the first place - the documented bare-metal default path would have failed outright under the real packaged install, the very first thing hardware validation would have hit. `/opt/sparky` was chosen over the alternatives (a `/var/lib/sparky-agent/models`-style FHS location, or dropping `ProtectHome=true`/switching to `--create-home`) because it keeps every sparky-agent-owned path under the one tree the binary and packaged share files already live in, and sidesteps `ProtectHome=true` entirely rather than needing an exception carved out of it - `/opt` isn't a path that directive touches at all. `agent/transfer.Executor.Download` already `MkdirAll`s everything below the model storage root at write time, so the fix only needed to ensure the home directory itself exists and is `serviceloop`-owned. `userdel serviceloop` (no `-r`, unchanged) still doesn't touch directory contents on purge, so real downloaded model data survives a purge today exactly as it already would have under the old path - no new deletion behavior added. Confirmed fixed, not just reasoned about, by building the real `.deb`, installing it inside a disposable Debian container running real systemd (the same `--systemd=always`-plus-baked-in-systemd-image technique the original packaging PR used), and running a transient systemd unit as `serviceloop` with `ProtectHome=true` in effect: it could write to the new path and got `Permission denied` on the old one, reproducing and closing the bug in the same pass. Reinstalling on top of the existing account confirmed the fix is idempotent and leaves prior model data in place | A `/var/lib/sparky-agent/models` FHS-conventional location (considered; rejected in favor of consolidating under the already-established `/opt/sparky` tree instead of introducing a second top-level path); dropping `ProtectHome=true` and switching to `useradd --create-home` (considered; rejected as weakening the unit's hardening for no reason, when sidestepping the directive entirely was available instead) |
 
 ---
 
