@@ -20,10 +20,31 @@
 # doesn't already exist. Must be idempotent - this runs on every package
 # install *and* every upgrade (see postinstall.sh), and re-running useradd
 # on an existing account is a hard failure, not a no-op.
+#
+# --home-dir points at /opt/sparky/serviceloop rather than the useradd
+# default of /home/serviceloop - the systemd unit's ProtectHome=true makes
+# /home/* inaccessible to the running process, so a home directory under
+# /home would be unreachable by the agent regardless of whether it exists.
+# --no-create-home is kept: the directory itself is created explicitly by
+# ensure_model_storage_dir below, not via useradd's own skel-copying, which
+# is irrelevant for a system account and less predictable to reason about.
 ensure_serviceloop_user() {
     if ! id -u serviceloop >/dev/null 2>&1; then
-        useradd --system --no-create-home --shell /usr/sbin/nologin serviceloop
+        useradd --system --no-create-home --home-dir /opt/sparky/serviceloop --shell /usr/sbin/nologin serviceloop
     fi
+}
+
+# ensure_model_storage_dir creates serviceloop's home directory - also the
+# parent of the bare-metal runtime backend's default SPARKY_MODEL_STORAGE_PATH
+# (agent/config's bareMetalDefaultModelStoragePath) - idempotent and safe to
+# re-run on every install and upgrade, same as ensure_gpu_group_membership.
+# Deliberately under /opt/sparky rather than /home, so ProtectHome=true never
+# needs an exception carved out for it - see ensure_serviceloop_user's own
+# comment. agent/transfer.Executor.Download creates everything below this
+# directory itself at write time; this only needs to ensure the root exists
+# and is serviceloop-owned.
+ensure_model_storage_dir() {
+    install -d -o serviceloop -g serviceloop -m 0750 /opt/sparky/serviceloop
 }
 
 # ensure_gpu_group_membership joins serviceloop to whichever of video/render

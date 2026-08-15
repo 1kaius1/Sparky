@@ -43,10 +43,14 @@ type required struct {
 // when RuntimeBackend is "bare-metal" and the variable is unset - see
 // docs/AGENT.md Configuration and Install (bare metal), which already
 // documents this as the bare-metal default (the serviceloop account's own
-// home directory). No such default exists for docker/podman, where the
-// value is always operator-configured to wherever the container mount
-// should point.
-const bareMetalDefaultModelStoragePath = "/home/serviceloop/models"
+// home directory, created by scripts/packaging/lib/agent-common.sh's
+// ensure_model_storage_dir). Deliberately under /opt/sparky rather than
+// /home - the systemd unit's ProtectHome=true makes /home/* inaccessible to
+// the running process, so a path under /home would be unreachable
+// regardless of whether it existed. No such default exists for
+// docker/podman, where the value is always operator-configured to wherever
+// the container mount should point.
+const bareMetalDefaultModelStoragePath = "/opt/sparky/serviceloop/models"
 
 // Load reads and validates configuration from the environment, failing fast
 // if anything required is missing.

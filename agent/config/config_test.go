@@ -126,8 +126,8 @@ func TestLoad_BareMetalRuntimeBackend_DefaultsModelStoragePath(t *testing.T) {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
 
-	if cfg.ModelStoragePath != "/home/serviceloop/models" {
-		t.Errorf("ModelStoragePath = %q, want the bare-metal default %q", cfg.ModelStoragePath, "/home/serviceloop/models")
+	if cfg.ModelStoragePath != "/opt/sparky/serviceloop/models" {
+		t.Errorf("ModelStoragePath = %q, want the bare-metal default %q", cfg.ModelStoragePath, "/opt/sparky/serviceloop/models")
 	}
 }
 
