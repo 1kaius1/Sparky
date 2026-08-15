@@ -32,6 +32,19 @@ type Config struct {
 	// error instead. Unused by docker/podman nodes.
 	LlamaCPPBinaryPath string
 	VLLMBinaryPath     string
+
+	// EngineInstallPath is the root directory agent/enginetransfer installs
+	// provisioned compiled-engine binaries into - SPARKY_ENGINE_INSTALL_PATH,
+	// optional, defaulting to bareMetalDefaultEngineInstallPath on a
+	// bare-metal node the same way ModelStoragePath does. Distinct from
+	// LlamaCPPBinaryPath/VLLMBinaryPath: those still point at one specific
+	// executable an operator configures once
+	// ($SPARKY_ENGINE_INSTALL_PATH/<engine_type>/latest/<binary>), while this
+	// is the directory a provisioning run manages underneath - see
+	// PLANNING.md's 2026-08-15 Decisions Log entry. Meaningless for
+	// docker/podman nodes, which get engine software via container images,
+	// not this mechanism.
+	EngineInstallPath string
 }
 
 type required struct {
@@ -52,6 +65,12 @@ type required struct {
 // the container mount should point.
 const bareMetalDefaultModelStoragePath = "/opt/sparky/serviceloop/models"
 
+// bareMetalDefaultEngineInstallPath is SPARKY_ENGINE_INSTALL_PATH's default
+// when RuntimeBackend is "bare-metal" and the variable is unset - a sibling
+// of bareMetalDefaultModelStoragePath under the same serviceloop-owned
+// /opt/sparky/serviceloop tree, for the same ProtectHome=true reasoning.
+const bareMetalDefaultEngineInstallPath = "/opt/sparky/serviceloop/engines"
+
 // Load reads and validates configuration from the environment, failing fast
 // if anything required is missing.
 func Load() (*Config, error) {
@@ -62,6 +81,7 @@ func Load() (*Config, error) {
 		LogFormat:             getEnvDefault("LOG_FORMAT", "json"),
 		LlamaCPPBinaryPath:    os.Getenv("SPARKY_LLAMACPP_BINARY_PATH"),
 		VLLMBinaryPath:        os.Getenv("SPARKY_VLLM_BINARY_PATH"),
+		EngineInstallPath:     os.Getenv("SPARKY_ENGINE_INSTALL_PATH"),
 	}
 
 	fields := []required{
@@ -87,6 +107,9 @@ func Load() (*Config, error) {
 
 	if cfg.ModelStoragePath == "" && cfg.RuntimeBackend == "bare-metal" {
 		cfg.ModelStoragePath = bareMetalDefaultModelStoragePath
+	}
+	if cfg.EngineInstallPath == "" && cfg.RuntimeBackend == "bare-metal" {
+		cfg.EngineInstallPath = bareMetalDefaultEngineInstallPath
 	}
 
 	return cfg, nil

@@ -251,9 +251,51 @@ come from Secrets, identically to the server.
 | `SPARKY_MODEL_STORAGE_PATH`      | No       | `/opt/sparky/serviceloop/models` on a bare-metal host | Per-`runtime_backend` configurable, not hardcoded |
 | `SPARKY_LLAMACPP_BINARY_PATH`    | No       | -       | Bare-metal only - local `llama.cpp` server executable for a `llamacpp` `load_instance`. Unset means this node doesn't run that engine type |
 | `SPARKY_VLLM_BINARY_PATH`        | No       | -       | Bare-metal only - local vLLM executable/entrypoint for a `vllm` `load_instance`. Unset means this node doesn't run that engine type |
+| `SPARKY_ENGINE_INSTALL_PATH`     | No       | `/opt/sparky/serviceloop/engines` on a bare-metal host | Bare-metal only - root directory a `start_engine_transfer` provisioning run installs into. See Engine binary provisioning below |
 | `SPARKY_TELEMETRY_POLL_INTERVAL` | No       | `5s`    | How often telemetry is collected and pushed              |
 | `LOG_LEVEL`                      | No       | `info`  | |
 | `LOG_FORMAT`                     | No       | `json`  | |
+
+### Engine binary provisioning
+
+Self-service download/install of a maintainer-built compiled-engine release
+(`llamacpp` today - see PLANNING.md's 2026-08-15 Decisions Log entry for why Python-
+based engines like vLLM use a different v0.3.0 mechanism instead), triggered by an
+Admin/SuperAdmin from the central app (`internal/engineprovision`, not yet wired to
+an HTTP handler or UI form - logic and agent-side mechanics only so far) and executed
+by `agent/enginetransfer` on the target node: download the release tarball and its
+sibling `.sha256` checksum file from Sparky's own GitHub Releases, verify the
+checksum, extract into a versioned install directory, and atomically repoint a
+`latest` symlink at it:
+
+```
+$SPARKY_ENGINE_INSTALL_PATH/
+  llamacpp/
+    b4523/              # a previously-installed version - left in place, not
+      llama-server       # deleted, when a newer one is provisioned
+      lib*.so
+    b4610/              # most recently provisioned version
+      llama-server
+      lib*.so
+    latest -> b4610/    # symlink, repointed atomically on each successful run
+```
+
+Multiple versions coexist on disk by design, not as a transient state - this is what
+lets a future Model profile pin a specific engine version for side-by-side comparison
+against another (not yet built - see `PLANNING.md`'s deferred `engine_version`
+follow-up item). `SPARKY_LLAMACPP_BINARY_PATH`/`SPARKY_VLLM_BINARY_PATH` semantics
+are unchanged by any of this - still a static, operator-set path to one executable,
+per docs/AGENT.md Configuration above. The one-time setup step after a version is
+first provisioned: point `SPARKY_LLAMACPP_BINARY_PATH` at
+`$SPARKY_ENGINE_INSTALL_PATH/llamacpp/latest/llama-server` and restart the agent
+(`systemctl restart sparky-agent`) - provisioning a later version only swaps the
+symlink target, so no further config edit is needed, though a restart is still
+required to pick up the new binary for the agent's next `load_instance`, matching
+this file's existing "config change requires a restart" policy.
+
+Checksum verification is mandatory here, unlike the Hugging Face Transfer Executor's
+own model-weight downloads (`agent/transfer`), which perform none - see
+`SCHEMA.md` Engine transfers.
 
 ---
 
@@ -274,6 +316,11 @@ loop:
 - **Transfer goroutines**: one per active transfer, so a long-running download or
   rsync replication never blocks command handling. Progress is streamed back
   periodically, not just on completion.
+- **Engine transfer goroutines**: one per active engine binary provisioning run
+  (`agent/enginetransfer`), tracked in their own `sync.WaitGroup` separate from
+  Transfer goroutines' - a model-weight download and an engine provisioning run are
+  unrelated operations with no reason to block each other's shutdown wait. See Engine
+  binary provisioning above.
 
 `context.Context` is propagated through all of these for cancellation on shutdown;
 `sync.WaitGroup` tracks in-flight transfers so graceful shutdown can wait for them to

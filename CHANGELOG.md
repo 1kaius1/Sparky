@@ -981,6 +981,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Requires root, exits with a clear error otherwise. All three install
   methods now call it automatically after placing the binary; also safe to
   run by hand for diagnostics or to repair an already-provisioned node.
+- Agent: compiled-engine binary provisioning from GitHub Releases
+  (`agent/enginetransfer`, `internal/engineprovision`) - self-service
+  download/install of a maintainer-built engine release (`llamacpp` today)
+  onto a bare-metal node, mirroring the Transfer Executor's download/
+  progress-reporting pattern. Downloads the release tarball and its sibling
+  `.sha256` checksum from the main Sparky repo's own GitHub Releases,
+  verifies it (mandatory here, unlike the Hugging Face downloader's own
+  precedent, since these bundles are maintainer-built and always come with a
+  checksum), and installs into a versioned directory under the new
+  `SPARKY_ENGINE_INSTALL_PATH` (default `/opt/sparky/serviceloop/engines` on
+  bare-metal), atomically repointing a `latest` symlink at each successful
+  install - multiple versions deliberately coexist on disk rather than being
+  overwritten, so a later profile-level version-pinning feature can select
+  between them. Extraction shells out to the system `tar` (no new Go
+  dependency). New `internal/agentproto` message types
+  (`TypeStartEngineTransfer`/`TypeEngineTransferProgress`); new
+  `engine_transfers`/`node_engine_inventory` tables and repositories
+  (migrations `000015`/`000016`); new RBAC-gated (`CanManageNodes` -
+  Admin/SuperAdmin only, no PowerDev-override path) `internal/engineprovision.
+  Service`, mirroring `internal/transfers`' shape. `agent/connection` gained
+  a dispatch case and its own `engineTransferWG`, separate from the existing
+  `transferWG`. No HTTP handler or dashboard form yet - logic and agent-side
+  mechanics only, matching this project's own repeated "logic before HTTP
+  wiring" precedent. See PLANNING.md's 2026-08-15 Decisions Log entries for
+  the full design.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,

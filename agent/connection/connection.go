@@ -23,6 +23,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/1kaius1/Sparky/agent/enginetransfer"
 	"github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
@@ -62,6 +63,17 @@ type transferExecutor interface {
 	Download(ctx context.Context, modelRef, destDir string, progress transfer.ProgressFunc) error
 }
 
+// engineTransferExecutor is the subset of *enginetransfer.Executor this
+// package needs - narrow enough to fake in tests without a real HTTP
+// download or `tar` shell-out. Separate from transferExecutor rather than
+// unified into one interface - the two download genuinely different things
+// (a Hugging Face model repository vs. a single checksum-verified,
+// versioned-install release tarball) with different return shapes, see
+// PLANNING.md's 2026-08-15 Decisions Log entry.
+type engineTransferExecutor interface {
+	Provision(ctx context.Context, engineType, version, installRoot string, progress enginetransfer.ProgressFunc) (installPath string, installedSizeBytes int64, err error)
+}
+
 // telemetryCollector is the subset of *telemetry.Collector this package
 // needs - narrow enough to fake in tests without shelling out to
 // nvidia-smi or reading the real /proc.
@@ -96,6 +108,13 @@ type Config struct {
 	// as a failed InstanceResult like any other real launch failure.
 	EngineBinaryPaths map[string]string
 
+	// EngineInstallPath is the root directory a TypeStartEngineTransfer
+	// provisioning run installs into - SPARKY_ENGINE_INSTALL_PATH, per
+	// docs/AGENT.md Configuration. Same not-defaulted-here treatment as
+	// ModelStoragePath. Unused by the containers backend, which gets engine
+	// software via container images, not this mechanism.
+	EngineInstallPath string
+
 	// TelemetryPollInterval is how often the telemetry goroutine takes
 	// and pushes a reading - SPARKY_TELEMETRY_POLL_INTERVAL, per
 	// docs/AGENT.md Configuration. Parsed by cmd/sparky-agent from
@@ -111,11 +130,12 @@ type Config struct {
 // Conn owns the agent's single persistent WebSocket connection to the
 // central app.
 type Conn struct {
-	cfg       Config
-	runtime   runtimeBackend
-	transfer  transferExecutor
-	telemetry telemetryCollector
-	logger    *log.Logger
+	cfg            Config
+	runtime        runtimeBackend
+	transfer       transferExecutor
+	engineTransfer engineTransferExecutor
+	telemetry      telemetryCollector
+	logger         *log.Logger
 
 	minBackoff time.Duration
 	maxBackoff time.Duration
@@ -126,6 +146,14 @@ type Conn struct {
 	// Notes.
 	transferWG sync.WaitGroup
 
+	// engineTransferWG tracks in-flight start_engine_transfer goroutines -
+	// same reasoning as transferWG, kept as its own group rather than
+	// sharing transferWG since a model-weight download and an engine
+	// provisioning run are unrelated operations with no reason to block
+	// each other's shutdown wait, matching the existing transferWG/
+	// instanceWG split.
+	engineTransferWG sync.WaitGroup
+
 	// instanceWG tracks in-flight load_instance/unload_instance
 	// goroutines - same reasoning as transferWG, kept as a separate group
 	// since a load and a transfer are unrelated operations with no reason
@@ -134,15 +162,16 @@ type Conn struct {
 }
 
 // New constructs a Conn.
-func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, collector telemetryCollector, logger *log.Logger) *Conn {
+func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, engineTransferExec engineTransferExecutor, collector telemetryCollector, logger *log.Logger) *Conn {
 	return &Conn{
-		cfg:        cfg,
-		runtime:    runtime,
-		transfer:   transferExec,
-		telemetry:  collector,
-		logger:     logger,
-		minBackoff: defaultMinBackoff,
-		maxBackoff: defaultMaxBackoff,
+		cfg:            cfg,
+		runtime:        runtime,
+		transfer:       transferExec,
+		engineTransfer: engineTransferExec,
+		telemetry:      collector,
+		logger:         logger,
+		minBackoff:     defaultMinBackoff,
+		maxBackoff:     defaultMaxBackoff,
 	}
 }
 
@@ -175,6 +204,7 @@ func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, coll
 // docs/AGENT.md Signal Handling.
 func (c *Conn) Run(ctx context.Context) {
 	defer c.transferWG.Wait()
+	defer c.engineTransferWG.Wait()
 	defer c.shutdownRuntime()
 	defer c.instanceWG.Wait()
 
@@ -432,6 +462,17 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.transferWG.Done()
 			c.runTransfer(ctx, conn, start)
 		}()
+	case agentproto.TypeStartEngineTransfer:
+		var start agentproto.StartEngineTransfer
+		if err := env.DecodePayload(&start); err != nil {
+			c.logger.Printf("agent connection: received malformed start_engine_transfer payload: %v", err)
+			return
+		}
+		c.engineTransferWG.Add(1)
+		go func() {
+			defer c.engineTransferWG.Done()
+			c.runEngineTransfer(ctx, conn, start)
+		}()
 	case agentproto.TypeLoadInstance:
 		var load agentproto.LoadInstance
 		if err := env.DecodePayload(&load); err != nil {
@@ -509,6 +550,53 @@ func (c *Conn) runTransfer(ctx context.Context, conn *websocket.Conn, start agen
 
 	if err := c.transfer.Download(ctx, start.ModelRef, destDir, progress); err != nil {
 		c.logger.Printf("agent connection: transfer %s failed: %v", start.TransferID, err)
+	}
+}
+
+// runEngineTransfer runs one engine provisioning run to completion - one
+// goroutine per active run, same reasoning as runTransfer. Progress is
+// pushed back to the central app as TypeEngineTransferProgress messages via
+// c.engineTransfer's throttled callback (agent/enginetransfer.Executor's
+// ProgressFunc); c.engineTransfer.Provision itself already reports a final
+// StatusCompleted/StatusFailed call, so the only thing left to do with a
+// returned error here is log it for local operator visibility
+// (journalctl) - same shape as runTransfer's own error handling.
+//
+// conn and ctx follow the identical reasoning documented on runTransfer:
+// ctx is Run's own long-lived context, so a provisioning run keeps going
+// (and gets a chance to finish or fail cleanly) across a mere WebSocket
+// reconnect, at the cost of the same known gap - progress pushes over a
+// stale conn fail silently (logged) until the run finishes on its own
+// timeline.
+func (c *Conn) runEngineTransfer(ctx context.Context, conn *websocket.Conn, start agentproto.StartEngineTransfer) {
+	progress := func(p enginetransfer.Progress) {
+		env, err := agentproto.NewEnvelope(agentproto.TypeEngineTransferProgress, "", agentproto.EngineTransferProgress{
+			TransferID:         start.TransferID,
+			BytesTransferred:   p.BytesTransferred,
+			BytesTotal:         p.BytesTotal,
+			Status:             p.Status,
+			ErrorMessage:       p.ErrorMessage,
+			InstallPath:        p.InstallPath,
+			InstalledSizeBytes: p.InstalledSizeBytes,
+		})
+		if err != nil {
+			c.logger.Printf("agent connection: build engine_transfer_progress for %s: %v", start.TransferID, err)
+			return
+		}
+		raw, err := json.Marshal(env)
+		if err != nil {
+			c.logger.Printf("agent connection: marshal engine_transfer_progress for %s: %v", start.TransferID, err)
+			return
+		}
+		// conn.Write is safe for concurrent use - see runTransfer's progress
+		// closure above for the same claim and its source.
+		if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
+			c.logger.Printf("agent connection: send engine_transfer_progress for %s: %v", start.TransferID, err)
+		}
+	}
+
+	if _, _, err := c.engineTransfer.Provision(ctx, start.EngineType, start.Version, c.cfg.EngineInstallPath, progress); err != nil {
+		c.logger.Printf("agent connection: engine transfer %s failed: %v", start.TransferID, err)
 	}
 }
 

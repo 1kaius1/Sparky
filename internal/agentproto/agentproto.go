@@ -73,6 +73,21 @@ const (
 	// Service Architecture Notes' Telemetry goroutine), unprompted - the
 	// central app never requests a reading.
 	TypeTelemetry MessageType = "telemetry"
+
+	// TypeStartEngineTransfer is sent by the central app to an agent,
+	// instructing it to download and install a compiled-engine binary
+	// release (llama.cpp today) from GitHub Releases - see PLANNING.md's
+	// 2026-08-15 Decisions Log entry and agent/enginetransfer, the
+	// executor that handles it. Kept separate from TypeStartTransfer
+	// (model weights) since the source, verification, and destination
+	// shape (a versioned install directory, not a downloaded file tree)
+	// all differ.
+	TypeStartEngineTransfer MessageType = "start_engine_transfer"
+
+	// TypeEngineTransferProgress is sent by an agent to report an engine
+	// provisioning run's progress, the same streamed-not-just-on-completion
+	// shape as TypeTransferProgress.
+	TypeEngineTransferProgress MessageType = "engine_transfer_progress"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -217,6 +232,41 @@ type InstanceResult struct {
 	Status       string `json:"status"`
 	ActualPort   int    `json:"actual_port,omitempty"`
 	ErrorMessage string `json:"error_message,omitempty"`
+}
+
+// StartEngineTransfer is TypeStartEngineTransfer's payload - identifies the
+// db.EngineTransfer row (by ID, not embedded) an agent should act on, the
+// engine to provision, and which release to install. EngineType is a plain
+// string, not internal/db.ProfileEngineType, for the same reason as
+// TransferProgress.Status: this package has no dependency on internal/db.
+// There is no arch field - the agent resolves the release asset for its own
+// runtime.GOARCH, since only it knows that.
+type StartEngineTransfer struct {
+	TransferID string `json:"transfer_id"`
+	EngineType string `json:"engine_type"`
+	Version    string `json:"version"`
+}
+
+// EngineTransferProgress is TypeEngineTransferProgress's payload - the same
+// shape as TransferProgress plus InstallPath and InstalledSizeBytes, both
+// populated only on the terminal "completed" status (mirroring how
+// ErrorMessage is populated only on "failed"). InstallPath is the
+// node-local absolute path the agent installed this version into, so the
+// central app's inventory upsert can record it without reconstructing the
+// on-disk convention itself. InstalledSizeBytes is deliberately a separate
+// field from BytesTotal, not a reuse of it the way Model transfers reuses
+// BytesTotal as installed size (there, downloaded bytes and installed
+// bytes are the same thing) - here BytesTotal is the compressed download
+// size, while InstalledSizeBytes is the actual on-disk size after
+// extraction, and the two differ for an xz-compressed tarball.
+type EngineTransferProgress struct {
+	TransferID         string `json:"transfer_id"`
+	BytesTransferred   int64  `json:"bytes_transferred"`
+	BytesTotal         int64  `json:"bytes_total"`
+	Status             string `json:"status"`
+	ErrorMessage       string `json:"error_message,omitempty"`
+	InstallPath        string `json:"install_path,omitempty"`
+	InstalledSizeBytes int64  `json:"installed_size_bytes,omitempty"`
 }
 
 // Telemetry is TypeTelemetry's payload - a single point-in-time hardware
