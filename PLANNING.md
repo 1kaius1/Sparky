@@ -1557,7 +1557,7 @@ the current active work, see Current Sprint / Active Work below.
         record for CDI passthrough.
 
 - [ ] **v0.2.0** - Bare-metal runtime backend, and Spark hardware validation
-  - [ ] Agent: bare-metal runtime backend (`serviceloop`, direct process exec) -
+  - [x] Agent: bare-metal runtime backend (`serviceloop`, direct process exec) -
         for hosts where GPU passthrough isn't viable (e.g. a single-GPU
         workstation already using that GPU for its own host session), not
         specific to DGX Spark hardware. Validated against this project's own RTX
@@ -1597,30 +1597,55 @@ the current active work, see Current Sprint / Active Work below.
           tracked processes concurrently) against harmless real binaries
           (`/bin/sh`) already present on any Linux box - no GPU or real
           engine binary needed for that.
-    - [ ] Real hardware validation against the RTX 4090 laptop - in progress,
-          running directly on that machine (confirmed real GPU: an NVIDIA
-          GeForce RTX 4090 with 16GB VRAM, the mobile/laptop variant, already
+    - [x] Real hardware validation against the RTX 4090 laptop - done, run
+          directly on that machine (confirmed real GPU: an NVIDIA GeForce
+          RTX 4090 with 16GB VRAM, the mobile/laptop variant, already
           driving the host's own Xorg session - exactly the "GPU already
-          claimed by the host OS" case bare-metal exists for). First finding,
-          before any GPU-specific step was even reached: the default model
-          storage path bug described above (`/home/serviceloop/models`
-          unreachable under `ProtectHome=true` and never created by
-          `useradd --no-create-home` in the first place) - fixed and
-          confirmed via the same disposable-podman-plus-real-systemd
-          technique the original packaging PR used, not by guessing: a
-          transient systemd unit run as `serviceloop` with `ProtectHome=true`
-          could write to the new `/opt/sparky/serviceloop/models` path and
-          got `Permission denied` on the old `/home/serviceloop` path,
-          reproducing and then closing the bug in the same pass. Remaining
-          steps (real model load, GPU offload confirmation via `nvidia-smi`,
-          the SIGTERM/SIGKILL shutdown path, telemetry cross-check) not yet
-          done. A new Known Issues row names the specific, real uncertainty
-          still open once those are: whether an engine adapter's existing
-          `Args` (built assuming a container image's own baked-in entrypoint)
-          are also correct as a raw bare-metal command line - confirmed fine
-          for llama.cpp (its server binary takes flags directly), genuinely
-          unverified for vLLM (whose CLI has used both a flag-only form and
-          a `vllm serve <model>` subcommand form across versions).
+          claimed by the host OS" case bare-metal exists for). Two real
+          bugs found and fixed in the same pass, neither guessed at -
+          both confirmed via direct reproduction before and after the fix:
+          (1) the default model storage path (`/home/serviceloop/models`)
+          was unreachable under `ProtectHome=true` and never created by
+          `useradd --no-create-home` in the first place - see this date's
+          separate Decisions Log entry for the `/opt/sparky/serviceloop`
+          fix; (2) `systemctl stop` while an instance was loaded (skipping
+          an explicit unload) crashed the real `llama-server` child instead
+          of stopping it cleanly - the unit's default `KillMode` double-
+          signals a tracked child (once from systemd's cgroup-wide kill,
+          once from the agent's own per-child `Shutdown` logic), and
+          llama.cpp's own signal handler aborts on a second interrupt
+          arriving mid-shutdown; fixed with `KillMode=mixed`, see that
+          date's own Decisions Log entry. With both fixed: a real
+          `llamacpp` profile (a 3.6GB GGUF, `n_gpu_layers=99`) loaded
+          through the real dashboard flow, confirmed as an actual child
+          process of `sparky-agent` running as `serviceloop`, with
+          `nvidia-smi` and `--query-compute-apps` both attributing real
+          GPU memory (~4.5GB) directly to that PID - genuine offload, not
+          a CPU fallback - and a real `/v1/chat/completions` request
+          against it returned a real completion. Unload sent SIGTERM,
+          confirmed via the process's own log line
+          ("cleaning up before exit...") and freed GPU memory. The
+          KillMode-fixed shutdown path was re-verified by reproducing the
+          exact same load-then-abrupt-`systemctl stop` sequence and
+          confirming the same clean exit. Live telemetry (`nvidia-smi`-
+          derived) tracked the real VRAM climb (152 -> 3846 -> 4742 MiB)
+          in the `metrics` table in real time during the load, closing the
+          separate, previously-unverified `nvidia-smi` telemetry Known
+          Issues row as a byproduct - visual chart rendering itself
+          remains unverified, consistent with this project's existing,
+          already-accepted no-browser-available gap for that page. One
+          real gap surfaced and left deliberately unfixed, matching what
+          the runbook expected going in: `running_instances` stays stale
+          (`running`) in the database after an ungraceful agent stop, with
+          no real process behind it and nothing to reconcile it on
+          restart - a new Known Issues row records this precisely. The
+          engine-adapter-argument-shape question is now fully closed for
+          llama.cpp (`--model`/`--port`/`--host`/`--gpu-layers`/
+          `--ctx-size`/`--threads` all confirmed directly against
+          `llama-server --help` and a real successful load) - vLLM's half
+          of that question was deliberately not attempted this pass
+          (confirmed with the user) and remains open, tracked in Known
+          Issues.
   - [ ] `sparky-agent setup` subcommand - creates/verifies the `serviceloop` system
         account and its GPU-passthrough group membership (`video`/`render`,
         distro-dependent), idempotent, supports both environment-variable-driven and
@@ -1699,13 +1724,13 @@ duplicate checklist.
   backend... CDI GPU passthrough," blocked on hardware/verification this
   sandbox doesn't have - see Dependencies and Blockers below, not something
   to pick up as "next up" in the usual sense.
-- v0.2.0's bare-metal runtime backend (`agent/runtime/baremetal`) itself is
-  built and unit-tested - see that item's own entry above. Its own
-  checkbox stays open pending real hardware validation against the RTX
-  4090 laptop, which this sandbox can't do (no GPU, no real vLLM/llama.cpp
-  install). The `sparky-agent setup` subcommand and the Docker/Podman
-  backend's own real-hardware CDI validation remain separate, still-open
-  v0.2.0 items - see Dependencies and Blockers below.
+- v0.2.0's bare-metal runtime backend (`agent/runtime/baremetal`) is fully
+  done, including real-hardware validation against the RTX 4090 laptop -
+  see that item's own entry above for the two real bugs found and fixed in
+  the process (`/opt/sparky/serviceloop`, `KillMode=mixed`). The
+  `sparky-agent setup` subcommand and the Docker/Podman backend's own
+  real-hardware CDI validation remain separate, still-open v0.2.0 items -
+  see Dependencies and Blockers below.
 
 ---
 
@@ -1846,7 +1871,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | Mid-session behavior when a user loses AD access-group membership is undefined | Low | Not a stated priority during auth design; existing session likely persists until natural expiry |
 | CDI GPU passthrough via Podman's Docker-Engine-API-compatible socket not yet verified on target hardware/Podman version - neither Docker API mechanism for requesting a CDI device (`HostConfig.DeviceRequests` with `Driver: "cdi"`, or `HostConfig.Devices` with a CDI name as `PathOnHost`) triggered CDI resolution against a real local Podman 4.9.3 daemon, even though Podman's own CLI resolves CDI names correctly - see 2026-08-10 Decisions Log entry for the full empirical finding | Medium | Requires the actual target Podman version (likely much newer than the 4.9.3 available here) and real GPU hardware to determine whether this is fixed upstream or still needs a workaround; `agent/runtime/containers` implements the documented, correct Docker API contract regardless, which is right for Docker and the best available attempt for Podman |
 | `agent_status` never reaches `unreachable` - `internal/agentconn` only ever sets `online` (on a successful handshake) or `offline` (on any disconnect, clean or not), even though SCHEMA.md's third state exists for a connection that's still technically open but has gone silent | Low | `agent/connection.Conn` sends a `heartbeat` envelope every 30s as of Phase 5 (agent runtime/WebSocket work), but `internal/agentconn` doesn't read-deadline or otherwise track them yet - the server-side timeout/detection logic to actually consume those heartbeats and flip a stale connection to `unreachable` still doesn't exist. Revisit when there's a concrete reason to distinguish `unreachable` from `offline` operationally |
-| Whether an engine adapter's existing `LaunchSpec.Args` (built assuming a container image's own baked-in entrypoint, e.g. `vllm/vllm-openai:latest`) are also correct as a raw command line for that engine's bare-metal binary is unverified - no real vLLM install exists in this environment (same gap already on record for CDI passthrough and `nvidia-smi`). `llama.cpp`'s server binary takes flags directly (`--model`/`--port`/`--gpu-layers`/etc, no subcommand), so this looks fine as-is; vLLM's CLI has used both a flag-only form and a `vllm serve <model>` subcommand form across versions | Medium | Requires a real vLLM install (or at minimum its documentation for the specific pinned version this project targets) to confirm either way - part of the RTX-4090-laptop bare-metal validation PLANNING.md's v0.2.0 entry already names as the concrete next hardware-bound step for this backend |
+| Whether vLLM's CLI accepts `engines.LaunchSpec.Args`' flag-only form (`--model`/`--port`/etc, no subcommand) as built, or needs a `vllm serve <model>` subcommand form instead, is unverified - no real vLLM install was attempted during the 2026-08-14 RTX-4090-laptop bare-metal validation pass (deliberately deferred, confirmed with the user, to keep that pass scoped). llama.cpp's own half of this question is now closed: confirmed directly against a real `llama-server --help` and a real successful load that `--model`/`--port`/`--host`/`--gpu-layers`/`--ctx-size`/`--threads` are exactly what's emitted | Medium | Requires a real vLLM install (or at minimum its documentation for the specific pinned version this project targets) to confirm either way |
+| `running_instances` stays stale at `status = running` after an ungraceful agent stop (a crash, `kill -9`, or - before 2026-08-14's `KillMode=mixed` fix - even a normal `systemctl stop` that raced an engine's own shutdown handling) even once the real process is gone; nothing reconciles it when the agent restarts, so the Dashboard keeps reporting a model as loaded when it isn't | Medium | Confirmed directly during the 2026-08-14 RTX-4090-laptop bare-metal validation pass (expected going in, not a surprise) - closing it needs either an agent-side "report what's actually running on reconnect" handshake or a server-side liveness sweep, neither of which exists yet for any runtime backend; a real design decision on its own, not attempted this pass |
 | `rbac.Service.ElevateTier`'s tier update and its audit-log write are two separate calls, not one database transaction - a tier change can persist while its audit record fails to write (surfaced to the caller as an error after the fact, but not rolled back) | Low | No cross-repository transaction pattern exists anywhere else in the codebase yet to extend; the failure mode requires the audit Postgres write itself to fail immediately after a successful update, which is rare enough not to block this pass |
 | `agent/connection`'s `resolveModelPath` requires exactly one `.gguf` file on local storage for a partial-offload (llama.cpp-style) load, erroring otherwise - but v0.1.0's downloader fetches every file in a GGUF repo's default revision (2026-08-11 Decisions Log entry), which is commonly several quantizations at once. Loading a profile whose model is a multi-quantization GGUF repo fails until only one `.gguf` file remains on disk | Medium | No quantization selector exists anywhere in the pipeline yet (`model_ref` has no way to name one) - the same gap the 2026-08-11 Model transfers entry already flagged and deferred pending exactly this feature (Running instances) existing. Revisit by either parsing a `repo:QUANT` suffix out of `model_ref` (llama.cpp's own convention) or downloading only the selected quantization in the first place |
 | `internal/lifecycle.Service.LoadInstance`/`UnloadInstance` persist their `running_instances` row (or its `stopping` transition) before dispatching to the agent - a dispatch failure after that point leaves the row in `starting`/`stopping` with nothing to move it forward, same known limitation already accepted for `rbac.Service.ElevateTier` and `internal/nodes.Service.RegisterNode` | Low | No cross-repository transaction or saga pattern exists anywhere in the codebase to extend; the failure mode requires the WebSocket send itself to fail immediately after a successful DB write, and the operator-visible symptom (a stuck `starting` row) is easy to diagnose manually until this is worth solving generally |
@@ -1884,14 +1910,13 @@ Two questions originally tracked here have moved on, not been deleted outright:
   validation (not, as previously stated here, the bare-metal backend - see the
   2026-08-13 Decisions Log entry) - separate from the CDI/Podman blocker above,
   which concerns hardware already in hand.
-- The bare-metal runtime backend's own remaining checkbox (real-hardware
-  validation against the RTX 4090 laptop) is blocked the same way the CDI
-  items above are - no GPU and no real vLLM/llama.cpp install exist in this
-  sandbox. The backend mechanics themselves (process lifecycle, SIGTERM/
-  SIGKILL handling, config wiring) are already built and verified here
-  against harmless real processes; what's blocked is confirming a real
-  engine actually starts and serves under it, and the vLLM CLI-argument-
-  shape question the Known Issues table now tracks.
+- The bare-metal runtime backend's real-hardware validation blocker is
+  resolved as of 2026-08-14 - done directly against the RTX 4090 laptop,
+  see that date's Decisions Log entries and the milestone item's own
+  writeup above. The only piece of it still open is the vLLM
+  CLI-argument-shape question, tracked in Known Issues, not blocked on
+  hardware access (a real vLLM install was simply not attempted this
+  pass, by choice).
 
 ---
 

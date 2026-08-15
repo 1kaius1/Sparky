@@ -965,11 +965,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   touched package, including new tests exercising real process lifecycle
   (SIGTERM, SIGKILL escalation, concurrent multi-process shutdown) against
   harmless real binaries - no GPU or real engine binary needed for that.
-  Real hardware validation against this project's own RTX 4090 laptop, and
-  whether an engine adapter's existing launch arguments (built assuming a
-  container image's own entrypoint) are also correct for that engine's raw
-  bare-metal binary - confirmed fine for llama.cpp, unverified for vLLM -
-  remain open, tracked in PLANNING.md.
+  Validated against this project's own RTX 4090 laptop: a real `llamacpp`
+  profile loaded as an actual child of `sparky-agent` running as
+  `serviceloop`, `nvidia-smi` attributing real GPU memory directly to that
+  process, a real inference request against it succeeding, and unload/
+  shutdown both exiting the child cleanly. Confirms an engine adapter's
+  existing launch arguments are correct as a raw bare-metal command line
+  for llama.cpp; vLLM's half of that question was deliberately not
+  attempted this pass and remains open, tracked in PLANNING.md.
 
 ### Changed
 - `internal/db`'s `UserRepository.UpdateTier` now takes a nullable
