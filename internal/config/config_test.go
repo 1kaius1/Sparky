@@ -67,6 +67,12 @@ func TestLoad_DefaultsApply(t *testing.T) {
 	if cfg.BreakGlassAllowedIPs != "" {
 		t.Errorf("BreakGlassAllowedIPs = %q, want empty by default", cfg.BreakGlassAllowedIPs)
 	}
+	if cfg.AuthRateLimitMaxAttempts != 10 {
+		t.Errorf("AuthRateLimitMaxAttempts = %d, want default %d", cfg.AuthRateLimitMaxAttempts, 10)
+	}
+	if cfg.AuthRateLimitWindowSecs != 300 {
+		t.Errorf("AuthRateLimitWindowSecs = %d, want default %d", cfg.AuthRateLimitWindowSecs, 300)
+	}
 }
 
 func TestLoad_OverridesDefaults(t *testing.T) {
@@ -76,6 +82,8 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	t.Setenv("LOG_FORMAT", "json")
 	t.Setenv("AUDIT_FORWARD_ENABLED", "true")
 	t.Setenv("BREAKGLASS_ALLOWED_IPS", "127.0.0.1,10.0.0.0/24")
+	t.Setenv("AUTH_RATE_LIMIT_MAX_ATTEMPTS", "5")
+	t.Setenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "60")
 
 	cfg, err := Load()
 	if err != nil {
@@ -96,6 +104,38 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	}
 	if cfg.BreakGlassAllowedIPs != "127.0.0.1,10.0.0.0/24" {
 		t.Errorf("BreakGlassAllowedIPs = %q, want %q", cfg.BreakGlassAllowedIPs, "127.0.0.1,10.0.0.0/24")
+	}
+	if cfg.AuthRateLimitMaxAttempts != 5 {
+		t.Errorf("AuthRateLimitMaxAttempts = %d, want %d", cfg.AuthRateLimitMaxAttempts, 5)
+	}
+	if cfg.AuthRateLimitWindowSecs != 60 {
+		t.Errorf("AuthRateLimitWindowSecs = %d, want %d", cfg.AuthRateLimitWindowSecs, 60)
+	}
+}
+
+func TestLoad_InvalidAuthRateLimitMaxAttempts_ReturnsError(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("AUTH_RATE_LIMIT_MAX_ATTEMPTS", "not-a-number")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() succeeded despite an invalid AUTH_RATE_LIMIT_MAX_ATTEMPTS, want an error")
+	}
+	if !strings.Contains(err.Error(), "AUTH_RATE_LIMIT_MAX_ATTEMPTS") {
+		t.Errorf("Load() error = %q, want it to mention AUTH_RATE_LIMIT_MAX_ATTEMPTS", err.Error())
+	}
+}
+
+func TestLoad_InvalidAuthRateLimitWindowSeconds_ReturnsError(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "not-a-number")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() succeeded despite an invalid AUTH_RATE_LIMIT_WINDOW_SECONDS, want an error")
+	}
+	if !strings.Contains(err.Error(), "AUTH_RATE_LIMIT_WINDOW_SECONDS") {
+		t.Errorf("Load() error = %q, want it to mention AUTH_RATE_LIMIT_WINDOW_SECONDS", err.Error())
 	}
 }
 

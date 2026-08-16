@@ -1163,6 +1163,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (JSON API) requests, which aren't triggerable by a naive cross-site form
   submission in the first place. See PLANNING.md's 2026-08-16 Decisions Log
   entry for the full design and the choices confirmed with the user.
+- Rate limiting on `POST /login` and `POST /login/break-glass`, closing the
+  gap on record since CLAUDE.md Security Considerations first called for it.
+  New `internal/httpapi/rate_limit.go`: a hand-rolled, fixed-window, per-
+  source-IP limiter (`loginRateLimiter`) - two independent instances, one
+  per endpoint, so a burst against one credential can't exhaust the other's
+  budget. Thresholds are configurable via two new optional env vars,
+  `AUTH_RATE_LIMIT_MAX_ATTEMPTS` (default 10) and
+  `AUTH_RATE_LIMIT_WINDOW_SECONDS` (default 300); exceeding the limit
+  returns `429 RATE_LIMITED` until the window rolls over on its own, with no
+  manual unlock needed. See PLANNING.md's 2026-08-16 Decisions Log entry for
+  the full design, including why per-IP was chosen over per-account
+  lockout.
 
 ---
 
