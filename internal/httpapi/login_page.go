@@ -15,7 +15,8 @@ import (
 // message, since the page has no shell/nav state to track (see
 // loadPageTemplates' doc comment on why login.html is parsed standalone).
 type loginPageData struct {
-	Error string
+	Error     string
+	CSRFToken string
 }
 
 // isFormRequest reports whether r is a plain HTML <form method="post">
@@ -55,7 +56,7 @@ func (a *API) renderLoginPage(w http.ResponseWriter, r *http.Request, errMsg str
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "login", loginPageData{Error: errMsg}); err != nil {
+	if err := t.ExecuteTemplate(w, "login", loginPageData{Error: errMsg, CSRFToken: csrfTokenFromContext(r.Context())}); err != nil {
 		a.logger.Printf("httpapi: render login page: %v", err)
 	}
 }

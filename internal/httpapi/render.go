@@ -16,6 +16,7 @@ import (
 type pageData struct {
 	Title         string
 	ActiveSection string
+	CSRFToken     string
 	Data          any
 }
 
@@ -81,7 +82,7 @@ func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string,
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, name, pageData{Title: title, ActiveSection: page, Data: data}); err != nil {
+	if err := t.ExecuteTemplate(w, name, pageData{Title: title, ActiveSection: page, CSRFToken: csrfTokenFromContext(r.Context()), Data: data}); err != nil {
 		a.logger.Printf("httpapi: render %s: %v", page, err)
 	}
 }

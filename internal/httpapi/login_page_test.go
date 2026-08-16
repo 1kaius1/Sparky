@@ -31,8 +31,35 @@ func noRedirectClient(t *testing.T) *http.Client {
 	}
 }
 
+// postForm primes client's cookie jar with a real sparky_csrf token (a GET
+// against target, which ensureCSRFToken sets on every response) before
+// posting, and echoes that same token back as the csrf_token form field -
+// the real double-submit flow a browser goes through, not a synthetic
+// shortcut, since these tests exercise the classic <form method="post">
+// submission path CSRF protection specifically targets.
 func postForm(t *testing.T, client *http.Client, target string, values url.Values) *http.Response {
 	t.Helper()
+	primeResp, err := client.Get(target)
+	if err != nil {
+		t.Fatalf("GET %s (priming CSRF cookie) error: %v", target, err)
+	}
+	primeResp.Body.Close()
+
+	targetURL, err := url.Parse(target)
+	if err != nil {
+		t.Fatalf("url.Parse(%s) error: %v", target, err)
+	}
+	var csrfToken string
+	for _, c := range client.Jar.Cookies(targetURL) {
+		if c.Name == csrfCookieName {
+			csrfToken = c.Value
+		}
+	}
+	if csrfToken == "" {
+		t.Fatalf("no %s cookie set after GET %s", csrfCookieName, target)
+	}
+	values.Set(csrfFormFieldName, csrfToken)
+
 	resp, err := client.PostForm(target, values)
 	if err != nil {
 		t.Fatalf("POST %s error: %v", target, err)

@@ -1311,6 +1311,7 @@ func newAuthenticatedFormRequest(t *testing.T, target, userID string, form url.V
 	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+	addValidCSRF(req)
 	return req
 }
 

@@ -13,7 +13,8 @@ import (
 // breakGlassLoginPageData is the break-glass login page's view model - an
 // optional error message only, same shape as loginPageData.
 type breakGlassLoginPageData struct {
-	Error string
+	Error     string
+	CSRFToken string
 }
 
 // handleBreakGlassLoginPage serves the HTML break-glass sign-in form. Both
@@ -42,7 +43,7 @@ func (a *API) renderBreakGlassLoginPage(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "breakglass_login", breakGlassLoginPageData{Error: errMsg}); err != nil {
+	if err := t.ExecuteTemplate(w, "breakglass_login", breakGlassLoginPageData{Error: errMsg, CSRFToken: csrfTokenFromContext(r.Context())}); err != nil {
 		a.logger.Printf("httpapi: render break-glass login page: %v", err)
 	}
 }
