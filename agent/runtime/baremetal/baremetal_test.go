@@ -136,6 +136,73 @@ func TestShutdown_NoTrackedProcesses_ReturnsNil(t *testing.T) {
 	}
 }
 
+func TestIsRunning_TrackedAndAlive_ReturnsTrue(t *testing.T) {
+	b := New()
+	if _, err := b.Start(context.Background(), runtime.Spec{
+		InstanceID: "instance-1",
+		BinaryPath: "/bin/sh",
+		Args:       []string{"-c", "sleep 30"},
+	}); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer b.Stop(context.Background(), "instance-1")
+
+	running, err := b.IsRunning(context.Background(), "instance-1")
+	if err != nil {
+		t.Fatalf("IsRunning() error: %v", err)
+	}
+	if !running {
+		t.Error("running = false, want true for a just-started, still-alive process")
+	}
+}
+
+func TestIsRunning_NeverTracked_ReturnsFalse(t *testing.T) {
+	b := New()
+
+	running, err := b.IsRunning(context.Background(), "no-such-instance")
+	if err != nil {
+		t.Fatalf("IsRunning() error: %v", err)
+	}
+	if running {
+		t.Error("running = true, want false for an instance this Backend never started")
+	}
+}
+
+func TestIsRunning_TrackedButExited_ReturnsFalseAndCleansUp(t *testing.T) {
+	b := New()
+	if _, err := b.Start(context.Background(), runtime.Spec{
+		InstanceID: "instance-1",
+		BinaryPath: "/bin/sh",
+		Args:       []string{"-c", "true"}, // exits immediately on its own
+	}); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	b.mu.Lock()
+	tp := b.processes["instance-1"]
+	b.mu.Unlock()
+	select {
+	case <-tp.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("process did not exit and get reaped within 5s")
+	}
+
+	running, err := b.IsRunning(context.Background(), "instance-1")
+	if err != nil {
+		t.Fatalf("IsRunning() error: %v", err)
+	}
+	if running {
+		t.Error("running = true, want false for a process that already exited on its own")
+	}
+
+	b.mu.Lock()
+	_, stillTracked := b.processes["instance-1"]
+	b.mu.Unlock()
+	if stillTracked {
+		t.Error("instance-1 is still in processes after IsRunning() observed it had exited - want the stale entry cleaned up")
+	}
+}
+
 // stopGracePeriodForTest temporarily shrinks the package-level grace period
 // so SIGKILL-escalation tests don't need to block for the real 15s.
 // Restores the original value; not safe for concurrent use across tests

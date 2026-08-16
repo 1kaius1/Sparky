@@ -495,6 +495,17 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.instanceWG.Done()
 			c.runUnload(ctx, conn, unload)
 		}()
+	case agentproto.TypeCheckInstance:
+		var check agentproto.CheckInstance
+		if err := env.DecodePayload(&check); err != nil {
+			c.logger.Printf("agent connection: received malformed check_instance payload: %v", err)
+			return
+		}
+		c.instanceWG.Add(1)
+		go func() {
+			defer c.instanceWG.Done()
+			c.runCheckInstance(ctx, conn, check)
+		}()
 	default:
 		c.logger.Printf("agent connection: received unhandled message type %q", env.Type)
 	}
@@ -709,6 +720,34 @@ func (c *Conn) runUnload(ctx context.Context, conn *websocket.Conn, unload agent
 		return
 	}
 	c.sendInstanceResult(ctx, conn, unload.InstanceID, agentproto.InstanceStatusStopped, 0, "")
+}
+
+// runCheckInstance answers the central app's running_instances staleness
+// reconciliation sweep (PLANNING.md's Decisions Log) - triggered after a
+// fresh connection, once per non-terminal instance the central app still
+// believes is running on this node. Reports back via the same
+// TypeInstanceResult mechanism runLoad/runUnload use, since "here's this
+// instance's current status" is exactly what that message already carries
+// - no new response type needed.
+//
+// An IsRunning error (e.g. a transient Docker daemon hiccup) deliberately
+// sends nothing back - "I don't know" and "it's stopped" are different
+// things, and a transient infrastructure error must not falsely mark a
+// row stopped that might still be perfectly fine; the central app's copy
+// of running_instances is left exactly as it was, to be re-checked on a
+// future reconnect.
+func (c *Conn) runCheckInstance(ctx context.Context, conn *websocket.Conn, check agentproto.CheckInstance) {
+	running, err := c.runtime.IsRunning(ctx, check.InstanceID)
+	if err != nil {
+		c.logger.Printf("agent connection: check instance %s: %v", check.InstanceID, err)
+		return
+	}
+
+	status := agentproto.InstanceStatusStopped
+	if running {
+		status = agentproto.InstanceStatusRunning
+	}
+	c.sendInstanceResult(ctx, conn, check.InstanceID, status, 0, "")
 }
 
 // sendInstanceResult reports a load/unload outcome back to the central

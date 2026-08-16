@@ -49,6 +49,10 @@ type fakeInstanceStore struct {
 
 	listResult []*db.RunningInstance
 	listErr    error
+
+	runningByNodeResult []*db.RunningInstance
+	runningByNodeErr    error
+	runningByNodeCalls  []string
 }
 
 func (f *fakeInstanceStore) List(_ context.Context) ([]*db.RunningInstance, error) {
@@ -56,6 +60,14 @@ func (f *fakeInstanceStore) List(_ context.Context) ([]*db.RunningInstance, erro
 		return nil, f.listErr
 	}
 	return f.listResult, nil
+}
+
+func (f *fakeInstanceStore) ListRunningByNode(_ context.Context, nodeID string) ([]*db.RunningInstance, error) {
+	f.runningByNodeCalls = append(f.runningByNodeCalls, nodeID)
+	if f.runningByNodeErr != nil {
+		return nil, f.runningByNodeErr
+	}
+	return f.runningByNodeResult, nil
 }
 
 type statusCall struct {
@@ -669,6 +681,86 @@ func TestService_HandleInstanceResult_UnknownStatus_Ignored(t *testing.T) {
 	if len(instances.statusCalls) != 0 {
 		t.Error("HandleInstanceResult acted on an unrecognized status")
 	}
+}
+
+func TestService_ReconcileNode_DispatchesCheckInstancePerRunningRow(t *testing.T) {
+	instances := &fakeInstanceStore{runningByNodeResult: []*db.RunningInstance{
+		{ID: "instance-1", Status: db.RunningInstanceStatusRunning},
+		{ID: "instance-2", Status: db.RunningInstanceStatusRunning},
+	}}
+	dispatch := &fakeDispatcher{connected: true}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+
+	svc.ReconcileNode(context.Background(), "node-1")
+
+	if len(instances.runningByNodeCalls) != 1 || instances.runningByNodeCalls[0] != "node-1" {
+		t.Fatalf("ListRunningByNode calls = %v, want [node-1]", instances.runningByNodeCalls)
+	}
+	if len(dispatch.sent) != 2 {
+		t.Fatalf("dispatch.Send called %d times, want 2", len(dispatch.sent))
+	}
+	var gotIDs []string
+	for i, env := range dispatch.sent {
+		if dispatch.sentTo[i] != "node-1" {
+			t.Errorf("dispatch.Send[%d] nodeID = %q, want %q", i, dispatch.sentTo[i], "node-1")
+		}
+		if env.Type != agentproto.TypeCheckInstance {
+			t.Errorf("dispatch.Send[%d] envelope type = %q, want %q", i, env.Type, agentproto.TypeCheckInstance)
+		}
+		var payload agentproto.CheckInstance
+		if err := env.DecodePayload(&payload); err != nil {
+			t.Fatalf("decode check_instance payload: %v", err)
+		}
+		gotIDs = append(gotIDs, payload.InstanceID)
+	}
+	if !contains(gotIDs, "instance-1") || !contains(gotIDs, "instance-2") {
+		t.Errorf("dispatched instance IDs = %v, want both instance-1 and instance-2", gotIDs)
+	}
+}
+
+func TestService_ReconcileNode_NoneRunning_NoDispatch(t *testing.T) {
+	instances := &fakeInstanceStore{runningByNodeResult: nil}
+	dispatch := &fakeDispatcher{connected: true}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+
+	svc.ReconcileNode(context.Background(), "node-1")
+
+	if len(dispatch.sent) != 0 {
+		t.Errorf("dispatch.Send called %d times, want 0 for a node with nothing running", len(dispatch.sent))
+	}
+}
+
+func TestService_ReconcileNode_ListError_NoDispatch(t *testing.T) {
+	instances := &fakeInstanceStore{runningByNodeErr: errors.New("database unreachable")}
+	dispatch := &fakeDispatcher{connected: true}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+
+	svc.ReconcileNode(context.Background(), "node-1")
+
+	if len(dispatch.sent) != 0 {
+		t.Error("dispatch.Send was called despite a ListRunningByNode failure")
+	}
+}
+
+func TestService_ReconcileNode_DispatchFailure_ContinuesToNextInstance(t *testing.T) {
+	instances := &fakeInstanceStore{runningByNodeResult: []*db.RunningInstance{
+		{ID: "instance-1", Status: db.RunningInstanceStatusRunning},
+		{ID: "instance-2", Status: db.RunningInstanceStatusRunning},
+	}}
+	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+
+	// Must not panic or stop early despite every Send failing.
+	svc.ReconcileNode(context.Background(), "node-1")
+}
+
+func contains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func TestService_ListInstances(t *testing.T) {

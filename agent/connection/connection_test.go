@@ -42,6 +42,10 @@ type fakeRuntimeBackend struct {
 	shutdownErr   error
 	shutdownCalls int
 
+	isRunningCalls  []string
+	isRunningResult bool
+	isRunningErr    error
+
 	// block, if non-nil, is closed by a test to let a blocked Start/Stop
 	// call proceed; called, if non-nil, is closed the moment that call is
 	// entered - lets a test control exactly when a load/unload "finishes"
@@ -82,6 +86,16 @@ func (f *fakeRuntimeBackend) Shutdown(_ context.Context) error {
 	f.shutdownCalls++
 	f.mu.Unlock()
 	return f.shutdownErr
+}
+
+func (f *fakeRuntimeBackend) IsRunning(_ context.Context, instanceID string) (bool, error) {
+	f.mu.Lock()
+	f.isRunningCalls = append(f.isRunningCalls, instanceID)
+	f.mu.Unlock()
+	if f.called != nil {
+		close(f.called)
+	}
+	return f.isRunningResult, f.isRunningErr
 }
 
 // fakeTransferExecutor implements transferExecutor without a real HTTP
@@ -992,6 +1006,157 @@ func TestConn_Dispatch_UnloadInstance_StopsContainerAndReportsStopped(t *testing
 	}
 	if len(runtime.stopCalls) != 1 || runtime.stopCalls[0] != "instance-1" {
 		t.Errorf("stopCalls = %v, want [instance-1]", runtime.stopCalls)
+	}
+}
+
+func TestConn_Dispatch_CheckInstance_Running_ReportsRunning(t *testing.T) {
+	checkEnv, err := agentproto.NewEnvelope(agentproto.TypeCheckInstance, "", agentproto.CheckInstance{InstanceID: "instance-1"})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &checkEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{isRunningResult: true}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var result agentproto.InstanceResult
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+		if err := env.DecodePayload(&result); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusRunning {
+		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=running", result)
+	}
+	if len(runtime.isRunningCalls) != 1 || runtime.isRunningCalls[0] != "instance-1" {
+		t.Errorf("isRunningCalls = %v, want [instance-1]", runtime.isRunningCalls)
+	}
+}
+
+func TestConn_Dispatch_CheckInstance_NotRunning_ReportsStopped(t *testing.T) {
+	checkEnv, err := agentproto.NewEnvelope(agentproto.TypeCheckInstance, "", agentproto.CheckInstance{InstanceID: "instance-1"})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &checkEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{isRunningResult: false}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	var result agentproto.InstanceResult
+	select {
+	case env := <-app.receivedMsgs:
+		if err := env.DecodePayload(&result); err != nil {
+			t.Fatalf("DecodePayload() error: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusStopped {
+		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=stopped", result)
+	}
+}
+
+func TestConn_Dispatch_CheckInstance_IsRunningError_SendsNothing(t *testing.T) {
+	checkEnv, err := agentproto.NewEnvelope(agentproto.TypeCheckInstance, "", agentproto.CheckInstance{InstanceID: "instance-1"})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &checkEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{isRunningErr: errors.New("docker daemon unreachable")}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		t.Fatalf("received an unexpected message %+v - an IsRunning error must not report anything back", env)
+	case <-time.After(300 * time.Millisecond):
+		// Expected - nothing sent, matching runCheckInstance's own
+		// "don't guess on a transient check failure" contract.
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(runtime.isRunningCalls) != 1 {
+		t.Errorf("isRunningCalls = %v, want exactly 1 call despite the error", runtime.isRunningCalls)
 	}
 }
 

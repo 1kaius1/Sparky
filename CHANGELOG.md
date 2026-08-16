@@ -1113,6 +1113,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mentioned it in prose, and nothing auto-loads an arbitrary filename.
   Already-merged history is not rewritten - see PLANNING.md's Decisions
   Log for why.
+- `running_instances` no longer stays stale at `status = running` after an
+  ungraceful agent stop (a crash, `kill -9`, or a `systemctl stop` that
+  raced an engine's own shutdown handling) - the Dashboard used to keep
+  reporting a model as loaded indefinitely with nothing to reconcile it.
+  `agent/runtime.Backend` gained `IsRunning`; `internal/agentconn.Handler`
+  gained an `OnConnectFunc` hook fired on every fresh agent connection;
+  new `internal/lifecycle.Service.ReconcileNode` (wired as that hook)
+  asks the agent, via a new `check_instance` protocol message, to confirm
+  each `running`-status instance it still believes is loaded on that
+  node - reusing the existing `instance_result` response path with no new
+  response type needed. Works correctly for both runtime backends with no
+  special-casing: a Docker/Podman container survives an agent restart by
+  design, so `IsRunning` querying the daemon directly still confirms it;
+  a bare-metal process's tracking is pure in-memory state, so a genuine
+  crash-and-restart correctly reports "not running" for anything the
+  agent no longer remembers starting. Verified with a real end-to-end
+  pass: a real compiled agent and server, a real `SIGKILL` crash and
+  restart, confirming the stale row flips to `stopped` within about a
+  second of reconnecting with zero operator action. See PLANNING.md's
+  2026-08-16 Decisions Log entry for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

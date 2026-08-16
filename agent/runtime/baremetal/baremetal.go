@@ -155,6 +155,33 @@ func (b *Backend) Shutdown(ctx context.Context) error {
 	return errors.Join(errs...)
 }
 
+// IsRunning reports whether instanceID's process is still alive - see
+// runtime.Backend's doc comment. A closed tp.done means the reaper
+// goroutine already observed cmd.Wait() return (the process exited on its
+// own, outside of Stop/Shutdown, e.g. a crash) - the map entry itself
+// isn't proof of liveness, only Start/Stop ever remove it, so a
+// non-blocking check of done is what actually answers the question. While
+// here, an already-exited entry is also removed - Start's reaper leaves it
+// behind otherwise, since nothing but an explicit Stop/Shutdown normally
+// cleans it up.
+func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	tp, exists := b.processes[instanceID]
+	if !exists {
+		return false, nil
+	}
+
+	select {
+	case <-tp.done:
+		delete(b.processes, instanceID)
+		return false, nil
+	default:
+		return true, nil
+	}
+}
+
 // stopProcess sends SIGTERM and waits up to grace for the process to exit
 // on its own before escalating to SIGKILL.
 func stopProcess(tp *trackedProcess, grace time.Duration) error {

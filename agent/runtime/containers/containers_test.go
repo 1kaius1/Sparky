@@ -400,7 +400,7 @@ func TestIsRunning_True(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	running, err := b.IsRunning(context.Background(), "container-1")
+	running, err := b.IsRunning(context.Background(), "instance-1")
 	if err != nil {
 		t.Fatalf("IsRunning() error: %v", err)
 	}
@@ -417,7 +417,7 @@ func TestIsRunning_False(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	running, err := b.IsRunning(context.Background(), "container-1")
+	running, err := b.IsRunning(context.Background(), "instance-1")
 	if err != nil {
 		t.Fatalf("IsRunning() error: %v", err)
 	}
@@ -432,7 +432,7 @@ func TestIsRunning_NilState(t *testing.T) {
 	}
 	b := &Backend{cli: fake}
 
-	running, err := b.IsRunning(context.Background(), "container-1")
+	running, err := b.IsRunning(context.Background(), "instance-1")
 	if err != nil {
 		t.Fatalf("IsRunning() error: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestIsRunning_InspectError(t *testing.T) {
 	fake := &fakeDockerClient{inspectErr: errors.New("no such container")}
 	b := &Backend{cli: fake}
 
-	_, err := b.IsRunning(context.Background(), "container-1")
+	_, err := b.IsRunning(context.Background(), "instance-1")
 	if err == nil {
 		t.Fatal("IsRunning() succeeded despite an inspect failure")
 	}

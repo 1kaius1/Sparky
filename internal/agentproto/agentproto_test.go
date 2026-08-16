@@ -305,6 +305,23 @@ func TestEnvelope_RoundTrip_UnloadInstance(t *testing.T) {
 	}
 }
 
+func TestEnvelope_RoundTrip_CheckInstance(t *testing.T) {
+	want := CheckInstance{InstanceID: "instance-1"}
+
+	env, err := NewEnvelope(TypeCheckInstance, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got CheckInstance
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("CheckInstance = %+v, want %+v", got, want)
+	}
+}
+
 func TestEnvelope_RoundTrip_InstanceResult(t *testing.T) {
 	want := InstanceResult{InstanceID: "instance-1", Status: InstanceStatusRunning, ActualPort: 8000}
 
