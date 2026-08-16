@@ -23,6 +23,7 @@ type API struct {
 	loginService           *LoginService
 	breakGlassLoginService *BreakGlassLoginService
 	breakGlassIPWhitelist  *breakGlassIPWhitelist
+	breakGlassLoginPath    string
 	loginRateLimiter       *loginRateLimiter
 	breakGlassRateLimiter  *loginRateLimiter
 	setupGate              *setupGate
@@ -94,15 +95,20 @@ type API struct {
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
-// /login/break-glass - empty means allow from anywhere, see
-// breakglass_ip_whitelist.go. authRateLimitMaxAttempts/authRateLimitWindow
+// breakGlassLoginPath - empty means allow from anywhere, see
+// breakglass_ip_whitelist.go. breakGlassLoginPath (BREAKGLASS_LOGIN_PATH,
+// default "/login/break-glass", already validated by config.Load) is where
+// both verbs of the break-glass login route are mounted - configurable so an
+// operator can move it off the well-known default, security-through-
+// obscurity layered on top of (not instead of) breakGlassAllowedIPs and the
+// rate limiting below. authRateLimitMaxAttempts/authRateLimitWindow
 // (AUTH_RATE_LIMIT_MAX_ATTEMPTS/AUTH_RATE_LIMIT_WINDOW_SECONDS) build two
 // independent loginRateLimiter instances, one for POST /login and one for
-// POST /login/break-glass, so a burst against one credential can't exhaust
+// POST breakGlassLoginPath, so a burst against one credential can't exhaust
 // the other's budget - see rate_limit.go. Returns an error if the embedded
 // templates (web.FS) fail to parse - a template syntax error is a build-time
 // bug, caught here rather than surfacing as a broken page on first request.
-func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, sessionSecret string, agentConn http.Handler,
+func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, sessionSecret string, agentConn http.Handler,
 	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
@@ -121,6 +127,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		loginService:           loginService,
 		breakGlassLoginService: breakGlassLoginService,
 		breakGlassIPWhitelist:  ipWhitelist,
+		breakGlassLoginPath:    breakGlassLoginPath,
 		loginRateLimiter:       newLoginRateLimiter(authRateLimitMaxAttempts, authRateLimitWindow),
 		breakGlassRateLimiter:  newLoginRateLimiter(authRateLimitMaxAttempts, authRateLimitWindow),
 		setupGate:              newSetupGate(breakGlassStore),
@@ -176,16 +183,23 @@ func (a *API) Router() http.Handler {
 	r.With(a.loginRateLimiter.middleware, a.RequireCSRF).Post("/login", a.handleLogin)
 	// GET serves the break-glass sign-in form; POST serves both that
 	// form's own submission and the existing JSON API contract - same
-	// isFormRequest branch handleLogin already established. Both verbs
-	// sit behind a.breakGlassIPWhitelist - the credential being protected
-	// is identical either way, so a curl/API caller gets the same IP gate
-	// a browser does (BREAKGLASS_ALLOWED_IPS - empty means allow from
-	// anywhere, see breakglass_ip_whitelist.go and PLANNING.md's
-	// Decisions Log). breakGlassRateLimiter is a separate loginRateLimiter
-	// instance from the one guarding /login above, so a burst against one
-	// credential never exhausts the other's budget.
-	r.With(a.breakGlassIPWhitelist.middleware).Get("/login/break-glass", a.handleBreakGlassLoginPage)
-	r.With(a.breakGlassIPWhitelist.middleware, a.breakGlassRateLimiter.middleware, a.RequireCSRF).Post("/login/break-glass", a.handleBreakGlassLogin)
+	// isFormRequest branch handleLogin already established. Both verbs are
+	// mounted at a.breakGlassLoginPath (BREAKGLASS_LOGIN_PATH, default
+	// "/login/break-glass") rather than a literal - obscuring the route
+	// itself, layered on top of the IP gate and rate limiting below, not a
+	// substitute for either. Both verbs sit behind a.breakGlassIPWhitelist -
+	// the credential being protected is identical either way, so a curl/API
+	// caller gets the same IP gate a browser does (BREAKGLASS_ALLOWED_IPS -
+	// empty means allow from anywhere, see breakglass_ip_whitelist.go and
+	// PLANNING.md's Decisions Log). breakGlassRateLimiter is a separate
+	// loginRateLimiter instance from the one guarding /login above, so a
+	// burst against one credential never exhausts the other's budget. A
+	// BREAKGLASS_LOGIN_PATH colliding with another already-registered route
+	// panics here at router-build time (startup), before the server ever
+	// serves traffic - already a fail-fast outcome, same as any other
+	// startup-time config mistake in this codebase.
+	r.With(a.breakGlassIPWhitelist.middleware).Get(a.breakGlassLoginPath, a.handleBreakGlassLoginPage)
+	r.With(a.breakGlassIPWhitelist.middleware, a.breakGlassRateLimiter.middleware, a.RequireCSRF).Post(a.breakGlassLoginPath, a.handleBreakGlassLogin)
 	r.With(a.RequireCSRF).Post("/logout", a.handleLogout)
 
 	// Outside /api/v1: this isn't a REST endpoint (CLAUDE.md API

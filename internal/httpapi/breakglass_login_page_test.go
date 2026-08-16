@@ -31,7 +31,7 @@ func newBreakGlassTestServer(t *testing.T, password, allowedIPs string) *httptes
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(store, testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), allowedIPs, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), allowedIPs, testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

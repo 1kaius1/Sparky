@@ -10,11 +10,15 @@ import (
 	"github.com/1kaius1/Sparky/internal/session"
 )
 
-// breakGlassLoginPageData is the break-glass login page's view model - an
-// optional error message only, same shape as loginPageData.
+// breakGlassLoginPageData is the break-glass login page's view model.
+// LoginPath is the form's own submission target - the page must always
+// point at wherever it's actually mounted (a.breakGlassLoginPath,
+// BREAKGLASS_LOGIN_PATH), or a configured non-default path's obscurity
+// would be defeated by the page itself hardcoding the old default.
 type breakGlassLoginPageData struct {
 	Error     string
 	CSRFToken string
+	LoginPath string
 }
 
 // handleBreakGlassLoginPage serves the HTML break-glass sign-in form. Both
@@ -43,7 +47,8 @@ func (a *API) renderBreakGlassLoginPage(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, "breakglass_login", breakGlassLoginPageData{Error: errMsg, CSRFToken: csrfTokenFromContext(r.Context())}); err != nil {
+	data := breakGlassLoginPageData{Error: errMsg, CSRFToken: csrfTokenFromContext(r.Context()), LoginPath: a.breakGlassLoginPath}
+	if err := t.ExecuteTemplate(w, "breakglass_login", data); err != nil {
 		a.logger.Printf("httpapi: render break-glass login page: %v", err)
 	}
 }

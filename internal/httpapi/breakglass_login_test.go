@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/1kaius1/Sparky/internal/auth"
@@ -15,6 +17,12 @@ import (
 	"github.com/1kaius1/Sparky/internal/events"
 	"github.com/1kaius1/Sparky/internal/session"
 )
+
+// testBreakGlassLoginPath is the default used by every other test file's
+// New() call - matches the real BREAKGLASS_LOGIN_PATH default, so existing
+// tests unrelated to path configurability keep working against the
+// well-known route.
+const testBreakGlassLoginPath = "/login/break-glass"
 
 // fakeBreakGlassStore implements breakGlassStore for tests without a real
 // Postgres instance.
@@ -115,7 +123,7 @@ func TestHandleBreakGlassLogin_FullRoundTrip(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -158,7 +166,7 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 	}
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -184,7 +192,7 @@ func TestHandleBreakGlassLogin_WrongPassword(t *testing.T) {
 func TestHandleBreakGlassLogin_MissingPassword(t *testing.T) {
 	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -196,5 +204,84 @@ func TestHandleBreakGlassLogin_MissingPassword(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+// newConfigurableBreakGlassTestAPI builds a real *API with loginPath as its
+// BREAKGLASS_LOGIN_PATH, so the route-configurability behavior itself (not
+// just the credential check) can be exercised against Router()'s real
+// wiring.
+func newConfigurableBreakGlassTestAPI(t *testing.T, loginPath string) *API {
+	t.Helper()
+	hash, err := auth.HashPassword("break-glass-password")
+	if err != nil {
+		t.Fatalf("HashPassword() error: %v", err)
+	}
+	loginSvc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
+	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
+	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", loginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
+	if err != nil {
+		t.Fatalf("New() error: %v", err)
+	}
+	return api
+}
+
+func TestBreakGlassLoginPath_ConfiguredPath_ServesPageAndAcceptsLogin(t *testing.T) {
+	const customPath = "/login/battery/stapler/horse/towel"
+	api := newConfigurableBreakGlassTestAPI(t, customPath)
+	srv := httptest.NewServer(api.Router())
+	defer srv.Close()
+	client := newBrowserClient(t)
+
+	getResp, err := client.Get(srv.URL + customPath)
+	if err != nil {
+		t.Fatalf("GET %s error: %v", customPath, err)
+	}
+	defer getResp.Body.Close()
+	if getResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET %s status = %d, want %d", customPath, getResp.StatusCode, http.StatusOK)
+	}
+
+	postResp := postJSON(t, client, srv.URL+customPath, breakGlassLoginRequest{Password: "break-glass-password"})
+	defer postResp.Body.Close()
+	if postResp.StatusCode != http.StatusNoContent {
+		t.Fatalf("POST %s status = %d, want %d", customPath, postResp.StatusCode, http.StatusNoContent)
+	}
+}
+
+func TestBreakGlassLoginPath_ConfiguredPath_OldDefaultPath404s(t *testing.T) {
+	api := newConfigurableBreakGlassTestAPI(t, "/login/battery/stapler/horse/towel")
+	srv := httptest.NewServer(api.Router())
+	defer srv.Close()
+	client := newBrowserClient(t)
+
+	resp, err := client.Get(srv.URL + "/login/break-glass")
+	if err != nil {
+		t.Fatalf("GET /login/break-glass error: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("GET /login/break-glass status = %d, want %d - the well-known default must not still resolve once a custom path is configured", resp.StatusCode, http.StatusNotFound)
+	}
+}
+
+func TestBreakGlassLoginPage_FormAction_ReflectsConfiguredPath(t *testing.T) {
+	const customPath = "/login/battery/stapler/horse/towel"
+	api := newConfigurableBreakGlassTestAPI(t, customPath)
+	srv := httptest.NewServer(api.Router())
+	defer srv.Close()
+	client := newBrowserClient(t)
+
+	resp, err := client.Get(srv.URL + customPath)
+	if err != nil {
+		t.Fatalf("GET %s error: %v", customPath, err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read response body: %v", err)
+	}
+	if !strings.Contains(string(body), `action="`+customPath+`"`) {
+		t.Errorf("rendered page does not contain action=%q - the form still points at the old default", customPath)
 	}
 }

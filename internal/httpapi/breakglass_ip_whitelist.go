@@ -10,9 +10,10 @@ import (
 	"strings"
 )
 
-// breakGlassIPWhitelist gates /login/break-glass (both the GUI page and the
-// JSON endpoint - see router.go) to a configured set of source IPs/CIDR
-// ranges. Client IP is taken from r.RemoteAddr (the direct TCP peer), not
+// breakGlassIPWhitelist gates the break-glass login route (both the GUI page
+// and the JSON endpoint, wherever BREAKGLASS_LOGIN_PATH mounts them - see
+// router.go) to a configured set of source IPs/CIDR ranges. Client IP is
+// taken from r.RemoteAddr (the direct TCP peer), not
 // any X-Forwarded-* header - confirmed with the user (PLANNING.md Decisions
 // Log): unlike isSecureRequest's X-Forwarded-Proto trust (a value only the
 // reverse proxy itself sets, and only ever affects a cookie flag), a

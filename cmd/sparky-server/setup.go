@@ -36,7 +36,7 @@ func runSetup(ctx context.Context, cfg *config.Config, logger *log.Logger) {
 		fmt.Println("============")
 		fmt.Println()
 		fmt.Println("This sets the SuperAdmin break-glass password: the recovery credential")
-		fmt.Println("used to log in (POST /login/break-glass) and promote the first real")
+		fmt.Printf("used to log in (POST %s) and promote the first real\n", cfg.BreakGlassLoginPath)
 		fmt.Println("Admin when AD/LDAP access isn't available or hasn't been set up yet.")
 		fmt.Println("See SCHEMA.md Break-glass credential.")
 		fmt.Println()
@@ -53,6 +53,6 @@ func runSetup(ctx context.Context, cfg *config.Config, logger *log.Logger) {
 
 	fmt.Println()
 	fmt.Println("Setup complete. Start the server, then log in as SuperAdmin at")
-	fmt.Println("POST /login/break-glass to bootstrap the first Admin - see SCHEMA.md")
+	fmt.Printf("POST %s to bootstrap the first Admin - see SCHEMA.md\n", cfg.BreakGlassLoginPath)
 	fmt.Println("Users, Elevation rules.")
 }

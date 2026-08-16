@@ -1175,6 +1175,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   manual unlock needed. See PLANNING.md's 2026-08-16 Decisions Log entry for
   the full design, including why per-IP was chosen over per-account
   lockout.
+- The break-glass login route's path is now configurable via
+  `BREAKGLASS_LOGIN_PATH` (default `/login/break-glass`, unchanged from
+  before) - security-through-obscurity layered on top of (not instead of)
+  `BREAKGLASS_ALLOWED_IPS` and the rate limiting above, since an attacker who
+  doesn't know the URL can't reach either check to begin probing. The
+  rendered page's form and `sparky-server setup`'s operator-facing messages
+  both reflect whatever path is actually configured. See PLANNING.md's
+  2026-08-16 Decisions Log entry for the full design.
 
 ---
 
