@@ -1115,6 +1115,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Log for why.
 
 ### Security
+- CSRF protection on every state-changing endpoint (`/login`,
+  `/login/break-glass`, `/logout`, `/nodes/register`, `/profiles/new`,
+  `/profiles/{id}/edit`, `/profiles/{id}/load`, `/instances/{id}/unload`,
+  `/users/{id}/tier`) - closes an app-wide gap on record since Dashboard UI
+  Phase 2, per CLAUDE.md Security Considerations. New
+  `internal/httpapi/csrf.go`: a hand-rolled double-submit-cookie token
+  (`sparky_csrf`, `HttpOnly`/`Secure`/`SameSite=Lax`, matching the session
+  cookie's own attributes), a global `ensureCSRFToken` middleware that
+  guarantees a token exists before any page renders, and a per-route
+  `RequireCSRF` middleware wired explicitly alongside `RequireSession` on
+  each write route. The four classic `<form method="post">` writes (login,
+  break-glass login, node registration, profile create/edit) embed the
+  token as a hidden `csrf_token` field; the four htmx `hx-post` writes
+  (logout, tier-change, load, unload) pick it up from a single `hx-headers`
+  attribute on `base.html`'s `<body>`. Skips enforcement for non-form
+  (JSON API) requests, which aren't triggerable by a naive cross-site form
+  submission in the first place. See PLANNING.md's 2026-08-16 Decisions Log
+  entry for the full design and the choices confirmed with the user.
 
 ---
 

@@ -11,7 +11,7 @@
   <script src="/static/js/metrics.js"></script>
   <script src="/static/js/sse.js"></script>
 </head>
-<body>
+<body hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}'>
   <div class="layout">
     <nav class="sidebar">
       <div class="sidebar-brand">Sparky</div>

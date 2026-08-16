@@ -6,6 +6,7 @@
 {{end}}
 
 <form method="post" action="/nodes/register">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <p>
     <label for="name">Name</label><br>
     <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" required>

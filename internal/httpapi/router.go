@@ -150,13 +150,16 @@ func (a *API) Router() http.Handler {
 	r.Use(setRequestIDHeader)
 	r.Use(middleware.Recoverer)
 	r.Use(a.setupGate.middleware)
+	// Global, unlike RequireCSRF below - even a plain GET that renders a
+	// form needs a token already available to embed in it. See csrf.go.
+	r.Use(a.ensureCSRFToken)
 
 	// GET /login serves the HTML login form (Dashboard UI Phase 2);
 	// POST /login itself now serves two callers - the JSON API/htmx
 	// contract (unchanged) and this form's own browser submission - see
 	// isFormRequest in login_page.go.
 	r.Get("/login", a.handleLoginPage)
-	r.Post("/login", a.handleLogin)
+	r.With(a.RequireCSRF).Post("/login", a.handleLogin)
 	// GET serves the break-glass sign-in form; POST serves both that
 	// form's own submission and the existing JSON API contract - same
 	// isFormRequest branch handleLogin already established. Both verbs
@@ -166,8 +169,8 @@ func (a *API) Router() http.Handler {
 	// anywhere, see breakglass_ip_whitelist.go and PLANNING.md's
 	// Decisions Log).
 	r.With(a.breakGlassIPWhitelist.middleware).Get("/login/break-glass", a.handleBreakGlassLoginPage)
-	r.With(a.breakGlassIPWhitelist.middleware).Post("/login/break-glass", a.handleBreakGlassLogin)
-	r.Post("/logout", a.handleLogout)
+	r.With(a.breakGlassIPWhitelist.middleware, a.RequireCSRF).Post("/login/break-glass", a.handleBreakGlassLogin)
+	r.With(a.RequireCSRF).Post("/logout", a.handleLogout)
 
 	// Outside /api/v1: this isn't a REST endpoint (CLAUDE.md API
 	// Conventions) - it's a WebSocket upgrade, authenticated by the
@@ -202,7 +205,7 @@ func (a *API) Router() http.Handler {
 	// the form at all, POST (via nodes.Service.RegisterNode) as the real
 	// enforcement boundary that never trusts what the GET rendered.
 	r.With(a.RequireSession).Get("/nodes/register", a.handleRegisterNodeForm)
-	r.With(a.RequireSession).Post("/nodes/register", a.handleRegisterNode)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/nodes/register", a.handleRegisterNode)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
 	// The create/edit form's own RBAC gate (rbac.CanManageProfiles) is
 	// checked directly in each handler - GET to decide whether to show
@@ -210,16 +213,16 @@ func (a *API) Router() http.Handler {
 	// UpdateProfile) as the real enforcement boundary that never trusts
 	// what the GET rendered - same reasoning as node registration.
 	r.With(a.RequireSession).Get("/profiles/new", a.handleNewProfileForm)
-	r.With(a.RequireSession).Post("/profiles/new", a.handleCreateProfile)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/new", a.handleCreateProfile)
 	r.With(a.RequireSession).Get("/profiles/{id}/edit", a.handleEditProfileForm)
-	r.With(a.RequireSession).Post("/profiles/{id}/edit", a.handleUpdateProfile)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/{id}/edit", a.handleUpdateProfile)
 	// Load/Unload (Dashboard UI Phase 11, the fourth and last write/action
 	// form) - the RBAC gate (rbac.CanLaunchInstances) is checked inside
 	// lifecycle.Service.LoadInstance/UnloadInstance itself, same
 	// RequireSession-only-at-the-router-level reasoning as every other
 	// write route above.
-	r.With(a.RequireSession).Post("/profiles/{id}/load", a.handleLoadInstance)
-	r.With(a.RequireSession).Post("/instances/{id}/unload", a.handleUnloadInstance)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/{id}/load", a.handleLoadInstance)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/instances/{id}/unload", a.handleUnloadInstance)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	r.With(a.RequireSession).Get("/metrics", a.handleMetrics)
 	// /audit-log's floor is Admin, not Read-only - RequireSession only
@@ -234,7 +237,7 @@ func (a *API) Router() http.Handler {
 	// handleElevateUser via rbac.Service.ElevateTier, same reasoning as
 	// every other Admin-floor page above - RequireSession only confirms a
 	// session exists.
-	r.With(a.RequireSession).Post("/users/{id}/tier", a.handleElevateUser)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/users/{id}/tier", a.handleElevateUser)
 	// /settings' floor is also Admin, same reasoning as /audit-log and
 	// /users - the tier check happens inside handleSettings via
 	// settings.Service.Get.
