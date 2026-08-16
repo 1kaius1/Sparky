@@ -25,6 +25,23 @@ func createTestProfile(t *testing.T, profiles *ProfileRepository, nodeID string)
 	return p
 }
 
+// createTestProfileNamed is createTestProfile with an explicit name suffix
+// - needed wherever a single test creates more than one profile, since
+// createTestProfile's name is fixed per t.Name() and a second call would
+// collide with model_profiles' unique name constraint.
+func createTestProfileNamed(t *testing.T, profiles *ProfileRepository, name, nodeID string) *Profile {
+	t.Helper()
+	p, err := profiles.Create(context.Background(), fmt.Sprintf("profile-%s-%s", name, t.Name()), "Qwen/Qwen2.5-0.5B-Instruct",
+		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, nodeID, 8000, nil)
+	if err != nil {
+		t.Fatalf("create test profile %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		_, _ = profiles.pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE id = $1`, p.ID)
+	})
+	return p
+}
+
 // createTestRunningInstance creates a throwaway running instance in
 // RunningInstanceStatusStarting, cleaned up after the test.
 func createTestRunningInstance(t *testing.T, instances *RunningInstanceRepository, profileID, nodeID string, startedBy *string) *RunningInstance {
@@ -234,6 +251,108 @@ func TestRunningInstanceRepository_FindActiveByNode_NoneActive(t *testing.T) {
 	if err != ErrRunningInstanceNotFound {
 		t.Errorf("FindActiveByNode() error = %v, want ErrRunningInstanceNotFound", err)
 	}
+}
+
+func TestRunningInstanceRepository_ListRunningByNode_ReturnsOnlyRunning(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profileA := createTestProfileNamed(t, profiles, "a", node.ID)
+	profileB := createTestProfileNamed(t, profiles, "b", node.ID)
+	profileC := createTestProfileNamed(t, profiles, "c", node.ID)
+
+	running1 := createTestRunningInstance(t, instances, profileA.ID, node.ID, nil)
+	running2 := createTestRunningInstance(t, instances, profileB.ID, node.ID, nil)
+	starting := createTestRunningInstance(t, instances, profileC.ID, node.ID, nil)
+
+	port := 8000
+	if err := instances.SetStatus(ctx, running1.ID, RunningInstanceStatusRunning, &port, nil); err != nil {
+		t.Fatalf("SetStatus(running1) error: %v", err)
+	}
+	if err := instances.SetStatus(ctx, running2.ID, RunningInstanceStatusRunning, &port, nil); err != nil {
+		t.Fatalf("SetStatus(running2) error: %v", err)
+	}
+	// starting stays in its default "starting" status - not included.
+	_ = starting
+
+	got, err := instances.ListRunningByNode(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("ListRunningByNode() error: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ListRunningByNode() returned %d instances, want 2 (both running-status rows, not the starting one)", len(got))
+	}
+	var foundIDs []string
+	for _, inst := range got {
+		foundIDs = append(foundIDs, inst.ID)
+		if inst.Status != RunningInstanceStatusRunning {
+			t.Errorf("returned instance %s has status %q, want %q", inst.ID, inst.Status, RunningInstanceStatusRunning)
+		}
+	}
+	if !contains(foundIDs, running1.ID) || !contains(foundIDs, running2.ID) {
+		t.Errorf("ListRunningByNode() = %v, want it to include %q and %q", foundIDs, running1.ID, running2.ID)
+	}
+}
+
+func TestRunningInstanceRepository_ListRunningByNode_ExcludesOtherNodes(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	nodeA := createTestNode(t, nodes, fmt.Sprintf("node-a-%s", t.Name()))
+	nodeB := createTestNode(t, nodes, fmt.Sprintf("node-b-%s", t.Name()))
+	profileA := createTestProfileNamed(t, profiles, "a", nodeA.ID)
+	profileB := createTestProfileNamed(t, profiles, "b", nodeB.ID)
+
+	instOnA := createTestRunningInstance(t, instances, profileA.ID, nodeA.ID, nil)
+	instOnB := createTestRunningInstance(t, instances, profileB.ID, nodeB.ID, nil)
+
+	port := 8000
+	if err := instances.SetStatus(ctx, instOnA.ID, RunningInstanceStatusRunning, &port, nil); err != nil {
+		t.Fatalf("SetStatus(instOnA) error: %v", err)
+	}
+	if err := instances.SetStatus(ctx, instOnB.ID, RunningInstanceStatusRunning, &port, nil); err != nil {
+		t.Fatalf("SetStatus(instOnB) error: %v", err)
+	}
+
+	got, err := instances.ListRunningByNode(ctx, nodeA.ID)
+	if err != nil {
+		t.Fatalf("ListRunningByNode() error: %v", err)
+	}
+	if len(got) != 1 || got[0].ID != instOnA.ID {
+		t.Errorf("ListRunningByNode(nodeA) = %+v, want exactly [%q]", got, instOnA.ID)
+	}
+}
+
+func TestRunningInstanceRepository_ListRunningByNode_NoneRunning(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+
+	got, err := instances.ListRunningByNode(context.Background(), node.ID)
+	if err != nil {
+		t.Fatalf("ListRunningByNode() error: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("ListRunningByNode() = %v, want empty", got)
+	}
+}
+
+func contains(ss []string, s string) bool {
+	for _, v := range ss {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRunningInstanceRepository_SetStatus_NonTerminal_ActualPortSet(t *testing.T) {

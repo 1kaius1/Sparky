@@ -54,6 +54,14 @@ type statusStore interface {
 // feature-specific logic.
 type OnMessageFunc func(nodeID string, env agentproto.Envelope)
 
+// OnConnectFunc is called once a node's handshake has succeeded and it is
+// registered and marked online - same genericity reasoning as
+// OnMessageFunc: this package has no idea what a caller does with the
+// event (e.g. internal/lifecycle's running_instances staleness
+// reconciliation sweep, PLANNING.md's Decisions Log), only that a
+// connection just became usable.
+type OnConnectFunc func(ctx context.Context, nodeID string)
+
 // Handler is the WebSocket endpoint agents dial into. It implements
 // http.Handler so it mounts directly into internal/httpapi's router.
 type Handler struct {
@@ -62,14 +70,16 @@ type Handler struct {
 	registry  *Registry
 	logger    *log.Logger
 	onMessage OnMessageFunc
+	onConnect OnConnectFunc
 }
 
 // NewHandler constructs a Handler. onMessage may be nil - a caller with no
 // command types to dispatch yet (as of Model transfers Phase 2, nothing
 // wires a real callback in) simply passes nil, and every message this
 // package doesn't already handle internally is silently discarded.
-func NewHandler(auth authenticator, status statusStore, registry *Registry, logger *log.Logger, onMessage OnMessageFunc) *Handler {
-	return &Handler{auth: auth, status: status, registry: registry, logger: logger, onMessage: onMessage}
+// onConnect may also be nil, same reasoning.
+func NewHandler(auth authenticator, status statusStore, registry *Registry, logger *log.Logger, onMessage OnMessageFunc, onConnect OnConnectFunc) *Handler {
+	return &Handler{auth: auth, status: status, registry: registry, logger: logger, onMessage: onMessage, onConnect: onConnect}
 }
 
 // ServeHTTP upgrades the request to a WebSocket, runs the hello/auth
@@ -103,6 +113,17 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Printf("agentconn: send hello_ack for node %s: %v", node.ID, err)
 	}
 	h.logger.Printf("agentconn: node %s (%s) connected", node.Name, node.ID)
+
+	// Fire-and-forget, in its own goroutine, so a slow onConnect (e.g. the
+	// running_instances reconciliation sweep's DB query and dispatches)
+	// never delays this connection's transition into readLoop below - see
+	// OnConnectFunc's doc comment. r.Context() (not context.Background())
+	// ties it to this connection's own lifetime, same as readLoop itself
+	// uses: no point still trying to reconcile a connection that's already
+	// gone by the time the query would complete.
+	if h.onConnect != nil {
+		go h.onConnect(r.Context(), node.ID)
+	}
 
 	defer func() {
 		h.registry.Unregister(node.ID, conn)

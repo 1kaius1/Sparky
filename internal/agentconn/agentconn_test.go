@@ -73,10 +73,20 @@ func testHandler(t *testing.T, auth authenticator) (*Handler, *fakeStatusStore, 
 
 func testHandlerWithOnMessage(t *testing.T, auth authenticator, onMessage OnMessageFunc) (*Handler, *fakeStatusStore, *Registry) {
 	t.Helper()
+	return testHandlerWithCallbacks(t, auth, onMessage, nil)
+}
+
+func testHandlerWithOnConnect(t *testing.T, auth authenticator, onConnect OnConnectFunc) (*Handler, *fakeStatusStore, *Registry) {
+	t.Helper()
+	return testHandlerWithCallbacks(t, auth, nil, onConnect)
+}
+
+func testHandlerWithCallbacks(t *testing.T, auth authenticator, onMessage OnMessageFunc, onConnect OnConnectFunc) (*Handler, *fakeStatusStore, *Registry) {
+	t.Helper()
 	status := newFakeStatusStore()
 	registry := NewRegistry()
 	logger := log.New(io.Discard, "", 0)
-	return NewHandler(auth, status, registry, logger, onMessage), status, registry
+	return NewHandler(auth, status, registry, logger, onMessage, onConnect), status, registry
 }
 
 func dialTestServer(t *testing.T, h *Handler) *websocket.Conn {
@@ -312,6 +322,46 @@ func TestHandler_OnMessage_NotCalledForInternalTypes(t *testing.T) {
 	select {
 	case got := <-called:
 		t.Fatalf("onMessage was called (%+v) for a heartbeat, want it to stay internal", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestHandler_OnConnect_FiresAfterSuccessfulHandshake(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	connected := make(chan string, 1)
+	onConnect := func(_ context.Context, nodeID string) {
+		connected <- nodeID
+	}
+	h, _, _ := testHandlerWithOnConnect(t, &fakeAuthenticator{node: node}, onConnect)
+	conn := dialTestServer(t, h)
+
+	writeHello(t, conn, "req-1", "spark-1", "spk_validtoken")
+	readHelloAck(t, conn)
+
+	select {
+	case gotNodeID := <-connected:
+		if gotNodeID != "node-1" {
+			t.Errorf("onConnect nodeID = %q, want %q", gotNodeID, "node-1")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for onConnect to be called")
+	}
+}
+
+func TestHandler_OnConnect_NotCalledForRejectedHandshake(t *testing.T) {
+	called := make(chan string, 1)
+	onConnect := func(_ context.Context, nodeID string) {
+		called <- nodeID
+	}
+	h, _, _ := testHandlerWithOnConnect(t, &fakeAuthenticator{err: errors.New("invalid node credentials")}, onConnect)
+	conn := dialTestServer(t, h)
+
+	writeHello(t, conn, "req-1", "unknown-node", "spk_badtoken")
+	readHelloAck(t, conn)
+
+	select {
+	case gotNodeID := <-called:
+		t.Fatalf("onConnect was called (%q) despite a rejected handshake", gotNodeID)
 	case <-time.After(200 * time.Millisecond):
 	}
 }

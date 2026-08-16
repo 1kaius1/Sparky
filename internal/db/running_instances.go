@@ -148,6 +148,44 @@ func (r *RunningInstanceRepository) FindActiveByNode(ctx context.Context, nodeID
 	return scanRunningInstance(row)
 }
 
+// ListRunningByNode returns every currently-RunningInstanceStatusRunning
+// instance on nodeID - the input to the running_instances staleness
+// reconciliation sweep (PLANNING.md's Decisions Log), triggered when that
+// node's agent reconnects. Deliberately plural and scoped to exactly
+// 'running', unlike the narrower, singular FindActiveByNode above (which
+// internal/metrics depends on for a different purpose, most-recent-only):
+// a node can legitimately have more than one simultaneously-running
+// instance (multiple profiles, different ports), and every one of them
+// needs to be re-verified, not just the latest. Also deliberately narrower
+// than FindActiveByProfileID's "starting, running, or stopping" - a
+// transitional row isn't this fix's concern (a separate, already-tracked
+// Known Issues gap covers stuck starting/stopping rows from a different
+// cause).
+func (r *RunningInstanceRepository) ListRunningByNode(ctx context.Context, nodeID string) ([]*RunningInstance, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+runningInstanceColumns+` FROM running_instances
+		 WHERE primary_node_id = $1 AND status = 'running'
+		 ORDER BY started_at`,
+		nodeID)
+	if err != nil {
+		return nil, fmt.Errorf("list running instances for node %s: %w", nodeID, err)
+	}
+	defer rows.Close()
+
+	var instances []*RunningInstance
+	for rows.Next() {
+		inst, err := scanRunningInstance(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list running instances for node %s: %w", nodeID, err)
+		}
+		instances = append(instances, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list running instances for node %s: %w", nodeID, err)
+	}
+	return instances, nil
+}
+
 // SetStatus transitions a running instance's status. actualPort, when
 // non-nil, is recorded (typically once status becomes
 // RunningInstanceStatusRunning, per the agent's instance_result report);

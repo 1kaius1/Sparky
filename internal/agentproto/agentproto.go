@@ -65,8 +65,22 @@ const (
 	// TypeLoadInstance/TypeUnloadInstance, reporting the outcome - the
 	// only feedback mechanism the central app has for what actually
 	// happened on the node, matching TypeTransferProgress's role for
-	// downloads.
+	// downloads. Also sent in response to TypeCheckInstance below - a
+	// third sender of this same message type, not a new one, since
+	// "here's this instance's current status" is exactly what it already
+	// carries.
 	TypeInstanceResult MessageType = "instance_result"
+
+	// TypeCheckInstance is sent by the central app to an agent, asking it
+	// to confirm whether a specific instance is actually still running -
+	// the running_instances staleness reconciliation sweep triggered on a
+	// fresh agent connection (PLANNING.md's Decisions Log), not a normal
+	// load/unload command. The agent answers via TypeInstanceResult, the
+	// same message type LoadInstance/UnloadInstance already get answered
+	// with (InstanceStatusRunning or InstanceStatusStopped) - see
+	// agent/connection's dispatch, which handles it via
+	// runtime.Backend.IsRunning.
+	TypeCheckInstance MessageType = "check_instance"
 
 	// TypeTelemetry is sent by an agent on its own poll interval
 	// (SPARKY_TELEMETRY_POLL_INTERVAL, docs/AGENT.md Configuration and
@@ -217,6 +231,12 @@ type LoadInstance struct {
 // containers.InstanceContainerName), so the central app never needs to
 // track a live container identity of its own.
 type UnloadInstance struct {
+	InstanceID string `json:"instance_id"`
+}
+
+// CheckInstance is TypeCheckInstance's payload - same shape as
+// UnloadInstance, since both only need to name which instance.
+type CheckInstance struct {
 	InstanceID string `json:"instance_id"`
 }
 

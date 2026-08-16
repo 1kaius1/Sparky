@@ -178,7 +178,7 @@ func main() {
 			logger.Printf("agentconn: node %s sent an unhandled message type %q", nodeID, env.Type)
 		}
 	}
-	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, onMessage)
+	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, onMessage, lifecycleService.ReconcileNode)
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.

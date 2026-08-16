@@ -29,6 +29,7 @@ type instanceStore interface {
 	FindActiveByProfileID(ctx context.Context, profileID string) (*db.RunningInstance, error)
 	SetStatus(ctx context.Context, id string, status db.RunningInstanceStatus, actualPort *int, errorMessage *string) error
 	List(ctx context.Context) ([]*db.RunningInstance, error)
+	ListRunningByNode(ctx context.Context, nodeID string) ([]*db.RunningInstance, error)
 }
 
 // adapterRegistry is the subset of *engines.Registry this package needs -
@@ -276,6 +277,39 @@ func (s *Service) HandleInstanceResult(nodeID string, env agentproto.Envelope) {
 	ctx := context.Background()
 	if err := s.instances.SetStatus(ctx, result.InstanceID, status, actualPort, errMsg); err != nil {
 		s.logger.Printf("lifecycle: set status for running instance %s: %v", result.InstanceID, err)
+	}
+}
+
+// ReconcileNode implements agentconn.OnConnectFunc - the running_instances
+// staleness fix (PLANNING.md's Decisions Log): fires once nodeID's agent
+// connection is freshly established (including the very first connection
+// ever, where ListRunningByNode simply returns nothing to check), asking
+// the agent to confirm, one at a time, whether each row this table still
+// believes is running on that node actually still is. The agent's answer
+// arrives back through the ordinary TypeInstanceResult path
+// (HandleInstanceResult above) - this method only needs to ask the
+// question, not handle the answer itself.
+//
+// Not audited - system-internal, not actor-driven, same precedent as
+// HandleInstanceResult/internal/transfers.HandleTransferProgress, neither
+// of which is audited either. A dispatch failure for one instance is
+// logged and does not stop the sweep from asking about the rest.
+func (s *Service) ReconcileNode(ctx context.Context, nodeID string) {
+	instances, err := s.instances.ListRunningByNode(ctx, nodeID)
+	if err != nil {
+		s.logger.Printf("lifecycle: list running instances for node %s: %v", nodeID, err)
+		return
+	}
+
+	for _, inst := range instances {
+		env, err := agentproto.NewEnvelope(agentproto.TypeCheckInstance, "", agentproto.CheckInstance{InstanceID: inst.ID})
+		if err != nil {
+			s.logger.Printf("lifecycle: build check_instance envelope for instance %s: %v", inst.ID, err)
+			continue
+		}
+		if err := s.dispatch.Send(ctx, nodeID, env); err != nil {
+			s.logger.Printf("lifecycle: dispatch check_instance for instance %s to node %s: %v", inst.ID, nodeID, err)
+		}
 	}
 }
 

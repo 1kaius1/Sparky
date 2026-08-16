@@ -75,4 +75,17 @@ type Backend interface {
 	// backend, this is what keeps an agent exit from orphaning a live
 	// child process.
 	Shutdown(ctx context.Context) error
+
+	// IsRunning reports whether instanceID is currently running, used by
+	// agent/connection's TypeCheckInstance dispatch to answer the central
+	// app's reconciliation sweep after a reconnect (PLANNING.md's
+	// running_instances staleness fix) - each backend answers from
+	// whatever it already tracks for its own operational purposes, never
+	// inventing new bookkeeping just to answer this. The containers
+	// backend queries the Docker/Podman daemon directly (the durable
+	// source of truth, independent of the agent's own process lifetime);
+	// the bare-metal backend answers from its own in-memory process map,
+	// which is why a genuine agent crash-and-restart correctly reports
+	// "not running" for anything it no longer remembers starting.
+	IsRunning(ctx context.Context, instanceID string) (bool, error)
 }

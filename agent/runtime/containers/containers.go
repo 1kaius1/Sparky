@@ -181,11 +181,15 @@ func (b *Backend) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// IsRunning reports whether the container is currently running.
-func (b *Backend) IsRunning(ctx context.Context, containerID string) (bool, error) {
-	result, err := b.cli.ContainerInspect(ctx, containerID, client.ContainerInspectOptions{})
+// IsRunning reports whether instanceID's container is currently running -
+// see runtime.Backend's doc comment. Resolves the same deterministic
+// container name Start/Stop use (InstanceContainerName), so - like
+// them - it needs no state of its own to answer.
+func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error) {
+	name := InstanceContainerName(instanceID)
+	result, err := b.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
 	if err != nil {
-		return false, fmt.Errorf("inspect container %s: %w", containerID, err)
+		return false, fmt.Errorf("inspect container %s: %w", name, err)
 	}
 	if result.Container.State == nil {
 		return false, nil
