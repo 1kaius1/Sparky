@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds sparky-server's validated environment configuration. See
@@ -29,6 +30,7 @@ type Config struct {
 	LogFormat                string
 	AuditForwardEnabled      bool
 	BreakGlassAllowedIPs     string
+	BreakGlassLoginPath      string
 	AuthRateLimitMaxAttempts int
 	AuthRateLimitWindowSecs  int
 }
@@ -52,6 +54,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse AUTH_RATE_LIMIT_WINDOW_SECONDS: %w", err)
 	}
+	breakGlassLoginPath := getEnvDefault("BREAKGLASS_LOGIN_PATH", "/login/break-glass")
+	if !strings.HasPrefix(breakGlassLoginPath, "/") {
+		return nil, fmt.Errorf("parse BREAKGLASS_LOGIN_PATH: must start with \"/\", got %q", breakGlassLoginPath)
+	}
 
 	cfg := &Config{
 		ListenPort:               getEnvDefault("LISTEN_PORT", "8080"),
@@ -59,6 +65,7 @@ func Load() (*Config, error) {
 		LogFormat:                getEnvDefault("LOG_FORMAT", "text"),
 		AuditForwardEnabled:      os.Getenv("AUDIT_FORWARD_ENABLED") == "true",
 		BreakGlassAllowedIPs:     getEnvDefault("BREAKGLASS_ALLOWED_IPS", ""),
+		BreakGlassLoginPath:      breakGlassLoginPath,
 		AuthRateLimitMaxAttempts: authRateLimitMaxAttempts,
 		AuthRateLimitWindowSecs:  authRateLimitWindowSecs,
 	}

@@ -13,7 +13,7 @@
     {{if .Error}}
     <div class="login-error">{{.Error}}</div>
     {{end}}
-    <form method="post" action="/login/break-glass" class="login-form">
+    <form method="post" action="{{.LoginPath}}" class="login-form">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <label for="password">SuperAdmin password</label>
       <input type="password" id="password" name="password" autocomplete="current-password" autofocus required>

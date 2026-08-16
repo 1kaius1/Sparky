@@ -67,6 +67,9 @@ func TestLoad_DefaultsApply(t *testing.T) {
 	if cfg.BreakGlassAllowedIPs != "" {
 		t.Errorf("BreakGlassAllowedIPs = %q, want empty by default", cfg.BreakGlassAllowedIPs)
 	}
+	if cfg.BreakGlassLoginPath != "/login/break-glass" {
+		t.Errorf("BreakGlassLoginPath = %q, want default %q", cfg.BreakGlassLoginPath, "/login/break-glass")
+	}
 	if cfg.AuthRateLimitMaxAttempts != 10 {
 		t.Errorf("AuthRateLimitMaxAttempts = %d, want default %d", cfg.AuthRateLimitMaxAttempts, 10)
 	}
@@ -82,6 +85,7 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	t.Setenv("LOG_FORMAT", "json")
 	t.Setenv("AUDIT_FORWARD_ENABLED", "true")
 	t.Setenv("BREAKGLASS_ALLOWED_IPS", "127.0.0.1,10.0.0.0/24")
+	t.Setenv("BREAKGLASS_LOGIN_PATH", "/login/battery/stapler/horse/towel")
 	t.Setenv("AUTH_RATE_LIMIT_MAX_ATTEMPTS", "5")
 	t.Setenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "60")
 
@@ -105,11 +109,40 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	if cfg.BreakGlassAllowedIPs != "127.0.0.1,10.0.0.0/24" {
 		t.Errorf("BreakGlassAllowedIPs = %q, want %q", cfg.BreakGlassAllowedIPs, "127.0.0.1,10.0.0.0/24")
 	}
+	if cfg.BreakGlassLoginPath != "/login/battery/stapler/horse/towel" {
+		t.Errorf("BreakGlassLoginPath = %q, want %q", cfg.BreakGlassLoginPath, "/login/battery/stapler/horse/towel")
+	}
 	if cfg.AuthRateLimitMaxAttempts != 5 {
 		t.Errorf("AuthRateLimitMaxAttempts = %d, want %d", cfg.AuthRateLimitMaxAttempts, 5)
 	}
 	if cfg.AuthRateLimitWindowSecs != 60 {
 		t.Errorf("AuthRateLimitWindowSecs = %d, want %d", cfg.AuthRateLimitWindowSecs, 60)
+	}
+}
+
+func TestLoad_EmptyBreakGlassLoginPath_FallsBackToDefault(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("BREAKGLASS_LOGIN_PATH", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.BreakGlassLoginPath != "/login/break-glass" {
+		t.Errorf("BreakGlassLoginPath = %q, want default %q", cfg.BreakGlassLoginPath, "/login/break-glass")
+	}
+}
+
+func TestLoad_BreakGlassLoginPathMissingLeadingSlash_ReturnsError(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("BREAKGLASS_LOGIN_PATH", "login/break-glass")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() succeeded despite a BREAKGLASS_LOGIN_PATH missing its leading slash, want an error")
+	}
+	if !strings.Contains(err.Error(), "BREAKGLASS_LOGIN_PATH") {
+		t.Errorf("Load() error = %q, want it to mention BREAKGLASS_LOGIN_PATH", err.Error())
 	}
 }
 
