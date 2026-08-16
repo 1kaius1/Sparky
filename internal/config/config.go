@@ -8,6 +8,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Config holds sparky-server's validated environment configuration. See
@@ -23,11 +24,13 @@ type Config struct {
 
 	SessionSecret string
 
-	ListenPort           string
-	LogLevel             string
-	LogFormat            string
-	AuditForwardEnabled  bool
-	BreakGlassAllowedIPs string
+	ListenPort               string
+	LogLevel                 string
+	LogFormat                string
+	AuditForwardEnabled      bool
+	BreakGlassAllowedIPs     string
+	AuthRateLimitMaxAttempts int
+	AuthRateLimitWindowSecs  int
 }
 
 // required maps each mandatory environment variable to the Config field it
@@ -41,12 +44,23 @@ type required struct {
 // if anything required is missing - see ARCHITECTURE.md Application
 // Lifecycle, Config / Env Validation.
 func Load() (*Config, error) {
+	authRateLimitMaxAttempts, err := getEnvDefaultInt("AUTH_RATE_LIMIT_MAX_ATTEMPTS", 10)
+	if err != nil {
+		return nil, fmt.Errorf("parse AUTH_RATE_LIMIT_MAX_ATTEMPTS: %w", err)
+	}
+	authRateLimitWindowSecs, err := getEnvDefaultInt("AUTH_RATE_LIMIT_WINDOW_SECONDS", 300)
+	if err != nil {
+		return nil, fmt.Errorf("parse AUTH_RATE_LIMIT_WINDOW_SECONDS: %w", err)
+	}
+
 	cfg := &Config{
-		ListenPort:           getEnvDefault("LISTEN_PORT", "8080"),
-		LogLevel:             getEnvDefault("LOG_LEVEL", "info"),
-		LogFormat:            getEnvDefault("LOG_FORMAT", "text"),
-		AuditForwardEnabled:  os.Getenv("AUDIT_FORWARD_ENABLED") == "true",
-		BreakGlassAllowedIPs: getEnvDefault("BREAKGLASS_ALLOWED_IPS", ""),
+		ListenPort:               getEnvDefault("LISTEN_PORT", "8080"),
+		LogLevel:                 getEnvDefault("LOG_LEVEL", "info"),
+		LogFormat:                getEnvDefault("LOG_FORMAT", "text"),
+		AuditForwardEnabled:      os.Getenv("AUDIT_FORWARD_ENABLED") == "true",
+		BreakGlassAllowedIPs:     getEnvDefault("BREAKGLASS_ALLOWED_IPS", ""),
+		AuthRateLimitMaxAttempts: authRateLimitMaxAttempts,
+		AuthRateLimitWindowSecs:  authRateLimitWindowSecs,
 	}
 
 	fields := []required{
@@ -81,4 +95,21 @@ func getEnvDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getEnvDefaultInt reads key as an integer, falling back to fallback if
+// unset. Returns an error on a set-but-malformed value - a startup-time
+// config mistake should fail fast, same philosophy as Load's own missing-
+// required-variable check and newBreakGlassIPWhitelist's malformed-entry
+// handling.
+func getEnvDefaultInt(key string, fallback int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(v)
+	if err != nil {
+		return 0, fmt.Errorf("%s: invalid integer %q", key, v)
+	}
+	return n, nil
 }

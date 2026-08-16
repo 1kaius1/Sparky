@@ -360,6 +360,8 @@ with `existingSecret` support, etc.). Agent-specific variables are documented in
 | `LOG_FORMAT`             | No       | `json` (prod) / `text` (dev) | See `ARCHITECTURE.md` Logging   |
 | `AUDIT_FORWARD_ENABLED`  | No       | `false`     | Enables the optional active syslog/GELF push - see `SCHEMA.md` Audit settings |
 | `BREAKGLASS_ALLOWED_IPS` | No       | (empty, allow all) | IP/CIDR allowlist for `/login/break-glass` - see `.env.example` |
+| `AUTH_RATE_LIMIT_MAX_ATTEMPTS` | No | `10`        | Per-source-IP attempt cap for `POST /login`/`POST /login/break-glass`, each throttled independently - see `.env.example` |
+| `AUTH_RATE_LIMIT_WINDOW_SECONDS` | No | `300`     | Window (seconds) the above cap applies over before resetting |
 
 Everything else that's user-configurable after first run (metrics export
 destination, audit retention, permission overrides) lives in the database, set

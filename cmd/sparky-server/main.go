@@ -182,7 +182,7 @@ func main() {
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
-	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.SessionSecret, agentConnHandler,
+	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
 		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, eventsBroker, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
