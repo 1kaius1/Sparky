@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"strings"
 	"testing"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
@@ -46,6 +47,13 @@ type fakeInstanceStore struct {
 
 	statusCalls  []statusCall
 	setStatusErr error
+	// setStatusFailAfter delays setStatusErr until this many SetStatus
+	// calls have already succeeded - lets a test simulate a first
+	// SetStatus call succeeding (e.g. the stopping transition) and a
+	// later one failing (e.g. the dispatch-failure recovery write).
+	// Zero (the default) fails immediately, preserving every existing
+	// test's "setStatusErr set means always fail" behavior.
+	setStatusFailAfter int
 
 	listResult []*db.RunningInstance
 	listErr    error
@@ -114,7 +122,7 @@ func (f *fakeInstanceStore) FindActiveByProfileID(_ context.Context, _ string) (
 }
 
 func (f *fakeInstanceStore) SetStatus(_ context.Context, id string, status db.RunningInstanceStatus, actualPort *int, errorMessage *string) error {
-	if f.setStatusErr != nil {
+	if f.setStatusErr != nil && len(f.statusCalls) >= f.setStatusFailAfter {
 		return f.setStatusErr
 	}
 	f.statusCalls = append(f.statusCalls, statusCall{id, status, actualPort, errorMessage})
@@ -459,6 +467,35 @@ func TestService_LoadInstance_DispatchFails(t *testing.T) {
 	if len(audit.calls) != 0 {
 		t.Error("audit.Record was called despite a Send failure")
 	}
+	if len(instances.statusCalls) != 1 {
+		t.Fatalf("instances.SetStatus called %d times, want 1 to mark the stuck row failed", len(instances.statusCalls))
+	}
+	call := instances.statusCalls[0]
+	if call.id != "instance-1" {
+		t.Errorf("SetStatus id = %q, want %q", call.id, "instance-1")
+	}
+	if call.status != db.RunningInstanceStatusFailed {
+		t.Errorf("SetStatus status = %q, want %q", call.status, db.RunningInstanceStatusFailed)
+	}
+	if call.errMsg == nil || *call.errMsg == "" {
+		t.Error("SetStatus errMsg is empty, want the dispatch error recorded")
+	}
+}
+
+func TestService_LoadInstance_DispatchFails_SetStatusAlsoFails(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1", setStatusErr: errors.New("database unreachable")}
+	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
+	audit := &fakeAuditRecorder{}
+	svc := newTestService(testProfile(), instances, &fakeAdapterRegistry{adapter: fakeAdapter{}}, dispatch, audit)
+	actor := rbac.Actor{IsSuperAdmin: true}
+
+	_, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"})
+	if err == nil {
+		t.Fatal("LoadInstance() succeeded despite a Send failure")
+	}
+	if !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("LoadInstance() error = %v, want the original dispatch error, not the SetStatus failure", err)
+	}
 }
 
 func TestService_LoadInstance_AuditFailurePropagates(t *testing.T) {
@@ -522,6 +559,59 @@ func TestService_UnloadInstance_Success(t *testing.T) {
 
 	if len(audit.calls) != 1 || audit.calls[0].action != "unloaded_model" {
 		t.Errorf("audit calls = %+v, want a single unloaded_model call", audit.calls)
+	}
+}
+
+func TestService_UnloadInstance_DispatchFails(t *testing.T) {
+	instances := &fakeInstanceStore{findByIDResult: runningInstance()}
+	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
+	audit := &fakeAuditRecorder{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, testLogger())
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	_, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
+	if err == nil {
+		t.Fatal("UnloadInstance() succeeded despite a Send failure")
+	}
+	if len(audit.calls) != 0 {
+		t.Error("audit.Record was called despite a Send failure")
+	}
+
+	if len(instances.statusCalls) != 2 {
+		t.Fatalf("instances.SetStatus called %d times, want 2 (stopping, then reverted to running)", len(instances.statusCalls))
+	}
+	if instances.statusCalls[0].status != db.RunningInstanceStatusStopping {
+		t.Errorf("SetStatus[0] status = %q, want %q", instances.statusCalls[0].status, db.RunningInstanceStatusStopping)
+	}
+	revert := instances.statusCalls[1]
+	if revert.status != db.RunningInstanceStatusRunning {
+		t.Errorf("SetStatus[1] status = %q, want %q (reverted so the row is retriable)", revert.status, db.RunningInstanceStatusRunning)
+	}
+	if revert.id != "instance-1" {
+		t.Errorf("SetStatus[1] id = %q, want %q", revert.id, "instance-1")
+	}
+	if revert.errMsg == nil || *revert.errMsg == "" {
+		t.Error("SetStatus[1] errMsg is empty, want the dispatch error recorded")
+	}
+}
+
+func TestService_UnloadInstance_DispatchFails_SetStatusAlsoFails(t *testing.T) {
+	instances := &fakeInstanceStore{
+		findByIDResult:     runningInstance(),
+		setStatusErr:       errors.New("database unreachable"),
+		setStatusFailAfter: 1,
+	}
+	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
+	audit := &fakeAuditRecorder{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, testLogger())
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	_, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
+	if err == nil {
+		t.Fatal("UnloadInstance() succeeded despite a Send failure")
+	}
+	if !strings.Contains(err.Error(), "connection reset") {
+		t.Errorf("UnloadInstance() error = %v, want the original dispatch error, not the SetStatus failure", err)
 	}
 }
 
