@@ -162,7 +162,20 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 		return nil, fmt.Errorf("build load_instance envelope: %w", err)
 	}
 	if err := s.dispatch.Send(ctx, targetNodeID, env); err != nil {
-		return nil, fmt.Errorf("dispatch load_instance to node %s: %w", targetNodeID, err)
+		dispatchErr := fmt.Errorf("dispatch load_instance to node %s: %w", targetNodeID, err)
+		// The agent was never actually told to start anything, so the row
+		// this call just created should not be left stuck at starting -
+		// move it to the same terminal state a real launch failure
+		// reported by the agent would produce (mapInstanceStatus /
+		// HandleInstanceResult), so it stops looking like a live instance
+		// and the operator sees why. Best-effort: log and still return
+		// dispatchErr if this second write also fails, same precedent as
+		// ReconcileNode's per-instance dispatch failures.
+		errMsg := dispatchErr.Error()
+		if setErr := s.instances.SetStatus(ctx, inst.ID, db.RunningInstanceStatusFailed, nil, &errMsg); setErr != nil {
+			s.logger.Printf("lifecycle: mark running instance %s failed after dispatch error: %v", inst.ID, setErr)
+		}
+		return nil, dispatchErr
 	}
 
 	detail := map[string]any{
@@ -211,7 +224,18 @@ func (s *Service) UnloadInstance(ctx context.Context, actor rbac.Actor, instance
 		return nil, fmt.Errorf("build unload_instance envelope: %w", err)
 	}
 	if err := s.dispatch.Send(ctx, inst.PrimaryNodeID, env); err != nil {
-		return nil, fmt.Errorf("dispatch unload_instance to node %s: %w", inst.PrimaryNodeID, err)
+		dispatchErr := fmt.Errorf("dispatch unload_instance to node %s: %w", inst.PrimaryNodeID, err)
+		// The stop request never reached the agent, so the instance is
+		// presumably still actually running fine - revert the stopping
+		// transition above rather than leaving the row stuck, which also
+		// unblocks a retry (UnloadInstance requires status == running).
+		// Best-effort: log and still return dispatchErr if this second
+		// write also fails.
+		errMsg := dispatchErr.Error()
+		if setErr := s.instances.SetStatus(ctx, inst.ID, db.RunningInstanceStatusRunning, nil, &errMsg); setErr != nil {
+			s.logger.Printf("lifecycle: revert running instance %s to running after dispatch error: %v", inst.ID, setErr)
+		}
+		return nil, dispatchErr
 	}
 
 	var actorID *string

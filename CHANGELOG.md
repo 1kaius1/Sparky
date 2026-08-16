@@ -1133,6 +1133,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   restart, confirming the stale row flips to `stopped` within about a
   second of reconnecting with zero operator action. See PLANNING.md's
   2026-08-16 Decisions Log entry for the full design.
+- A `load_instance`/`unload_instance` dispatch failure (the WebSocket send
+  itself erroring right after a `running_instances` row was already
+  persisted) no longer leaves that row stuck at `starting`/`stopping`
+  forever with no way to retry. `LoadInstance` now moves the row to
+  `failed` with the dispatch error recorded, since the agent was never
+  actually told to start anything; `UnloadInstance` now reverts the row
+  back to `running`, since the instance is presumably still fine and this
+  is also what unblocks a retry (`UnloadInstance` requires `status =
+  running` before it will act). See PLANNING.md's Decisions Log for the
+  full rationale.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
