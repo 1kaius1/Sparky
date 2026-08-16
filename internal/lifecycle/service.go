@@ -138,10 +138,20 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 		return nil, fmt.Errorf("create running instance: %w", err)
 	}
 
+	// EngineVersion is "" (unpinned - resolve to whatever the node's
+	// latest symlink currently points to) unless the profile pins one -
+	// agentproto.LoadInstance carries plain values, not pointers, same
+	// reasoning as EngineType/ModelRef.
+	var engineVersion string
+	if profile.EngineVersion != nil {
+		engineVersion = *profile.EngineVersion
+	}
+
 	env, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               inst.ID,
 		ModelRef:                 profile.ModelRef,
 		EngineType:               string(profile.EngineType),
+		EngineVersion:            engineVersion,
 		Image:                    spec.Image,
 		Args:                     spec.Args,
 		Port:                     profile.Port,

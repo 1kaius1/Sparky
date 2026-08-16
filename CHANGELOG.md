@@ -1006,6 +1006,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mechanics only, matching this project's own repeated "logic before HTTP
   wiring" precedent. See PLANNING.md's 2026-08-15 Decisions Log entries for
   the full design.
+- Per-profile engine version pinning - a new, optional `model_profiles.
+  engine_version` column (migration `000017`) lets a Model profile pin its
+  launch to a specific installed engine binary version instead of whatever
+  a node's `latest` symlink currently points to, so two otherwise-identical
+  profiles can each pin a different version for direct output/timing/tuning
+  comparison. Threaded through `internal/db`, `internal/profiles`,
+  `internal/lifecycle`, and a new `agentproto.LoadInstance.EngineVersion`
+  field; resolved agent-side by the new
+  `agent/connection.resolveEngineBinaryPath`, which reuses the filename of
+  the already-configured `SPARKY_<ENGINE>_BINARY_PATH` under the pinned
+  version's own directory - no new per-version agent configuration needed,
+  and zero behavior change for any profile that leaves it unset. The
+  profile create/edit form gained a plain optional text field next to
+  engine type; a pin is not validated against `node_engine_inventory` at
+  save time - a bad pin fails clearly at launch time instead, matching
+  `required_memory_gb`'s own precedent. See PLANNING.md's per-profile
+  engine version pinning Decisions Log entry for the full design.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,

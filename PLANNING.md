@@ -105,10 +105,15 @@ test coverage throughout, though not yet exercised against an actual
 published release tarball on real hardware, and with no HTTP/UI surface yet
 (logic and agent-side mechanics only, matching this project's own repeated
 "logic before HTTP wiring" precedent) - see the 2026-08-15 Decisions Log
-entries. v0.2.0's remaining items are per-profile engine version pinning (a
-follow-up deliberately scoped out of the provisioning work, not started) and
-the same Docker/Podman-on-Spark CDI validation v0.1.0 is waiting on - see
-Current Sprint / Active Work below.
+entries. Per-profile engine version pinning - the follow-up deliberately
+scoped out of that provisioning work - is also done: a nullable
+`model_profiles.engine_version` column plus agent-side launch-time
+resolution (`agent/connection.resolveEngineBinaryPath`), letting two
+otherwise-identical profiles pin different installed versions for direct
+comparison, with zero behavior change for any unpinned profile - see the
+new dated Decisions Log entry. v0.2.0's only remaining item is the same
+Docker/Podman-on-Spark CDI validation v0.1.0 is waiting on - see Current
+Sprint / Active Work below.
 
 ---
 
@@ -1795,7 +1800,7 @@ Current Sprint / Active Work below.
         idempotent, and `apt purge` (untouched by this change) still behaves
         exactly as before - `serviceloop` removed, `/opt/sparky/serviceloop`
         deliberately left in place.
-  - [ ] Per-profile engine version pinning - a new `model_profiles.engine_version`
+  - [x] Per-profile engine version pinning - a new `model_profiles.engine_version`
         column (nullable, null meaning "latest") plus launch-time resolution to a
         specific installed version under `SPARKY_ENGINE_INSTALL_PATH` instead of
         always the `latest` symlink, so two otherwise-identical profiles can each
@@ -1807,6 +1812,65 @@ Current Sprint / Active Work below.
         actually exist to pin against (`node_engine_inventory`'s composite
         `(node_id, engine_type, version)` key was deliberately built to support
         this, not a v0.3.0-only precedent). No other blockers.
+
+        Done - migration `000017_add_model_profiles_engine_version` adds a
+        single nullable `engine_version text` column, no `CHECK` constraint
+        (any non-empty string accepted). Threaded mechanically through the
+        full existing chain: `internal/db.ProfileRepository`'s `Profile`
+        struct/`Create`/`Update`; `internal/profiles.Fields`/`Service`
+        (no new validation - a pin is accepted as-is and forwarded, the
+        same "attempt and report failure" philosophy `required_memory_gb`'s
+        own SCHEMA.md doc comment already states, confirmed with the user
+        over validating against `node_engine_inventory` at save time);
+        `internal/lifecycle.Service.LoadInstance`, which now sends
+        `agentproto.LoadInstance.EngineVersion` (empty string for an
+        unpinned profile - the wire field carries plain values, not
+        pointers, same convention as `EngineType`); the profile create/edit
+        form (`web/templates/pages/profile_form.html`) gained a plain
+        optional free-text input next to `engine_type`, not a dropdown
+        populated from `node_engine_inventory` (confirmed with the user -
+        matches this item's own scope, defers a picker UX).
+
+        The actual resolution happens agent-side in the new
+        `agent/connection.resolveEngineBinaryPath`: an unpinned load
+        returns exactly what today's flat `EngineBinaryPaths[engineType]`
+        lookup already resolves to (zero behavior change for any profile
+        that doesn't set `engine_version`); a pinned load reuses the
+        *filename* of the operator's static `SPARKY_<ENGINE>_BINARY_PATH`
+        config (already pointing through the `latest` symlink) under the
+        pinned version's own directory instead -
+        `SPARKY_ENGINE_INSTALL_PATH/<engine_type>/<version>/<same
+        filename>` - so provisioning this feature needed zero new
+        per-version agent configuration. `agent/runtime`/
+        `agent/runtime/baremetal` needed no changes at all -
+        `runtime.Spec.BinaryPath` was already opaque to `Start`, so a bad
+        pin surfaces as the same `exec.Command` "no such file or
+        directory" failure any other misconfigured binary path already
+        produces, reported back as a failed `instance_result` - the
+        confirmed "fail clearly at launch time, don't pre-validate"
+        design.
+
+        Verified with real `go test` coverage throughout: integration
+        tests for the new column against a real local Postgres instance
+        (set/unset round-trip on both `Create` and `Update`, including
+        that clearing a pin back to `NULL` actually clears it, and that
+        the migration's `down` reverses cleanly); unit tests for
+        `internal/profiles.Service` confirming a pin passes straight
+        through with no adapter/node-lookup involvement;
+        `internal/lifecycle.Service` confirming a pinned profile's version
+        reaches the dispatched envelope and an unpinned one sends empty;
+        `internal/agentproto` round-trip coverage for the new field;
+        `agent/connection.resolveEngineBinaryPath` unit tests (unpinned
+        passthrough, pinned reconstruction, and two degraded-config cases -
+        no binary configured, no install path configured) plus a
+        dispatch-level test confirming a pinned `LoadInstance` produces a
+        `runtime.Spec.BinaryPath` under the versioned directory; and unit
+        tests for the two pure form-handling functions the field touches
+        in `internal/httpapi` (`fieldsFromForm`/
+        `profileFormValuesFromProfile`) - noting as a pre-existing, not
+        newly-introduced gap that this package has no HTTP-level test
+        coverage for the profile create/edit handlers themselves for any
+        field, not just this one.
   - [ ] Validate the Docker/Podman runtime backend (real CDI GPU passthrough)
         against real DGX Spark hardware - the GB10 GPU supports passthrough to
         a container without affecting a display connected to it (NVIDIA's
@@ -1904,13 +1968,15 @@ duplicate checklist.
   (including integration tests for the two new repositories against a real
   local Postgres instance) but no HTTP handler or dashboard form yet, and
   not yet exercised against a real published release tarball on real
-  hardware - both explicitly out of scope for that pass. v0.2.0's
-  remaining open items are per-profile engine version pinning (a follow-up
-  deliberately scoped out of the provisioning work, not started - no
-  blockers, could be picked up next) and the Docker/Podman backend's own
-  real-hardware CDI validation, which - like v0.1.0's identical remaining
-  item - is blocked on real DGX Spark hardware, not something to pick up
-  as "next up" in the usual sense; see Dependencies and Blockers below.
+  hardware - both explicitly out of scope for that pass. Per-profile
+  engine version pinning - the follow-up deliberately scoped out of that
+  provisioning work - is also done (`model_profiles.engine_version`,
+  `agent/connection.resolveEngineBinaryPath` - see that item's own entry
+  above and its dated Decisions Log entry). v0.2.0's only remaining open
+  item is the Docker/Podman backend's own real-hardware CDI validation,
+  which - like v0.1.0's identical remaining item - is blocked on real DGX
+  Spark hardware, not something to pick up as "next up" in the usual
+  sense; see Dependencies and Blockers below.
 
 ---
 
@@ -2043,6 +2109,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | 2026-08-14 | `deploy/systemd/sparky-agent.service` gained `KillMode=mixed` | Found on the RTX 4090 laptop during real-hardware validation of `agent/runtime/baremetal`, not by inspection this time: loading a real `llamacpp` profile then `systemctl stop sparky-agent` (skipping an explicit unload first) produced a C++ `terminate()`/abort crash in `llama-server`'s own shutdown path, instead of the clean exit the same backend's explicit-unload path already produced minutes earlier. Root cause confirmed via `journalctl`, not guessed: the unit's default `KillMode` (`control-group`, since nothing set it explicitly) makes systemd send `SIGTERM` to every process in the cgroup on stop - so the tracked `llama-server` child got one `SIGTERM` from systemd directly and a second one moments later from `agent/runtime/baremetal.Backend.Shutdown`'s own per-child signaling, and llama.cpp's own signal handler treats a second interrupt arriving mid-graceful-shutdown as a request to abort immediately rather than finish cleanly (its own log line said exactly that: "Received second interrupt, terminating immediately"). `mixed` sends the stop signal to the main process only, leaving the agent's own SIGTERM-then-grace-period-then-SIGKILL logic (already built, already unit-tested) as the sole signal path during a normal stop; systemd's cgroup-wide `SIGKILL` after `TimeoutStopSec` still applies as a backstop if the agent process itself hangs, so this loses no safety net. Confirmed fixed by reproducing the exact same load-then-abrupt-stop sequence against the rebuilt, reinstalled package on the same real hardware: clean "cleaning up before exit" with no crash, same as the explicit-unload path | `KillMode=process` (considered; rejected in favor of `mixed` since `process` drops the cgroup-wide `SIGKILL` backstop entirely rather than just reordering when it applies, trading away real defense-in-depth for no additional benefit here); leaving the double-signal as-is on the theory that it's cosmetic (rejected - an engine crashing on stop, even if Sparky's own bookkeeping is unaffected, is a real operator-visible symptom worth not shipping when the fix is one well-understood line) |
 | 2026-08-15 | Engine software provisioning on bare-metal nodes (as distinct from model-weight downloads, which already exist) will be maintainer-provided artifacts distributed like models are, split into two v0.2.0/v0.3.0 work items by engine shape, rather than either agent-side source builds or leaving it fully manual forever | Prompted directly by today's own manual llama.cpp deployment during hardware validation - real toil (a hardcoded, non-relocatable `RUNPATH` needing an `LD_LIBRARY_PATH` workaround; copying a binary and its `.so` files past a `0700` home directory into `serviceloop`'s reach by hand). Agent-side source builds were considered and rejected first: compiling on the node itself means per-node toolchain/CUDA-version variability, real build time, and running arbitrary fetched source with no controlled artifact - a much bigger trust and maintenance surface than anything else this codebase takes on (nothing else here compiles third-party code at runtime). Compiled engines (llama.cpp) get prebuilt x86_64/arm64 release tarballs hosted on GitHub Releases to start (matching this project's own already-established "raw artifacts now, dedicated repo later if popularity warrants it" precedent from agent packaging - see the earlier 2026-08-13 entry), pulled by the agent directly over HTTPS the same shape as today's Hugging Face model downloads - no new central-server-side hosting needed. Python-based engines (vLLM, and Aphrodite once its adapter exists) don't get a frozen venv tarball - PyTorch/CUDA wheels are large and version-fragile enough that a frozen snapshot would be as brittle as the problem it's solving - instead a clone-and-provision flow: clone the engine's repo pinned to an exact commit SHA resolved from an operator-chosen tag/release/branch (never a floating "latest", which would let fleet nodes silently drift onto different, untested builds over time - the same reproducibility reasoning `model_ref`'s own "ideally with a pinned revision" convention already reflects), then `pip install` its `requirements.txt` into a venv under the engine's own directory. The two tracks are recorded as separate work items in different milestones specifically because their dependencies differ: the compiled-engine track has no blockers and continues directly from the now-complete bare-metal backend (v0.2.0); the Python-engine track's Aphrodite half is already gated behind the Aphrodite adapter (v0.3.0), so splitting avoids bundling a currently-blocked half in with an immediately-actionable one | Leaving engine installation fully manual indefinitely (rejected: real, confirmed toil, and this app's whole premise is self-service control over inference infrastructure - leaving engine provisioning as the one manual SSH-required step undercuts that); a single work item covering both tracks in one milestone (rejected: would either block the compiled-engine track on the Aphrodite adapter it doesn't actually depend on, or misrepresent the Python-engine track as unblocked when its Aphrodite half isn't) |
 | 2026-08-15 | Implemented the compiled-engine provisioning item above with four concrete design choices settled during the build, not just the earlier same-day design entry: (1) activation via a symlink, not a config rewrite; (2) Admin/SuperAdmin-only RBAC; (3) mandatory SHA256 verification; (4) versioned installs that deliberately coexist rather than overwrite | (1) The freshly-provisioned binary becomes "the" one the bare-metal backend launches via an atomically-repointed `latest` symlink under `SPARKY_ENGINE_INSTALL_PATH/<engine_type>/`, not by having the agent (which already owns `secrets.env` at 0600 as `serviceloop`, so it technically could) rewrite `SPARKY_LLAMACPP_BINARY_PATH` in place - rewriting a config file the operator otherwise fully authors was judged to cut against this codebase's existing "config changes require a restart, no hot-reload" philosophy, and the symlink approach needs zero code changes in `agent/config`/`agent/runtime/baremetal` at all. (2) `internal/engineprovision.Service.ProvisionEngine` is gated by `rbac.CanManageNodes`, confirmed with the user over the alternative of reusing `manage_model_store` (the model-transfer capability) - this is node-level infrastructure provisioning (what software runs on a shared host), a different trust boundary from "manage my own model files," so no PowerDev-override path exists for it, matching `CanManageNodes`' own no-override precedent for node registration. (3) Confirmed with the user that these tarballs are maintainer-built specifically for Sparky (not raw upstream llama.cpp releases), so a sibling `.sha256` file is guaranteed to exist and is verified unconditionally before extraction - deliberately inconsistent with the Hugging Face Transfer Executor's own zero-checksum precedent, a difference recorded explicitly rather than glossed over, since the two sources have genuinely different trust/control characteristics. (4) `node_engine_inventory` is composite-keyed on `(node_id, engine_type, version)`, not `(node_id, engine_type)` the way `node_model_inventory` is keyed on `(node_id, model_ref)` - raised directly by the user mid-design: they want to eventually pin two otherwise-identical Model profiles to two different installed engine versions and compare outputs/timings/tuning side by side, which requires provisioning a new version to never delete an older one. That pinning mechanism itself is out of scope here (see the new deferred v0.2.0 follow-up item above) but the on-disk layout (versioned directories plus a `latest` symlink) and this schema key were built specifically so that follow-up needs no rework of what shipped today. Extraction shells out to the system `tar -xJf` via a fakeable `runner` seam (mirroring `agent/provision`'s own idiom) rather than adding a Go xz-decompression dependency - `compress/*` has no xz support, and CLAUDE.md requires discussing any new Go module dependency first, which a zero-dependency shell-out avoids needing to raise at all | Rewriting `secrets.env` directly from the agent process (rejected - see (1)); reusing `manage_model_store`/PowerDev-override RBAC (rejected - see (2)); skipping checksum verification to match the Hugging Face precedent (rejected - see (3)); a single-version-per-engine inventory key with old versions deleted on reprovision (rejected - see (4), would foreclose the version-pinning follow-up this was explicitly designed to support); a pure-Go xz library (rejected - see CLAUDE.md's dependency-approval rule, avoided entirely by shelling out instead) |
+| 2026-08-15 | Implemented the deferred per-profile engine version pinning follow-up with two confirmed choices: a plain free-text form field rather than a dropdown populated from `node_engine_inventory`; no create/update-time validation that a pin actually exists on the target node | The provisioning work above deliberately left this for a separate pass once versioned installs existed to pin against. Two design questions were resolved directly with the user before implementing: whether the profile form should offer a live-populated dropdown of a node's actually-installed versions (an htmx-driven partial endpoint) versus a plain optional text input - the user chose the plain input, matching this item's own stated scope (schema plus launch-time resolution only) and the existing `required_memory_gb` optional-field pattern, deferring a picker UX rather than expanding scope for it now; and whether a pin should be validated against `node_engine_inventory` at save time versus accepted as-is and left to fail at launch - the user chose launch-time-only, matching `required_memory_gb`'s own SCHEMA.md-documented "attempt the launch and report failure" philosophy and avoiding a new coupling between `internal/profiles` and inventory state that no other profile field has (and that could go stale anyway, since a version can be removed after a profile is saved). The actual launch-time resolution reuses the *filename* of the already-configured `SPARKY_<ENGINE>_BINARY_PATH` (which already points through `latest`) under the pinned version's own directory instead, so no new per-version agent configuration was needed - an unpinned profile's resolution is byte-for-byte unchanged from before this feature | A dropdown populated from `node_engine_inventory` via a new htmx endpoint (rejected - see above, a real scope increase not currently justified); validating a pin against `node_engine_inventory` at profile save time (rejected - see above, new coupling plus staleness risk, inconsistent with `required_memory_gb`'s own precedent); sending an already-resolved absolute path from the central app instead of just the version string (rejected - the central app doesn't reliably know the binary's filename within a version's directory, only the node-local `SPARKY_<ENGINE>_BINARY_PATH` config does, so resolution has to stay agent-side, consistent with `LoadInstance`'s existing doc comment that host-local binary layout "is not something the central app can know") |
 
 ---
 
@@ -2065,6 +2132,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `RequireSession` still responds with its existing JSON 401 for an unauthenticated request to `/dashboard`/`/nodes`/`/profiles`, not a redirect to the now-real `/login` page | Low | An htmx partial (`HX-Request`) fetch that hit a redirect would have the redirect followed transparently by the browser's `fetch`, landing `login.html`'s full standalone document inside `#main-content` - broken markup nesting. Needs to distinguish a full-page navigation from an htmx partial fetch before redirecting only the former; deferred rather than solved with an untested guess |
 | The sidebar's `Audit log`, `Users & permissions`, and `Settings` links are shown to every authenticated viewer regardless of tier, same as every other nav link - a non-Admin who clicks any of them gets a raw JSON 403 (`handleAuditLog`/`handleUsers`/`handleSettings`'s error response), not a friendlier page or a hidden link | Low | Same root cause as the row above: the shared `pageData`/`render()` path every page uses has no notion of the viewer's tier today, only whether a session exists at all - conditionally hiding these nav links by tier would mean threading a tier lookup into every page's render call (an extra DB round trip each time), not just these three pages' own. Consistent with the already-accepted JSON-401-instead-of-redirect gap directly above, extended to a second gate (403) rather than left as a worse, inconsistent special case. Phases 5 and 6 (Users & permissions, Settings) each hit the identical gap Phase 4 (Audit log) already documented here rather than opening further near-duplicate rows |
 | `agent/enginetransfer`'s download/checksum-verify/extract/symlink-swap flow is verified only against an `httptest.Server` and a faked `tar` shell-out (gzip standing in for xz in tests, since Go's stdlib has no xz support) - it has never downloaded a real GitHub Release asset or extracted a real `.tar.xz` on real hardware, since no engine release tarball has actually been published to the main Sparky repo's Releases yet | Medium | Requires a first real maintainer-built `llamacpp-<version>-<arch>.tar.xz` (+ `.sha256`) to actually exist as a published release before an end-to-end pass is possible - same "logic and tests first, real artifact later" gap as `internal/engines`' unverified-against-a-live-install vLLM adapter. `runCommand` itself (the real, non-faked shell-out) is exercised against the real system `tar` binary (`TestRunCommand_RealTarBinary`), so only the specific `-xJf`/`.xz` combination and a real GitHub download are unverified, not the shell-out mechanism itself |
+| `internal/httpapi`'s Model profiles create/edit HTTP handlers (`handleCreateProfile`/`handleUpdateProfile`) have no test coverage of their own - noticed while adding the `engine_version` form field, not introduced by it. The two pure functions those handlers delegate to (`fieldsFromForm`, `profileFormValuesFromProfile`) do have unit tests as of that change, but the handlers themselves (form parsing, RBAC/session handling, redirect-on-success, error-redisplay-on-failure) have never been exercised by any automated test, for any field | Low | Pre-existing gap spanning the whole file, not specific to `engine_version` - closing it properly means building the same kind of fake-`profileEditor`-plus-session-harness test infrastructure other handler packages don't yet have either (see the `httpapi`-wide CSRF/rate-limiting gaps above), a real scope increase beyond what adding one more optional field justified doing unilaterally |
 
 ---
 

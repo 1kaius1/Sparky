@@ -174,6 +174,7 @@ type profileFormValues struct {
 	EngineType       string
 	EngineParamsJSON string
 	RequiredMemoryGB string
+	EngineVersion    string
 	TargetNodeID     string
 	Port             string
 }
@@ -199,12 +200,17 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 	if p.RequiredMemoryGB != nil {
 		requiredMemoryGB = strconv.FormatFloat(*p.RequiredMemoryGB, 'f', -1, 64)
 	}
+	var engineVersion string
+	if p.EngineVersion != nil {
+		engineVersion = *p.EngineVersion
+	}
 	return profileFormValues{
 		Name:             p.Name,
 		ModelRef:         p.ModelRef,
 		EngineType:       string(p.EngineType),
 		EngineParamsJSON: string(p.EngineParams),
 		RequiredMemoryGB: requiredMemoryGB,
+		EngineVersion:    engineVersion,
 		TargetNodeID:     targetNodeID,
 		Port:             strconv.Itoa(p.Port),
 	}
@@ -237,12 +243,18 @@ func fieldsFromForm(form profileFormValues) (profiles.Fields, error) {
 		engineParamsRaw = "{}"
 	}
 
+	var engineVersion *string
+	if trimmed := strings.TrimSpace(form.EngineVersion); trimmed != "" {
+		engineVersion = &trimmed
+	}
+
 	return profiles.Fields{
 		Name:             form.Name,
 		ModelRef:         form.ModelRef,
 		EngineType:       db.ProfileEngineType(form.EngineType),
 		EngineParams:     json.RawMessage(engineParamsRaw),
 		RequiredMemoryGB: requiredMemoryGB,
+		EngineVersion:    engineVersion,
 		TargetNodeID:     form.TargetNodeID,
 		Port:             port,
 	}, nil
@@ -362,6 +374,7 @@ func (a *API) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		EngineType:       r.PostFormValue("engine_type"),
 		EngineParamsJSON: r.PostFormValue("engine_params"),
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
+		EngineVersion:    r.PostFormValue("engine_version"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
 		Port:             r.PostFormValue("port"),
 	}
@@ -418,6 +431,7 @@ func (a *API) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		EngineType:       r.PostFormValue("engine_type"),
 		EngineParamsJSON: r.PostFormValue("engine_params"),
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
+		EngineVersion:    r.PostFormValue("engine_version"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
 		Port:             r.PostFormValue("port"),
 	}

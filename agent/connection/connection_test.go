@@ -617,6 +617,133 @@ func TestConn_Run_WaitsForInFlightEngineTransferOnShutdown(t *testing.T) {
 	}
 }
 
+func TestConn_ResolveEngineBinaryPath_Unpinned_ReturnsConfiguredPath(t *testing.T) {
+	conn := New(Config{
+		EngineBinaryPaths: map[string]string{"llamacpp": "/opt/sparky/serviceloop/engines/llamacpp/latest/llama-server"},
+		EngineInstallPath: "/opt/sparky/serviceloop/engines",
+	}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	got := conn.resolveEngineBinaryPath("llamacpp", "")
+	want := "/opt/sparky/serviceloop/engines/llamacpp/latest/llama-server"
+	if got != want {
+		t.Errorf("resolveEngineBinaryPath(unpinned) = %q, want %q (unchanged from today's flat lookup)", got, want)
+	}
+}
+
+func TestConn_ResolveEngineBinaryPath_Pinned_ReconstructsVersionedPath(t *testing.T) {
+	conn := New(Config{
+		EngineBinaryPaths: map[string]string{"llamacpp": "/opt/sparky/serviceloop/engines/llamacpp/latest/llama-server"},
+		EngineInstallPath: "/opt/sparky/serviceloop/engines",
+	}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	got := conn.resolveEngineBinaryPath("llamacpp", "b4610")
+	want := "/opt/sparky/serviceloop/engines/llamacpp/b4610/llama-server"
+	if got != want {
+		t.Errorf("resolveEngineBinaryPath(pinned) = %q, want %q", got, want)
+	}
+}
+
+func TestConn_ResolveEngineBinaryPath_Pinned_ButUnconfigured_ReturnsEmpty(t *testing.T) {
+	conn := New(Config{
+		EngineBinaryPaths: map[string]string{},
+		EngineInstallPath: "/opt/sparky/serviceloop/engines",
+	}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	// No SPARKY_LLAMACPP_BINARY_PATH configured at all - degrades to the
+	// flat lookup's own empty result, letting baremetal.Start's existing
+	// "no local binary configured" error fire the same way it always has,
+	// rather than guessing a path from nothing.
+	got := conn.resolveEngineBinaryPath("llamacpp", "b4610")
+	if got != "" {
+		t.Errorf("resolveEngineBinaryPath() = %q, want empty when nothing is configured for this engine type", got)
+	}
+}
+
+func TestConn_ResolveEngineBinaryPath_Pinned_ButNoInstallPath_ReturnsConfiguredPath(t *testing.T) {
+	conn := New(Config{
+		EngineBinaryPaths: map[string]string{"llamacpp": "/opt/sparky/serviceloop/engines/llamacpp/latest/llama-server"},
+		EngineInstallPath: "",
+	}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	// EngineInstallPath unset (e.g. a non-bare-metal node, or an agent
+	// predating this feature's config) - degrades to the flat lookup
+	// rather than constructing a path under an empty root.
+	got := conn.resolveEngineBinaryPath("llamacpp", "b4610")
+	want := "/opt/sparky/serviceloop/engines/llamacpp/latest/llama-server"
+	if got != want {
+		t.Errorf("resolveEngineBinaryPath() = %q, want %q (degrade to configured path)", got, want)
+	}
+}
+
+func TestConn_Dispatch_LoadInstance_PinnedEngineVersion_ResolvesVersionedBinaryPath(t *testing.T) {
+	// RequiresFullGPUResidency true so resolveModelPath just points at
+	// ModelStoragePath's ModelRef subdirectory directly, with no .gguf
+	// glob involved - irrelevant to what this test actually verifies
+	// (engine-version resolution, not model-path resolution).
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		EngineType:               "llamacpp",
+		EngineVersion:            "b4610",
+		Port:                     8001,
+		RequiresFullGPUResidency: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{startID: "process-1"}
+	cfg := Config{
+		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+		ModelStoragePath:  t.TempDir(),
+		EngineBinaryPaths: map[string]string{"llamacpp": "/opt/sparky/serviceloop/engines/llamacpp/latest/llama-server"},
+		EngineInstallPath: "/opt/sparky/serviceloop/engines",
+	}
+
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(runtime.startCalls) != 1 {
+		t.Fatalf("Start called %d times, want 1", len(runtime.startCalls))
+	}
+	wantBinaryPath := "/opt/sparky/serviceloop/engines/llamacpp/b4610/llama-server"
+	if runtime.startCalls[0].BinaryPath != wantBinaryPath {
+		t.Errorf("BinaryPath = %q, want %q", runtime.startCalls[0].BinaryPath, wantBinaryPath)
+	}
+}
+
 func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRunning(t *testing.T) {
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",

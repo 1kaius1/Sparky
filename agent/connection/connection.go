@@ -627,6 +627,37 @@ func (c *Conn) resolveModelPath(modelRef string, requiresFullGPUResidency bool) 
 	return matches[0], nil
 }
 
+// resolveEngineBinaryPath returns the local binary path to launch for
+// engineType, pinning to a specific installed version if version (from
+// LoadInstance.EngineVersion) is set - see SCHEMA.md Node engine
+// inventory and PLANNING.md's per-profile engine version pinning entry.
+//
+// Unpinned (version == "") returns exactly what EngineBinaryPaths already
+// resolves to today - zero behavior change for any profile that doesn't
+// set engine_version. A pinned version is resolved by reusing the
+// *filename* of the operator's static SPARKY_<ENGINE>_BINARY_PATH config
+// (which already points through the `latest` symlink, e.g.
+// .../llamacpp/latest/llama-server - see docs/AGENT.md Engine binary
+// provisioning) under the specific version's own directory instead:
+// SPARKY_ENGINE_INSTALL_PATH/<engineType>/<version>/<same filename> - so
+// no new per-engine binary-name configuration is needed. If either
+// EngineBinaryPaths or EngineInstallPath is unset, this degrades to
+// today's flat lookup and lets agent/runtime/baremetal.Backend.Start's
+// existing "no local binary configured" error fire the same way it
+// always has; a pinned version that isn't actually installed similarly
+// surfaces as Start's own "no such file or directory" failure, reported
+// back as a failed InstanceResult like any other launch failure -
+// deliberately not pre-validated against node_engine_inventory (confirmed
+// with the user - a bad pin fails clearly at launch time, matching
+// required_memory_gb's own "attempt and report failure" precedent).
+func (c *Conn) resolveEngineBinaryPath(engineType, version string) string {
+	configured := c.cfg.EngineBinaryPaths[engineType]
+	if version == "" || configured == "" || c.cfg.EngineInstallPath == "" {
+		return configured
+	}
+	return filepath.Join(c.cfg.EngineInstallPath, engineType, version, filepath.Base(configured))
+}
+
 // runLoad starts a Running instance - one goroutine per load/unload
 // command, same reasoning as runTransfer, so a slow image pull or process
 // start never blocks readLoop's command handling. The outcome is always
@@ -646,7 +677,7 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		InstanceID: load.InstanceID,
 		EngineType: load.EngineType,
 		Image:      load.Image,
-		BinaryPath: c.cfg.EngineBinaryPaths[load.EngineType],
+		BinaryPath: c.resolveEngineBinaryPath(load.EngineType, load.EngineVersion),
 		Args:       args,
 		Port:       load.Port,
 		// Read-only: the agent already owns writing to this directory

@@ -59,7 +59,7 @@ func TestProfileRepository_Create(t *testing.T) {
 	params := json.RawMessage(`{"tensor_parallel_size":1}`)
 	requiredMemory := 8.0
 	p, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "Qwen/Qwen2.5-0.5B-Instruct",
-		ProfileEngineVLLM, params, true, &requiredMemory, node.ID, 8000, &creator.ID)
+		ProfileEngineVLLM, params, true, &requiredMemory, nil, node.ID, 8000, &creator.ID)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestProfileRepository_Create_SuperAdmin_NilCreatedBy(t *testing.T) {
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
 
 	p, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "TinyLlama/TinyLlama-1.1B-Chat-v1.0-GGUF",
-		ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, node.ID, 8001, nil)
+		ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, nil, node.ID, 8001, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -122,6 +122,98 @@ func TestProfileRepository_Create_SuperAdmin_NilCreatedBy(t *testing.T) {
 	}
 }
 
+func TestProfileRepository_Create_EngineVersion(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	version := "b4610"
+
+	p, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "TinyLlama/TinyLlama-1.1B-Chat-v1.0-GGUF",
+		ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, &version, node.ID, 8000, nil)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE id = $1`, p.ID)
+	})
+
+	if p.EngineVersion == nil || *p.EngineVersion != version {
+		t.Errorf("EngineVersion = %v, want %q", p.EngineVersion, version)
+	}
+
+	got, err := profiles.FindByID(ctx, p.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.EngineVersion == nil || *got.EngineVersion != version {
+		t.Errorf("FindByID() EngineVersion = %v, want %q", got.EngineVersion, version)
+	}
+}
+
+func TestProfileRepository_Create_EngineVersion_UnsetByDefault(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+
+	p, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a",
+		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, node.ID, 8000, nil)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE id = $1`, p.ID)
+	})
+
+	if p.EngineVersion != nil {
+		t.Errorf("EngineVersion = %v, want nil (unpinned) when not set", *p.EngineVersion)
+	}
+}
+
+func TestProfileRepository_Update_EngineVersion(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+
+	created, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a",
+		ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, nil, node.ID, 8000, nil)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE id = $1`, created.ID)
+	})
+
+	version := "b4523"
+	updated, err := profiles.Update(ctx, created.ID, created.Name, created.ModelRef, ProfileEngineLlamaCPP,
+		json.RawMessage(`{}`), false, nil, &version, node.ID, 8000, nil)
+	if err != nil {
+		t.Fatalf("Update() error: %v", err)
+	}
+	if updated.EngineVersion == nil || *updated.EngineVersion != version {
+		t.Errorf("EngineVersion = %v, want %q", updated.EngineVersion, version)
+	}
+
+	// Updating again with a nil engine_version must clear the pin, not
+	// leave the previous one in place.
+	cleared, err := profiles.Update(ctx, created.ID, created.Name, created.ModelRef, ProfileEngineLlamaCPP,
+		json.RawMessage(`{}`), false, nil, nil, node.ID, 8000, nil)
+	if err != nil {
+		t.Fatalf("second Update() error: %v", err)
+	}
+	if cleared.EngineVersion != nil {
+		t.Errorf("EngineVersion = %v, want nil after clearing the pin", *cleared.EngineVersion)
+	}
+}
+
 func TestProfileRepository_Create_DuplicateName_RejectedByDatabase(t *testing.T) {
 	pool := newTestPool(t)
 	nodes := NewNodeRepository(pool)
@@ -131,7 +223,7 @@ func TestProfileRepository_Create_DuplicateName_RejectedByDatabase(t *testing.T)
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
 	name := fmt.Sprintf("profile-%s", t.Name())
 
-	p, err := profiles.Create(ctx, name, "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, node.ID, 8000, nil)
+	p, err := profiles.Create(ctx, name, "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, node.ID, 8000, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -139,7 +231,7 @@ func TestProfileRepository_Create_DuplicateName_RejectedByDatabase(t *testing.T)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE id = $1`, p.ID)
 	})
 
-	if _, err := profiles.Create(ctx, name, "model-b", ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, node.ID, 8001, nil); err == nil {
+	if _, err := profiles.Create(ctx, name, "model-b", ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, nil, node.ID, 8001, nil); err == nil {
 		t.Error("Create() succeeded for a duplicate name, want the UNIQUE constraint to reject it")
 	}
 }
@@ -151,7 +243,7 @@ func TestProfileRepository_FindByID(t *testing.T) {
 	ctx := context.Background()
 
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
-	created, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, node.ID, 8000, nil)
+	created, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, node.ID, 8000, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -188,7 +280,7 @@ func TestProfileRepository_List(t *testing.T) {
 	nameA := fmt.Sprintf("profile-a-%s", t.Name())
 	nameB := fmt.Sprintf("profile-b-%s", t.Name())
 
-	a, err := profiles.Create(ctx, nameA, "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, node.ID, 8000, nil)
+	a, err := profiles.Create(ctx, nameA, "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, node.ID, 8000, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -196,7 +288,7 @@ func TestProfileRepository_List(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM model_profiles WHERE id = $1`, a.ID)
 	})
 
-	b, err := profiles.Create(ctx, nameB, "model-b", ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, node.ID, 8001, nil)
+	b, err := profiles.Create(ctx, nameB, "model-b", ProfileEngineLlamaCPP, json.RawMessage(`{}`), false, nil, nil, node.ID, 8001, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -234,7 +326,7 @@ func TestProfileRepository_Update(t *testing.T) {
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
 	otherNode := createTestNode(t, nodes, fmt.Sprintf("node-b-%s", t.Name()))
 
-	created, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, node.ID, 8000, nil)
+	created, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, node.ID, 8000, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -245,7 +337,7 @@ func TestProfileRepository_Update(t *testing.T) {
 	newParams := json.RawMessage(`{"n_gpu_layers":0}`)
 	newMemory := 4.0
 	updated, err := profiles.Update(ctx, created.ID, "renamed-profile", "model-b", ProfileEngineLlamaCPP,
-		newParams, false, &newMemory, otherNode.ID, 8080, &updater.ID)
+		newParams, false, &newMemory, nil, otherNode.ID, 8080, &updater.ID)
 	if err != nil {
 		t.Fatalf("Update() error: %v", err)
 	}
@@ -289,7 +381,7 @@ func TestProfileRepository_Update_NotFound(t *testing.T) {
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
 
 	_, err := profiles.Update(ctx, "00000000-0000-0000-0000-000000000000", "x", "x", ProfileEngineVLLM,
-		json.RawMessage(`{}`), true, nil, node.ID, 8000, nil)
+		json.RawMessage(`{}`), true, nil, nil, node.ID, 8000, nil)
 	if err != ErrProfileNotFound {
 		t.Errorf("Update() error = %v, want ErrProfileNotFound", err)
 	}
@@ -302,7 +394,7 @@ func TestProfileRepository_Delete(t *testing.T) {
 	ctx := context.Background()
 
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
-	created, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, node.ID, 8000, nil)
+	created, err := profiles.Create(ctx, fmt.Sprintf("profile-%s", t.Name()), "model-a", ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, node.ID, 8000, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}

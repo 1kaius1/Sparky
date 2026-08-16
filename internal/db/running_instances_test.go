@@ -15,7 +15,7 @@ import (
 func createTestProfile(t *testing.T, profiles *ProfileRepository, nodeID string) *Profile {
 	t.Helper()
 	p, err := profiles.Create(context.Background(), fmt.Sprintf("profile-%s", t.Name()), "Qwen/Qwen2.5-0.5B-Instruct",
-		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nodeID, 8000, nil)
+		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, nodeID, 8000, nil)
 	if err != nil {
 		t.Fatalf("create test profile: %v", err)
 	}

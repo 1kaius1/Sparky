@@ -90,6 +90,7 @@ A saved, named configuration for running a model.
 | `engine_params` | jsonb | Engine-specific launch parameters. Deliberately opaque to the database - validated by the engine adapter, not a fixed column per possible flag |
 | `requires_full_gpu_residency` | boolean | Capability of the selected engine type - `true` for vLLM/Aphrodite, `false` for llama.cpp-style partial-offload engines. Gates whether the memory-capacity check below applies |
 | `required_memory_gb` | numeric, nullable | Optional. When set and `requires_full_gpu_residency` is true, checked against aggregate `gpu_memory_gb` of the target node(s) before launch. When null, the app attempts the launch and reports failure if it doesn't fit - no estimate is computed on the app's behalf |
+| `engine_version` | text, nullable | Optional. Pins this profile's launch to a specific installed engine binary version (see Node engine inventory) instead of whatever the target node's `latest` symlink currently points to - lets two otherwise-identical profiles each pin a different version for side-by-side output/timing/tuning comparison. Not validated against Node engine inventory at save time - a pin that doesn't correspond to an actually-installed version fails clearly at launch time instead, same philosophy as `required_memory_gb` above |
 | `topology` | enum | `single_node` / `clustered` |
 | `target_node_id` | uuid, nullable, FK -> Nodes.id | Single-node profiles only |
 | `fabric_group_id` | uuid, nullable, FK -> Fabric groups.id | Clustered profiles only |
