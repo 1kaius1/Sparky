@@ -452,8 +452,11 @@ func TestHandleDashboard_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -717,8 +720,11 @@ func TestHandleTransfers_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -849,8 +855,11 @@ func TestHandleAuditLog_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -963,8 +972,11 @@ func TestHandleUsers_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -1090,8 +1102,11 @@ func TestHandleSettings_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -1226,8 +1241,11 @@ func TestHandleMetrics_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -1429,8 +1447,11 @@ func TestHandleElevateUser_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -1506,8 +1527,11 @@ func TestHandleRegisterNodeForm_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -1641,8 +1665,11 @@ func TestHandleRegisterNode_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -1718,8 +1745,11 @@ func TestHandleNewProfileForm_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 
@@ -1891,8 +1921,11 @@ func TestHandleCreateProfile_Unauthenticated(t *testing.T) {
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+	if loc := rec.Header().Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 

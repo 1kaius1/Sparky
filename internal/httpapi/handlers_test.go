@@ -230,26 +230,49 @@ func TestRequireSession(t *testing.T) {
 	defer srv.Close()
 
 	t.Run("no cookie", func(t *testing.T) {
-		resp, err := http.Get(srv.URL)
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		resp, err := noRedirectClient(t).Do(req)
 		if err != nil {
 			t.Fatalf("GET error: %v", err)
 		}
 		defer resp.Body.Close()
-		if resp.StatusCode != http.StatusUnauthorized {
-			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+		if resp.StatusCode != http.StatusFound {
+			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+		}
+		if loc := resp.Header.Get("Location"); loc != "/login" {
+			t.Errorf("Location = %q, want %q", loc, "/login")
 		}
 	})
 
 	t.Run("invalid cookie", func(t *testing.T) {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: "garbage"})
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := noRedirectClient(t).Do(req)
+		if err != nil {
+			t.Fatalf("GET error: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+		}
+		if loc := resp.Header.Get("Location"); loc != "/login" {
+			t.Errorf("Location = %q, want %q", loc, "/login")
+		}
+	})
+
+	t.Run("htmx request without session", func(t *testing.T) {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		req.Header.Set("HX-Request", "true")
+		resp, err := noRedirectClient(t).Do(req)
 		if err != nil {
 			t.Fatalf("GET error: %v", err)
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != http.StatusUnauthorized {
 			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+		}
+		if hx := resp.Header.Get("HX-Redirect"); hx != "/login" {
+			t.Errorf("HX-Redirect = %q, want %q", hx, "/login")
 		}
 	})
 

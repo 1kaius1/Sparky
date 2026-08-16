@@ -313,20 +313,21 @@ type Identity struct {
 }
 
 // RequireSession verifies the session cookie and stores the authenticated
-// Identity in the request context, responding 401 if it is missing or
-// invalid. Used by the Dashboard UI's read-only pages; future RBAC-gated
-// write actions will register through it too.
+// Identity in the request context, redirecting to /login if it is missing
+// or invalid - see respondUnauthenticated. Used by the Dashboard UI's
+// read-only pages; future RBAC-gated write actions will register through
+// it too.
 func (a *API) RequireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
 		if err != nil {
-			writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+			a.respondUnauthenticated(w, r, "no session")
 			return
 		}
 
 		sess, err := session.Verify(a.sessionSecret, cookie.Value)
 		if err != nil {
-			writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "invalid or expired session")
+			a.respondUnauthenticated(w, r, "invalid or expired session")
 			return
 		}
 
@@ -334,6 +335,31 @@ func (a *API) RequireSession(next http.Handler) http.Handler {
 		ctx := context.WithValue(r.Context(), identityContextKey, identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// respondUnauthenticated reports a missing/invalid session. A real browser
+// navigation (no HX-Request header) is redirected straight to /login - a
+// raw JSON 401 there would leave the user staring at an unstyled error
+// blob, most commonly triggered by an ordinary session expiring
+// mid-browse. An htmx-originated request (HX-Request - same check
+// render() already makes) gets an HX-Redirect response header instead:
+// htmx processes that header unconditionally, regardless of status code,
+// and navigates the whole page itself rather than swapping /login's full
+// HTML document into whatever small target element issued the partial
+// fetch (confirmed against the vendored htmx.min.js's own source).
+// RequireSession gates every Dashboard UI route - the browser/htmx
+// frontend is the only consumer of a session cookie (CLAUDE.md API
+// Conventions) - so this one header check is correct for every route
+// regardless of HTTP method: GET page loads, classic <form method="post">
+// submissions, and htmx hx-post actions all arrive with the right header
+// already set for how they actually got here.
+func (a *API) respondUnauthenticated(w http.ResponseWriter, r *http.Request, message string) {
+	if r.Header.Get("HX-Request") == "true" {
+		w.Header().Set("HX-Redirect", "/login")
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", message)
+		return
+	}
+	http.Redirect(w, r, "/login", http.StatusFound)
 }
 
 // IdentityFromContext returns the Identity stored by RequireSession, if
