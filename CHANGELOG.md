@@ -1143,6 +1143,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is also what unblocks a retry (`UnloadInstance` requires `status =
   running` before it will act). See PLANNING.md's Decisions Log for the
   full rationale.
+- `agent_status` now actually reaches `unreachable` - a node whose agent has
+  gone silent (hung process, network partition) for longer than 90s (3x its
+  heartbeat interval) while its WebSocket connection stays technically open
+  no longer shows as `online` indefinitely. `internal/agentconn` gained a
+  per-connection liveness watchdog that never touches the connection
+  itself, only the DB status - a read-deadline-based approach was
+  considered and rejected, since `coder/websocket` closes the connection
+  outright when a read's context is canceled, which would have produced
+  `offline` instead. Recovers back to `online` on the next received
+  message; a genuine disconnect still always ends at `offline`. See
+  PLANNING.md's Decisions Log for the full design, including a real
+  ordering race identified and closed during implementation.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
