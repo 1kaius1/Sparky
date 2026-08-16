@@ -99,15 +99,24 @@ func TestHandleLoadInstance_TargetNodeOffline(t *testing.T) {
 	}
 }
 
+// TestHandleLoadInstance_Unauthenticated sends HX-Request: true, since
+// Load is always triggered via htmx hx-post in real usage (PLANNING.md's
+// four-htmx-writes design) - never a classic form submission - so this
+// exercises RequireSession's HX-Redirect branch, the one path this route
+// actually takes.
 func TestHandleLoadInstance_Unauthenticated(t *testing.T) {
 	api := newTestLaunchAPI(t, newFakeUserLister(), &fakeInstanceLauncher{})
 
 	req := httptest.NewRequest(http.MethodPost, "/profiles/profile-1/load", nil)
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if hx := rec.Header().Get("HX-Redirect"); hx != "/login" {
+		t.Errorf("HX-Redirect = %q, want %q", hx, "/login")
 	}
 }
 
@@ -177,14 +186,21 @@ func TestHandleUnloadInstance_Forbidden(t *testing.T) {
 	}
 }
 
+// TestHandleUnloadInstance_Unauthenticated sends HX-Request: true, same
+// reasoning as TestHandleLoadInstance_Unauthenticated above - Unload is
+// always htmx hx-post in real usage.
 func TestHandleUnloadInstance_Unauthenticated(t *testing.T) {
 	api := newTestLaunchAPI(t, newFakeUserLister(), &fakeInstanceLauncher{})
 
 	req := httptest.NewRequest(http.MethodPost, "/instances/instance-1/unload", nil)
+	req.Header.Set("HX-Request", "true")
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusUnauthorized {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
+	}
+	if hx := rec.Header().Get("HX-Redirect"); hx != "/login" {
+		t.Errorf("HX-Redirect = %q, want %q", hx, "/login")
 	}
 }

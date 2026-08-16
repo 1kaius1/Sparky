@@ -93,14 +93,17 @@ func TestHandleEvents_Unauthenticated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("http.NewRequest() error: %v", err)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := noRedirectClient(t).Do(req)
 	if err != nil {
 		t.Fatalf("Do() error: %v", err)
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusUnauthorized {
-		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusUnauthorized)
+	if resp.StatusCode != http.StatusFound {
+		t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/login" {
+		t.Errorf("Location = %q, want %q", loc, "/login")
 	}
 }
 

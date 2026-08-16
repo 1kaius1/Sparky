@@ -1155,6 +1155,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   message; a genuine disconnect still always ends at `offline`. See
   PLANNING.md's Decisions Log for the full design, including a real
   ordering race identified and closed during implementation.
+- An unauthenticated request to any Dashboard UI page or action now
+  redirects to `/login` instead of returning a raw JSON 401 - most
+  commonly hit when an ordinary session expires mid-browse, previously
+  left the user staring at an unstyled error blob. A real browser
+  navigation gets a plain HTTP redirect; an htmx-originated request (`hx-get`
+  page navigation, `hx-post` action) gets an `HX-Redirect` response header
+  instead, the same mechanism `handleLogout` and friends already use,
+  reused rather than reinvented - `HX-Redirect` navigates the whole page
+  itself instead of swapping `/login`'s full document into a small partial
+  target. See PLANNING.md's Decisions Log for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
