@@ -257,6 +257,32 @@ func TestEnvelope_RoundTrip_LoadInstance(t *testing.T) {
 	if err := env.DecodePayload(&got); err != nil {
 		t.Fatalf("DecodePayload() error: %v", err)
 	}
+	if got.EngineVersion != "" {
+		t.Errorf("EngineVersion = %q, want empty (unpinned)", got.EngineVersion)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LoadInstance = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_LoadInstance_PinnedEngineVersion(t *testing.T) {
+	want := LoadInstance{
+		InstanceID:    "instance-1",
+		ModelRef:      "TinyLlama/TinyLlama-1.1B-Chat-v1.0-GGUF",
+		EngineType:    "llamacpp",
+		EngineVersion: "b4610",
+		Port:          8001,
+	}
+
+	env, err := NewEnvelope(TypeLoadInstance, "req-4", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got LoadInstance
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("LoadInstance = %+v, want %+v", got, want)
 	}

@@ -297,6 +297,21 @@ Checksum verification is mandatory here, unlike the Hugging Face Transfer Execut
 own model-weight downloads (`agent/transfer`), which perform none - see
 `SCHEMA.md` Engine transfers.
 
+**Per-profile pinned versions.** A Model profile may pin a specific installed
+version instead of leaving a `load_instance` to resolve through the `latest`
+symlink - see `SCHEMA.md` Model profiles' `engine_version` column. This changes
+nothing about the on-disk layout or the `SPARKY_<ENGINE>_BINARY_PATH`-points-at-
+`latest` convention above; at load time, `agent/connection`'s
+`resolveEngineBinaryPath` reuses the *filename* of the operator's static
+`SPARKY_<ENGINE>_BINARY_PATH` config under the pinned version's own directory
+instead of `latest` - `$SPARKY_ENGINE_INSTALL_PATH/<engine_type>/<version>/<same
+filename>` - so no additional per-version configuration is needed on the node. An
+unpinned profile (the common case) resolves exactly as it always has. A pin that
+doesn't correspond to an actually-installed version is not validated centrally
+before dispatch - it fails clearly at launch time via the same "no such file or
+directory" error path any other misconfigured `SPARKY_<ENGINE>_BINARY_PATH`
+already produces, reported back as a failed `instance_result`.
+
 ---
 
 ## Service Architecture Notes

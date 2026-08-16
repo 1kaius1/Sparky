@@ -192,11 +192,19 @@ type TransferProgress struct {
 // downloads. RequiresFullGPUResidency tells the agent whether that local
 // path should be the model's whole directory (vLLM-style, Transformers
 // format) or a single .gguf file within it (llama.cpp-style, partial
-// offload).
+// offload). EngineVersion is empty for an unpinned profile - resolve to
+// whatever SPARKY_<ENGINE>_BINARY_PATH already points to (today's
+// unchanged behavior, via the operator-configured `latest` symlink - see
+// docs/AGENT.md Engine binary provisioning). A non-empty value pins the
+// launch to a specific version installed under SPARKY_ENGINE_INSTALL_PATH
+// instead - resolved agent-side (agent/connection.resolveEngineBinaryPath),
+// same "host-local knowledge stays host-local" reasoning as EngineType's
+// binary-path resolution above.
 type LoadInstance struct {
 	InstanceID               string   `json:"instance_id"`
 	ModelRef                 string   `json:"model_ref"`
 	EngineType               string   `json:"engine_type"`
+	EngineVersion            string   `json:"engine_version,omitempty"`
 	Image                    string   `json:"image"`
 	Args                     []string `json:"args,omitempty"`
 	Port                     int      `json:"port"`

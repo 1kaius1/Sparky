@@ -39,7 +39,7 @@ func (f *fakeProfileStore) List(_ context.Context) ([]*db.Profile, error) {
 	return f.listResult, nil
 }
 
-func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -49,20 +49,20 @@ func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engi
 	}
 	p := &db.Profile{
 		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
-		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB,
+		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, CreatedBy: createdBy,
 	}
 	f.created = append(f.created, p)
 	return p, nil
 }
 
-func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
 	p := &db.Profile{
 		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
-		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB,
+		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, UpdatedBy: updatedBy,
 	}
 	f.updated = append(f.updated, p)
@@ -183,6 +183,47 @@ func TestService_CreateProfile_PermittedByPowerDev(t *testing.T) {
 	got := audit.calls[0]
 	if got.action != "created_profile" || got.objectType != "model_profile" || got.objectID != "profile-1" {
 		t.Errorf("audit call = %+v, want action=created_profile objectType=model_profile objectID=profile-1", got)
+	}
+}
+
+func TestService_CreateProfile_EngineVersion_RoundTrips(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	svc := NewService(store, nodes, adapters, audit)
+	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
+
+	version := "b4610"
+	fields := validFields()
+	fields.EngineVersion = &version
+
+	p, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: fields})
+	if err != nil {
+		t.Fatalf("CreateProfile() error: %v", err)
+	}
+	if p.EngineVersion == nil || *p.EngineVersion != version {
+		t.Errorf("EngineVersion = %v, want %q", p.EngineVersion, version)
+	}
+
+	// A pinned version is passed straight through to the store, not
+	// validated against any node/inventory lookup - confirmed deliberately
+	// (a bad pin fails clearly at launch time instead, see
+	// PLANNING.md's per-profile engine version pinning entry) by the fact
+	// that nodes/adapters here never see EngineVersion at all.
+	if len(store.created) != 1 || store.created[0].EngineVersion == nil || *store.created[0].EngineVersion != version {
+		t.Fatalf("store.Create was not called with EngineVersion=%q", version)
+	}
+}
+
+func TestService_CreateProfile_EngineVersion_NilWhenUnset(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	svc := NewService(store, nodes, adapters, audit)
+	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
+
+	p, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
+	if err != nil {
+		t.Fatalf("CreateProfile() error: %v", err)
+	}
+	if p.EngineVersion != nil {
+		t.Errorf("EngineVersion = %v, want nil (unpinned) when not set", *p.EngineVersion)
 	}
 }
 
@@ -396,6 +437,24 @@ func TestService_UpdateProfile_Success(t *testing.T) {
 	}
 	if len(audit.calls) != 1 || audit.calls[0].action != "updated_profile" {
 		t.Errorf("audit calls = %+v, want one updated_profile call", audit.calls)
+	}
+}
+
+func TestService_UpdateProfile_EngineVersion_RoundTrips(t *testing.T) {
+	store, nodes, adapters, audit := testDeps()
+	svc := NewService(store, nodes, adapters, audit)
+	actor := rbac.Actor{Tier: db.TierAdmin, UserID: "admin-1"}
+
+	version := "b4523"
+	fields := validFields()
+	fields.EngineVersion = &version
+
+	p, err := svc.UpdateProfile(context.Background(), actor, UpdateParams{ID: "profile-1", Fields: fields})
+	if err != nil {
+		t.Fatalf("UpdateProfile() error: %v", err)
+	}
+	if p.EngineVersion == nil || *p.EngineVersion != version {
+		t.Errorf("EngineVersion = %v, want %q", p.EngineVersion, version)
 	}
 }
 

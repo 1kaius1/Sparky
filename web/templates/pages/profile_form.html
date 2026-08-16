@@ -44,6 +44,10 @@
     <input type="text" id="required_memory_gb" name="required_memory_gb" value="{{.Data.Form.RequiredMemoryGB}}">
   </p>
   <p>
+    <label for="engine_version">Pinned engine version (optional)</label><br>
+    <input type="text" id="engine_version" name="engine_version" value="{{.Data.Form.EngineVersion}}" placeholder="latest">
+  </p>
+  <p>
     <label for="engine_params">Engine params (JSON, optional)</label><br>
     <textarea id="engine_params" name="engine_params" rows="6" cols="60">{{.Data.Form.EngineParamsJSON}}</textarea>
   </p>

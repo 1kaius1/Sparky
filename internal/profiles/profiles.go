@@ -33,8 +33,21 @@ type Fields struct {
 	EngineType       db.ProfileEngineType
 	EngineParams     json.RawMessage
 	RequiredMemoryGB *float64
-	TargetNodeID     string
-	Port             int
+
+	// EngineVersion optionally pins this profile's launch to a specific
+	// installed engine binary version (see SCHEMA.md Node engine
+	// inventory) instead of whatever the target node's `latest` symlink
+	// currently points to - nil/empty means unpinned, today's unchanged
+	// behavior. Deliberately not validated against node_engine_inventory
+	// here or in Service - a bad pin fails clearly at launch time
+	// instead, the same "attempt and report failure" philosophy
+	// RequiredMemoryGB's own SCHEMA.md doc comment already states, and
+	// avoids coupling a profile save to inventory state that can change
+	// out from under it anyway.
+	EngineVersion *string
+
+	TargetNodeID string
+	Port         int
 }
 
 // validate checks Fields' own shape - the things knowable without a

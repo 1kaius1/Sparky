@@ -256,6 +256,55 @@ func TestService_LoadInstance_PermittedByDeveloper(t *testing.T) {
 	}
 }
 
+func TestService_LoadInstance_PinnedEngineVersion_ReachesEnvelope(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1"}
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{}}}
+	dispatch := &fakeDispatcher{connected: true}
+	audit := &fakeAuditRecorder{}
+
+	profile := testProfile()
+	version := "b4610"
+	profile.EngineVersion = &version
+	svc := newTestService(profile, instances, adapters, dispatch, audit)
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	if _, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatalf("decode load_instance payload: %v", err)
+	}
+	if payload.EngineVersion != version {
+		t.Errorf("EngineVersion = %q, want %q", payload.EngineVersion, version)
+	}
+}
+
+func TestService_LoadInstance_UnpinnedEngineVersion_EmptyStringOnEnvelope(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1"}
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{}}}
+	dispatch := &fakeDispatcher{connected: true}
+	audit := &fakeAuditRecorder{}
+
+	// testProfile() leaves EngineVersion nil - the unpinned, today-unchanged
+	// case.
+	svc := newTestService(testProfile(), instances, adapters, dispatch, audit)
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	if _, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatalf("decode load_instance payload: %v", err)
+	}
+	if payload.EngineVersion != "" {
+		t.Errorf("EngineVersion = %q, want empty for an unpinned profile", payload.EngineVersion)
+	}
+}
+
 func TestService_LoadInstance_PermittedBySuperAdmin_NilStartedBy(t *testing.T) {
 	instances := &fakeInstanceStore{nextID: "instance-1"}
 	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{}}
