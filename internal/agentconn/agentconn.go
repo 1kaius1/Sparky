@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/coder/websocket"
@@ -31,6 +32,70 @@ import (
 // WebSocket upgrade but never sends anything would hold its goroutine
 // open indefinitely.
 const handshakeTimeout = 10 * time.Second
+
+// defaultUnreachableTimeout is how long a connection may go without any
+// inbound traffic (including the agent's own 30s heartbeat - docs/AGENT.md
+// Configuration, agent/connection's heartbeatInterval) before this layer
+// reports it unreachable rather than online - SCHEMA.md Nodes' third
+// agent_status state, for a connection that is still technically open but
+// has gone silent, distinct from offline (the connection actually closed).
+// 3x the agent's heartbeat interval gives margin for ordinary network
+// jitter or a missed beat or two before flagging it. A read-deadline-based
+// approach was considered and rejected - see watchLiveness's doc comment.
+const defaultUnreachableTimeout = 90 * time.Second
+
+// defaultUnreachableCheckEvery is how often each connection's
+// watchLiveness goroutine polls for staleness - frequent enough that the
+// Dashboard reflects a gone-silent connection within a bounded, reasonably
+// short window without polling excessively.
+const defaultUnreachableCheckEvery = 15 * time.Second
+
+// livenessTracker is shared, mutex-guarded state between readLoop (which
+// records activity on every message received) and watchLiveness (which
+// periodically checks for silence) - the two run concurrently on
+// independent goroutines for the life of one connection.
+type livenessTracker struct {
+	mu          sync.Mutex
+	lastSeen    time.Time
+	unreachable bool
+}
+
+// newLivenessTracker seeds lastSeen at now (handshake completion time), not
+// the zero value - otherwise a connection that simply hasn't had a chance
+// to send its first heartbeat yet would look stale immediately.
+func newLivenessTracker(now time.Time) *livenessTracker {
+	return &livenessTracker{lastSeen: now}
+}
+
+// recordActivity marks now as the latest message received. It returns true
+// if this connection was previously flagged unreachable - readLoop uses
+// that to report recovery back to online, exactly once per recovery rather
+// than on every subsequent message.
+func (lt *livenessTracker) recordActivity() (wasUnreachable bool) {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	lt.lastSeen = time.Now()
+	wasUnreachable = lt.unreachable
+	lt.unreachable = false
+	return wasUnreachable
+}
+
+// markUnreachableIfStale flips the tracker to unreachable and returns true
+// exactly once per silence - once already unreachable, later calls return
+// false until recordActivity clears it, so watchLiveness's ticker doesn't
+// write the same status again every tick.
+func (lt *livenessTracker) markUnreachableIfStale(timeout time.Duration) bool {
+	lt.mu.Lock()
+	defer lt.mu.Unlock()
+	if lt.unreachable {
+		return false
+	}
+	if time.Since(lt.lastSeen) < timeout {
+		return false
+	}
+	lt.unreachable = true
+	return true
+}
 
 // authenticator is the subset of *nodes.AuthService this package needs,
 // narrow enough to fake in tests without a real database - same pattern
@@ -71,6 +136,13 @@ type Handler struct {
 	logger    *log.Logger
 	onMessage OnMessageFunc
 	onConnect OnConnectFunc
+
+	// unreachableTimeout/unreachableCheckEvery default to
+	// defaultUnreachableTimeout/defaultUnreachableCheckEvery in NewHandler -
+	// unexported and directly overridable by same-package tests for fast,
+	// deterministic timing instead of waiting on the real 90s/15s defaults.
+	unreachableTimeout    time.Duration
+	unreachableCheckEvery time.Duration
 }
 
 // NewHandler constructs a Handler. onMessage may be nil - a caller with no
@@ -79,7 +151,11 @@ type Handler struct {
 // package doesn't already handle internally is silently discarded.
 // onConnect may also be nil, same reasoning.
 func NewHandler(auth authenticator, status statusStore, registry *Registry, logger *log.Logger, onMessage OnMessageFunc, onConnect OnConnectFunc) *Handler {
-	return &Handler{auth: auth, status: status, registry: registry, logger: logger, onMessage: onMessage, onConnect: onConnect}
+	return &Handler{
+		auth: auth, status: status, registry: registry, logger: logger, onMessage: onMessage, onConnect: onConnect,
+		unreachableTimeout:    defaultUnreachableTimeout,
+		unreachableCheckEvery: defaultUnreachableCheckEvery,
+	}
 }
 
 // ServeHTTP upgrades the request to a WebSocket, runs the hello/auth
@@ -125,7 +201,22 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		go h.onConnect(r.Context(), node.ID)
 	}
 
+	// liveCtx/watchDone let the deferred cleanup below guarantee that
+	// watchLiveness has fully stopped - and so can never write a stale
+	// "unreachable" status - before the final "offline" write happens. See
+	// watchLiveness's own doc comment for what it detects and why a
+	// read-deadline approach isn't used instead.
+	liveCtx, cancelLive := context.WithCancel(r.Context())
+	tracker := newLivenessTracker(time.Now())
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		h.watchLiveness(liveCtx, node.ID, tracker)
+	}()
+
 	defer func() {
+		cancelLive()
+		<-watchDone // must finish before the offline write below - see above
 		h.registry.Unregister(node.ID, conn)
 		// context.Background(), not r.Context(): the request context is
 		// already done by the time we get here (that's why we're here),
@@ -136,7 +227,36 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.logger.Printf("agentconn: node %s (%s) disconnected", node.Name, node.ID)
 	}()
 
-	h.readLoop(r.Context(), node.ID, conn)
+	h.readLoop(r.Context(), node.ID, conn, tracker)
+}
+
+// watchLiveness runs until ctx is canceled, periodically checking whether
+// nodeID's connection has gone silent for longer than h.unreachableTimeout -
+// SCHEMA.md Nodes' agent_status third state: still technically open, but
+// stopped responding, distinct from offline (the connection actually
+// closed). A read-deadline on conn.Read itself was considered and rejected:
+// coder/websocket's Read closes the underlying connection when its context
+// is canceled or times out (confirmed by reading read.go/conn.go's
+// setupReadTimeout/prepareRead), so a short per-read timeout would produce
+// "offline," not "unreachable." This goroutine never touches the connection
+// itself, only the DB status - actual disconnection is handled entirely by
+// ServeHTTP's own deferred cleanup, which always has the final word (see
+// its join on watchDone).
+func (h *Handler) watchLiveness(ctx context.Context, nodeID string, tracker *livenessTracker) {
+	ticker := time.NewTicker(h.unreachableCheckEvery)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if tracker.markUnreachableIfStale(h.unreachableTimeout) {
+				if err := h.status.SetAgentStatus(ctx, nodeID, db.AgentStatusUnreachable, false); err != nil {
+					h.logger.Printf("agentconn: set agent_status unreachable for node %s: %v", nodeID, err)
+				}
+			}
+		}
+	}
 }
 
 // handshake reads exactly one message and expects it to be TypeHello,
@@ -198,7 +318,7 @@ func (h *Handler) sendHelloAck(ctx context.Context, conn *websocket.Conn, reques
 // heartbeat is a keepalive with nothing to act on yet, and error is a
 // peer-reported protocol failure this layer only needs to log. Every other
 // message type is handed to onMessage, if set - see OnMessageFunc.
-func (h *Handler) readLoop(ctx context.Context, nodeID string, conn *websocket.Conn) {
+func (h *Handler) readLoop(ctx context.Context, nodeID string, conn *websocket.Conn, tracker *livenessTracker) {
 	for {
 		_, raw, err := conn.Read(ctx)
 		if err != nil {
@@ -206,6 +326,15 @@ func (h *Handler) readLoop(ctx context.Context, nodeID string, conn *websocket.C
 				h.logger.Printf("agentconn: connection closed: %v", err)
 			}
 			return
+		}
+
+		// Any traffic proves the connection is alive, not just a heartbeat
+		// specifically - if this connection had gone quiet long enough to
+		// be flagged unreachable, report the recovery back to online.
+		if tracker.recordActivity() {
+			if err := h.status.SetAgentStatus(ctx, nodeID, db.AgentStatusOnline, true); err != nil {
+				h.logger.Printf("agentconn: set agent_status online for node %s (recovered from unreachable): %v", nodeID, err)
+			}
 		}
 
 		var env agentproto.Envelope

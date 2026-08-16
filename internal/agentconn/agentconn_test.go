@@ -365,3 +365,125 @@ func TestHandler_OnConnect_NotCalledForRejectedHandshake(t *testing.T) {
 	case <-time.After(200 * time.Millisecond):
 	}
 }
+
+// handshakeAndDrainOnline dials, completes the handshake, and drains the
+// initial online SetAgentStatus call every unreachable-detection test below
+// doesn't itself care about, leaving status.calls ready to observe only
+// what that test triggers.
+func handshakeAndDrainOnline(t *testing.T, h *Handler) *websocket.Conn {
+	t.Helper()
+	conn := dialTestServer(t, h)
+	writeHello(t, conn, "req-1", "spark-1", "spk_validtoken")
+	readHelloAck(t, conn)
+	return conn
+}
+
+func TestHandler_Unreachable_DetectedAfterSilence(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	h, status, _ := testHandler(t, &fakeAuthenticator{node: node})
+	h.unreachableTimeout = 100 * time.Millisecond
+	h.unreachableCheckEvery = 20 * time.Millisecond
+	handshakeAndDrainOnline(t, h)
+	status.awaitCall(t) // the initial online call
+
+	call := status.awaitCall(t)
+	if call != (statusCall{nodeID: "node-1", status: db.AgentStatusUnreachable, bumpHeartbeat: false}) {
+		t.Errorf("SetAgentStatus call = %+v, want unreachable/no-bump for node-1", call)
+	}
+}
+
+func TestHandler_Unreachable_NotDetectedWhileHeartbeatsContinue(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	h, status, _ := testHandler(t, &fakeAuthenticator{node: node})
+	h.unreachableTimeout = 300 * time.Millisecond
+	h.unreachableCheckEvery = 50 * time.Millisecond
+	conn := handshakeAndDrainOnline(t, h)
+	status.awaitCall(t) // the initial online call
+
+	time.Sleep(100 * time.Millisecond)
+	heartbeat, err := agentproto.NewEnvelope(agentproto.TypeHeartbeat, "", agentproto.Heartbeat{SentAt: time.Now()})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+	writeEnvelope(t, conn, heartbeat)
+
+	// 250ms after the heartbeat above, still under the 300ms timeout it
+	// reset - no unreachable call should have fired.
+	select {
+	case c := <-status.calls:
+		t.Errorf("SetAgentStatus was called (%+v) despite a heartbeat resetting the silence window", c)
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+func TestHandler_Unreachable_RecoversToOnlineOnNewTraffic(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	h, status, _ := testHandler(t, &fakeAuthenticator{node: node})
+	h.unreachableTimeout = 100 * time.Millisecond
+	h.unreachableCheckEvery = 20 * time.Millisecond
+	conn := handshakeAndDrainOnline(t, h)
+	status.awaitCall(t) // the initial online call
+
+	unreachableCall := status.awaitCall(t)
+	if unreachableCall.status != db.AgentStatusUnreachable {
+		t.Fatalf("status = %q, want %q before testing recovery", unreachableCall.status, db.AgentStatusUnreachable)
+	}
+
+	heartbeat, err := agentproto.NewEnvelope(agentproto.TypeHeartbeat, "", agentproto.Heartbeat{SentAt: time.Now()})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+	writeEnvelope(t, conn, heartbeat)
+
+	recoveredCall := status.awaitCall(t)
+	if recoveredCall != (statusCall{nodeID: "node-1", status: db.AgentStatusOnline, bumpHeartbeat: true}) {
+		t.Errorf("SetAgentStatus call = %+v, want online/bump for node-1 after new traffic", recoveredCall)
+	}
+}
+
+func TestHandler_Unreachable_ThenRealDisconnect_EndsOffline(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	h, status, _ := testHandler(t, &fakeAuthenticator{node: node})
+	h.unreachableTimeout = 100 * time.Millisecond
+	h.unreachableCheckEvery = 20 * time.Millisecond
+	conn := handshakeAndDrainOnline(t, h)
+	status.awaitCall(t) // the initial online call
+
+	unreachableCall := status.awaitCall(t)
+	if unreachableCall.status != db.AgentStatusUnreachable {
+		t.Fatalf("status = %q, want %q before disconnecting", unreachableCall.status, db.AgentStatusUnreachable)
+	}
+
+	conn.Close(websocket.StatusNormalClosure, "")
+
+	// The watchDone join in ServeHTTP's deferred cleanup guarantees
+	// watchLiveness has fully stopped before the offline write - so the
+	// very next call observed here must be offline, never a late
+	// unreachable write racing behind it.
+	finalCall := status.awaitCall(t)
+	if finalCall != (statusCall{nodeID: "node-1", status: db.AgentStatusOffline, bumpHeartbeat: false}) {
+		t.Errorf("final SetAgentStatus call = %+v, want offline for node-1", finalCall)
+	}
+}
+
+func TestHandler_Unreachable_ReportedOnceNotEveryTick(t *testing.T) {
+	node := &db.Node{ID: "node-1", Name: "spark-1"}
+	h, status, _ := testHandler(t, &fakeAuthenticator{node: node})
+	h.unreachableTimeout = 60 * time.Millisecond
+	h.unreachableCheckEvery = 15 * time.Millisecond
+	handshakeAndDrainOnline(t, h)
+	status.awaitCall(t) // the initial online call
+
+	unreachableCall := status.awaitCall(t)
+	if unreachableCall.status != db.AgentStatusUnreachable {
+		t.Fatalf("status = %q, want %q", unreachableCall.status, db.AgentStatusUnreachable)
+	}
+
+	// Several more check ticks elapse with no recovery - only the one
+	// unreachable call above should ever have been written.
+	select {
+	case c := <-status.calls:
+		t.Errorf("a second SetAgentStatus call (%+v) was made for continued silence, want exactly one per silence", c)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
