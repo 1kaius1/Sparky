@@ -1174,6 +1174,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   real `podman inspect` against `vllm/vllm-openai:latest` that its own
   `ENTRYPOINT` already supplies `serve`. See PLANNING.md's Decisions Log for
   the full empirical findings.
+- A non-Admin who clicks `Audit log`/`Users & permissions`/`Settings` in the
+  sidebar now gets a real "access denied" page instead of a raw JSON 403 -
+  new `forbidden.html` template and `renderForbidden` helper, costing no
+  extra DB lookup since the tier was already resolved for the RBAC check
+  itself. The sidebar links remain visible to every tier; see PLANNING.md's
+  Decisions Log for why that half was scoped out.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

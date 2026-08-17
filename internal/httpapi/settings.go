@@ -79,7 +79,7 @@ func (a *API) handleSettings(w http.ResponseWriter, r *http.Request) {
 	metricsExport, auditSettings, err := a.settings.Get(ctx, actor)
 	switch {
 	case errors.Is(err, rbac.ErrNotPermitted):
-		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "admin tier required")
+		a.renderForbidden(w, r, actor.Tier)
 		return
 	case err != nil:
 		a.logger.Printf("httpapi: get settings: %v", err)
