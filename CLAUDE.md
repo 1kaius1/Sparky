@@ -363,6 +363,7 @@ with `existingSecret` support, etc.). Agent-specific variables are documented in
 | `BREAKGLASS_LOGIN_PATH`  | No       | `/login/break-glass` | Path the break-glass login route is mounted at - see `.env.example` |
 | `AUTH_RATE_LIMIT_MAX_ATTEMPTS` | No | `10`        | Per-source-IP attempt cap for `POST /login`/`POST /login/break-glass`, each throttled independently - see `.env.example` |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | No | `300`     | Window (seconds) the above cap applies over before resetting |
+| `AUTH_RECHECK_INTERVAL_SECONDS` | No | `3600`     | How long a session's AD login-gate group membership is trusted before it's re-verified against LDAP - see `PLANNING.md` Decisions Log |
 
 Everything else that's user-configurable after first run (metrics export
 destination, audit retention, permission overrides) lives in the database, set

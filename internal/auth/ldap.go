@@ -115,7 +115,31 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, username, password stri
 		ADSID:         sid,
 		DisplayName:   entry.GetAttributeValue("displayName"),
 		InAccessGroup: inAccessGroup,
+		DN:            entry.DN,
 	}, nil
+}
+
+// IsInAccessGroup implements IdentityProvider - a password-free recheck of
+// whether dn (cached from a prior Authenticate call) is still a member of
+// the login-gate group. Reuses isMemberOf directly, the same query
+// Authenticate itself already performs, rather than introducing a second
+// LDAP filter shape.
+func (p *LDAPProvider) IsInAccessGroup(ctx context.Context, dn string) (bool, error) {
+	conn, err := p.dial(p.serverAddr)
+	if err != nil {
+		return false, fmt.Errorf("connect to LDAP server: %w", err)
+	}
+	defer conn.Close()
+
+	if err := conn.Bind(p.bindDN, p.bindPassword); err != nil {
+		return false, fmt.Errorf("bind as service account: %w", err)
+	}
+
+	inAccessGroup, err := p.isMemberOf(conn, dn, p.accessGroupDN)
+	if err != nil {
+		return false, fmt.Errorf("resolve access group membership: %w", err)
+	}
+	return inAccessGroup, nil
 }
 
 // findUser looks up exactly one user by sAMAccountName. Zero or more than

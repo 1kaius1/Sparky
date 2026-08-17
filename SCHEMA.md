@@ -25,6 +25,7 @@ the schema.
 | `last_login_at` | timestamptz | |
 | `elevated_by` | uuid, nullable, FK -> Users.id | Who last changed this user's tier |
 | `elevated_at` | timestamptz, nullable | |
+| `ldap_dn` | text, nullable | The user's LDAP distinguishedName, cached and refreshed at every login (same "cached from AD" reasoning as `display_name`) - lets a mid-session AD group-membership recheck (PLANNING.md Decisions Log) re-verify against LDAP without needing the user's password again. Nullable: a user who hasn't logged in since this column was added has no cached value yet - a recheck treats that the same as no longer being a member, which self-heals on the user's next real login |
 
 `tier` is a plain enum column, not a normalized roles table - four fixed values with
 no per-tier metadata does not justify the extra join.

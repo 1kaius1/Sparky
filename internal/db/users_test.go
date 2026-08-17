@@ -52,7 +52,8 @@ func TestUserRepository_CreateAndFindByADSID(t *testing.T) {
 	adSID := uniqueADSID(t)
 	cleanupUser(t, repo, adSID)
 
-	created, err := repo.Create(ctx, adSID, "Test User", TierDeveloper)
+	const dn = "CN=test,DC=example,DC=internal"
+	created, err := repo.Create(ctx, adSID, "Test User", dn, TierDeveloper)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -68,6 +69,9 @@ func TestUserRepository_CreateAndFindByADSID(t *testing.T) {
 	if created.LastLoginAt != nil {
 		t.Errorf("Create() LastLoginAt = %v, want nil", created.LastLoginAt)
 	}
+	if created.LDAPDN == nil || *created.LDAPDN != dn {
+		t.Errorf("Create() LDAPDN = %v, want %q", created.LDAPDN, dn)
+	}
 
 	found, err := repo.FindByADSID(ctx, adSID)
 	if err != nil {
@@ -78,6 +82,9 @@ func TestUserRepository_CreateAndFindByADSID(t *testing.T) {
 	}
 	if found.DisplayName != "Test User" {
 		t.Errorf("FindByADSID() DisplayName = %q, want %q", found.DisplayName, "Test User")
+	}
+	if found.LDAPDN == nil || *found.LDAPDN != dn {
+		t.Errorf("FindByADSID() LDAPDN = %v, want %q", found.LDAPDN, dn)
 	}
 
 	foundByID, err := repo.FindByID(ctx, created.ID)
@@ -113,13 +120,14 @@ func TestUserRepository_UpdateLastLogin(t *testing.T) {
 	adSID := uniqueADSID(t)
 	cleanupUser(t, repo, adSID)
 
-	created, err := repo.Create(ctx, adSID, "Test User", TierReadOnly)
+	created, err := repo.Create(ctx, adSID, "Test User", "CN=old,DC=example,DC=internal", TierReadOnly)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
 
 	loginTime := time.Now().UTC().Truncate(time.Microsecond)
-	if err := repo.UpdateLastLogin(ctx, created.ID, loginTime); err != nil {
+	const newDN = "CN=new,DC=example,DC=internal"
+	if err := repo.UpdateLastLogin(ctx, created.ID, newDN, loginTime); err != nil {
 		t.Fatalf("UpdateLastLogin() error: %v", err)
 	}
 
@@ -133,12 +141,18 @@ func TestUserRepository_UpdateLastLogin(t *testing.T) {
 	if !found.LastLoginAt.Equal(loginTime) {
 		t.Errorf("LastLoginAt = %v, want %v", found.LastLoginAt, loginTime)
 	}
+	// UpdateLastLogin refreshes the cached DN too, not just the timestamp -
+	// confirms it actually overwrites the value Create set, not just
+	// populates it once.
+	if found.LDAPDN == nil || *found.LDAPDN != newDN {
+		t.Errorf("LDAPDN = %v, want %q (refreshed by UpdateLastLogin)", found.LDAPDN, newDN)
+	}
 }
 
 func TestUserRepository_UpdateLastLogin_NotFound(t *testing.T) {
 	repo := newTestUserRepo(t)
 
-	err := repo.UpdateLastLogin(context.Background(), "00000000-0000-0000-0000-000000000000", time.Now())
+	err := repo.UpdateLastLogin(context.Background(), "00000000-0000-0000-0000-000000000000", "CN=test,DC=example,DC=internal", time.Now())
 	if err != ErrUserNotFound {
 		t.Errorf("UpdateLastLogin() error = %v, want ErrUserNotFound", err)
 	}
@@ -150,14 +164,14 @@ func TestUserRepository_UpdateTier(t *testing.T) {
 
 	adminADSID := uniqueADSID(t) + "-admin"
 	cleanupUser(t, repo, adminADSID)
-	admin, err := repo.Create(ctx, adminADSID, "Admin User", TierAdmin)
+	admin, err := repo.Create(ctx, adminADSID, "Admin User", "CN=admin,DC=example,DC=internal", TierAdmin)
 	if err != nil {
 		t.Fatalf("Create(admin) error: %v", err)
 	}
 
 	targetADSID := uniqueADSID(t) + "-target"
 	cleanupUser(t, repo, targetADSID)
-	target, err := repo.Create(ctx, targetADSID, "Target User", TierReadOnly)
+	target, err := repo.Create(ctx, targetADSID, "Target User", "CN=target,DC=example,DC=internal", TierReadOnly)
 	if err != nil {
 		t.Fatalf("Create(target) error: %v", err)
 	}
@@ -191,7 +205,7 @@ func TestUserRepository_UpdateTier_NilElevatedBy(t *testing.T) {
 
 	targetADSID := uniqueADSID(t)
 	cleanupUser(t, repo, targetADSID)
-	target, err := repo.Create(ctx, targetADSID, "Target User", TierReadOnly)
+	target, err := repo.Create(ctx, targetADSID, "Target User", "CN=target,DC=example,DC=internal", TierReadOnly)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -222,14 +236,14 @@ func TestUserRepository_UpdateTier_NilElevatedAt(t *testing.T) {
 
 	adminADSID := uniqueADSID(t) + "-admin"
 	cleanupUser(t, repo, adminADSID)
-	admin, err := repo.Create(ctx, adminADSID, "Admin User", TierAdmin)
+	admin, err := repo.Create(ctx, adminADSID, "Admin User", "CN=admin,DC=example,DC=internal", TierAdmin)
 	if err != nil {
 		t.Fatalf("Create(admin) error: %v", err)
 	}
 
 	targetADSID := uniqueADSID(t) + "-target"
 	cleanupUser(t, repo, targetADSID)
-	target, err := repo.Create(ctx, targetADSID, "Target User", TierReadOnly)
+	target, err := repo.Create(ctx, targetADSID, "Target User", "CN=target,DC=example,DC=internal", TierReadOnly)
 	if err != nil {
 		t.Fatalf("Create(target) error: %v", err)
 	}
@@ -280,11 +294,11 @@ func TestUserRepository_List(t *testing.T) {
 	cleanupUser(t, repo, adSIDA)
 	cleanupUser(t, repo, adSIDB)
 
-	a, err := repo.Create(ctx, adSIDA, "List Test User A", TierReadOnly)
+	a, err := repo.Create(ctx, adSIDA, "List Test User A", "CN=usera,DC=example,DC=internal", TierReadOnly)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
-	b, err := repo.Create(ctx, adSIDB, "List Test User B", TierDeveloper)
+	b, err := repo.Create(ctx, adSIDB, "List Test User B", "CN=userb,DC=example,DC=internal", TierDeveloper)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}

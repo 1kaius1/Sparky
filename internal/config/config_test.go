@@ -76,6 +76,9 @@ func TestLoad_DefaultsApply(t *testing.T) {
 	if cfg.AuthRateLimitWindowSecs != 300 {
 		t.Errorf("AuthRateLimitWindowSecs = %d, want default %d", cfg.AuthRateLimitWindowSecs, 300)
 	}
+	if cfg.AuthRecheckIntervalSecs != 3600 {
+		t.Errorf("AuthRecheckIntervalSecs = %d, want default %d", cfg.AuthRecheckIntervalSecs, 3600)
+	}
 }
 
 func TestLoad_OverridesDefaults(t *testing.T) {
@@ -88,6 +91,7 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	t.Setenv("BREAKGLASS_LOGIN_PATH", "/login/battery/stapler/horse/towel")
 	t.Setenv("AUTH_RATE_LIMIT_MAX_ATTEMPTS", "5")
 	t.Setenv("AUTH_RATE_LIMIT_WINDOW_SECONDS", "60")
+	t.Setenv("AUTH_RECHECK_INTERVAL_SECONDS", "900")
 
 	cfg, err := Load()
 	if err != nil {
@@ -117,6 +121,22 @@ func TestLoad_OverridesDefaults(t *testing.T) {
 	}
 	if cfg.AuthRateLimitWindowSecs != 60 {
 		t.Errorf("AuthRateLimitWindowSecs = %d, want %d", cfg.AuthRateLimitWindowSecs, 60)
+	}
+	if cfg.AuthRecheckIntervalSecs != 900 {
+		t.Errorf("AuthRecheckIntervalSecs = %d, want %d", cfg.AuthRecheckIntervalSecs, 900)
+	}
+}
+
+func TestLoad_InvalidAuthRecheckIntervalSeconds_ReturnsError(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("AUTH_RECHECK_INTERVAL_SECONDS", "not-a-number")
+
+	_, err := Load()
+	if err == nil {
+		t.Fatal("Load() succeeded despite an invalid AUTH_RECHECK_INTERVAL_SECONDS, want an error")
+	}
+	if !strings.Contains(err.Error(), "AUTH_RECHECK_INTERVAL_SECONDS") {
+		t.Errorf("Load() error = %q, want it to mention AUTH_RECHECK_INTERVAL_SECONDS", err.Error())
 	}
 }
 

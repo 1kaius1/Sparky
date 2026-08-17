@@ -127,6 +127,16 @@ membership in a dedicated AD group, separate from the tier-defining groups. Nest
 group membership is resolved server-side via AD's `LDAP_MATCHING_RULE_IN_CHAIN`
 extended match, not walked recursively in application code.
 
+A session's own login-gate group membership is periodically re-verified against
+LDAP while active, not just at login - `AUTH_RECHECK_INTERVAL_SECONDS` (default
+1h) bounds how long a session is trusted before `RequireSession` re-checks it,
+using the user's LDAP distinguishedName cached at login (`Users.ldap_dn`, see
+`SCHEMA.md`) rather than requiring their password again. A definitive "no longer
+a member" answer clears the session; LDAP itself being transiently unreachable
+fails open instead, so an outage doesn't force every active session off mid-task
+- see `PLANNING.md` Decisions Log for the full design and rejected alternatives
+(a stateful session store with a kill switch, push-based revocation from AD).
+
 #### RBAC & Permission Overrides
 Resolves a session's tier (see `SCHEMA.md` Users), evaluates elevation rules, checks
 Permission overrides for the download/delete grant, and short-circuits every check
@@ -492,8 +502,6 @@ but does not fail the action being audited.
 ## Known Limitations
 
 - No caching layer - all reads hit Postgres directly. Acceptable at the target scale
-- Mid-session behavior when a user is removed from the AD access group is undefined -
-  an existing session likely persists until natural expiry (see `PLANNING.md`)
 - No historical metrics until v0.3.0 - only live telemetry in earlier milestones
 - CDI GPU-passthrough behavior on Podman not yet verified against real target
   hardware

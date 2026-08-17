@@ -128,6 +128,9 @@ func TestLDAPProvider_Authenticate_SuccessInAccessGroup(t *testing.T) {
 	if !user.InAccessGroup {
 		t.Error("InAccessGroup = false, want true")
 	}
+	if user.DN != testUserDN {
+		t.Errorf("DN = %q, want %q", user.DN, testUserDN)
+	}
 }
 
 func TestLDAPProvider_Authenticate_SuccessNotInAccessGroup(t *testing.T) {
@@ -309,5 +312,47 @@ func TestLDAPProvider_Authenticate_FilterEscaping(t *testing.T) {
 	}
 	if strings.Contains(capturedFilter, ")(sAMAccountName=admin") {
 		t.Errorf("filter was not escaped: %q", capturedFilter)
+	}
+}
+
+func TestLDAPProvider_IsInAccessGroup_Member(t *testing.T) {
+	dir := &testDirectory{groupSearchResult: oneResult(ldap.NewEntry(testUserDN, nil))}
+
+	inGroup, err := newTestProvider(dir).IsInAccessGroup(context.Background(), testUserDN)
+	if err != nil {
+		t.Fatalf("IsInAccessGroup() error: %v", err)
+	}
+	if !inGroup {
+		t.Error("IsInAccessGroup() = false, want true")
+	}
+}
+
+func TestLDAPProvider_IsInAccessGroup_NotMember(t *testing.T) {
+	dir := &testDirectory{groupSearchResult: noResults()}
+
+	inGroup, err := newTestProvider(dir).IsInAccessGroup(context.Background(), testUserDN)
+	if err != nil {
+		t.Fatalf("IsInAccessGroup() error: %v", err)
+	}
+	if inGroup {
+		t.Error("IsInAccessGroup() = true, want false")
+	}
+}
+
+func TestLDAPProvider_IsInAccessGroup_ServiceAccountBindFails(t *testing.T) {
+	dir := &testDirectory{serviceBindErr: errors.New("service account disabled")}
+
+	_, err := newTestProvider(dir).IsInAccessGroup(context.Background(), testUserDN)
+	if err == nil {
+		t.Fatal("IsInAccessGroup() succeeded despite a service-account bind failure")
+	}
+}
+
+func TestLDAPProvider_IsInAccessGroup_SearchFails(t *testing.T) {
+	dir := &testDirectory{groupSearchErr: errors.New("directory unreachable")}
+
+	_, err := newTestProvider(dir).IsInAccessGroup(context.Background(), testUserDN)
+	if err == nil {
+		t.Fatal("IsInAccessGroup() succeeded despite a group search failure")
 	}
 }

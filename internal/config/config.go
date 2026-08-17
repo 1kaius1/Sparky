@@ -33,6 +33,7 @@ type Config struct {
 	BreakGlassLoginPath      string
 	AuthRateLimitMaxAttempts int
 	AuthRateLimitWindowSecs  int
+	AuthRecheckIntervalSecs  int
 }
 
 // required maps each mandatory environment variable to the Config field it
@@ -54,6 +55,10 @@ func Load() (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parse AUTH_RATE_LIMIT_WINDOW_SECONDS: %w", err)
 	}
+	authRecheckIntervalSecs, err := getEnvDefaultInt("AUTH_RECHECK_INTERVAL_SECONDS", 3600)
+	if err != nil {
+		return nil, fmt.Errorf("parse AUTH_RECHECK_INTERVAL_SECONDS: %w", err)
+	}
 	breakGlassLoginPath := getEnvDefault("BREAKGLASS_LOGIN_PATH", "/login/break-glass")
 	if !strings.HasPrefix(breakGlassLoginPath, "/") {
 		return nil, fmt.Errorf("parse BREAKGLASS_LOGIN_PATH: must start with \"/\", got %q", breakGlassLoginPath)
@@ -68,6 +73,7 @@ func Load() (*Config, error) {
 		BreakGlassLoginPath:      breakGlassLoginPath,
 		AuthRateLimitMaxAttempts: authRateLimitMaxAttempts,
 		AuthRateLimitWindowSecs:  authRateLimitWindowSecs,
+		AuthRecheckIntervalSecs:  authRecheckIntervalSecs,
 	}
 
 	fields := []required{
