@@ -49,6 +49,11 @@
     <input type="text" id="engine_version" name="engine_version" value="{{.Data.Form.EngineVersion}}" placeholder="latest">
   </p>
   <p>
+    <label for="quantization">Quantization (optional, llama.cpp/GGUF only)</label><br>
+    <input type="text" id="quantization" name="quantization" value="{{.Data.Form.Quantization}}" placeholder="e.g. Q4_K_M">
+    <br><small>Only used for llama.cpp profiles whose repo has more than one GGUF quantization file. Must match the label exactly as it appears in the repo's filenames. Leave blank for vLLM/Aphrodite profiles or a repo with only one .gguf file.</small>
+  </p>
+  <p>
     <label for="engine_params">Engine params (JSON, optional)</label><br>
     <textarea id="engine_params" name="engine_params" rows="6" cols="60">{{.Data.Form.EngineParamsJSON}}</textarea>
   </p>

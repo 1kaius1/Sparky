@@ -17,7 +17,7 @@ import (
 // needs, narrow enough to fake in tests - same pattern as
 // internal/profiles' profileStore.
 type transferStore interface {
-	Create(ctx context.Context, destNodeID, modelRef string, sourceType db.TransferSourceType, sourceNodeID *string, requestedBy *string) (*db.ModelTransfer, error)
+	Create(ctx context.Context, destNodeID, modelRef string, sourceType db.TransferSourceType, sourceNodeID *string, quantization, requestedBy *string) (*db.ModelTransfer, error)
 	FindByID(ctx context.Context, id string) (*db.ModelTransfer, error)
 	UpdateProgress(ctx context.Context, id string, bytesTransferred, bytesTotal int64) error
 	SetStatus(ctx context.Context, id string, status db.TransferStatus, errorMessage *string) error
@@ -27,7 +27,7 @@ type transferStore interface {
 // inventoryStore is the subset of *db.NodeModelInventoryRepository this
 // package needs.
 type inventoryStore interface {
-	Upsert(ctx context.Context, nodeID, modelRef string, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error)
+	Upsert(ctx context.Context, nodeID, modelRef, quantization string, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error)
 }
 
 // overrideStore is the subset of *db.PermissionOverrideRepository this
@@ -128,14 +128,24 @@ func (s *Service) InitiateTransfer(ctx context.Context, actor rbac.Actor, params
 		requestedBy = &actor.UserID
 	}
 
-	t, err := s.transfers.Create(ctx, params.DestNodeID, params.ModelRef, db.TransferSourceInternet, nil, requestedBy)
+	var quantization *string
+	if params.Quantization != "" {
+		quantization = &params.Quantization
+	}
+
+	t, err := s.transfers.Create(ctx, params.DestNodeID, params.ModelRef, db.TransferSourceInternet, nil, quantization, requestedBy)
 	if err != nil {
 		return nil, fmt.Errorf("create model transfer: %w", err)
 	}
 
+	var startQuantization string
+	if t.Quantization != nil {
+		startQuantization = *t.Quantization
+	}
 	env, err := agentproto.NewEnvelope(agentproto.TypeStartTransfer, "", agentproto.StartTransfer{
-		TransferID: t.ID,
-		ModelRef:   t.ModelRef,
+		TransferID:   t.ID,
+		ModelRef:     t.ModelRef,
+		Quantization: startQuantization,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build start_transfer envelope: %w", err)
@@ -217,7 +227,11 @@ func (s *Service) HandleTransferProgress(nodeID string, env agentproto.Envelope)
 		s.logger.Printf("transfers: look up completed transfer %s: %v", progress.TransferID, err)
 		return
 	}
-	if _, err := s.inventory.Upsert(ctx, nodeID, t.ModelRef, db.InventoryStatusPresent, progress.BytesTotal, t.ID); err != nil {
+	var quantization string
+	if t.Quantization != nil {
+		quantization = *t.Quantization
+	}
+	if _, err := s.inventory.Upsert(ctx, nodeID, t.ModelRef, quantization, db.InventoryStatusPresent, progress.BytesTotal, t.ID); err != nil {
 		s.logger.Printf("transfers: upsert inventory for node %s model %s: %v", nodeID, t.ModelRef, err)
 	}
 }

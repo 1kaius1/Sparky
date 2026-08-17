@@ -138,7 +138,7 @@ func TestExecutor_Download_FetchesAllFiles(t *testing.T) {
 	progress, calls := collectProgress()
 	e := newTestExecutor(srv, defaultProgressBytes)
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err != nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
 
@@ -177,7 +177,7 @@ func TestExecutor_Download_ReportsProgressPeriodically(t *testing.T) {
 	progress, calls := collectProgress()
 	e := &Executor{baseURL: srv.URL, client: srv.Client(), progressBytes: 100, chunkBytes: 64}
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err != nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
 
@@ -219,7 +219,7 @@ func TestExecutor_Download_ResumesPartialFile(t *testing.T) {
 	progress, _ := collectProgress()
 	e := newTestExecutor(srv, defaultProgressBytes)
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err != nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
 
@@ -252,7 +252,7 @@ func TestExecutor_Download_ServerIgnoresRange_RestartsFromScratch(t *testing.T) 
 	progress, _ := collectProgress()
 	e := newTestExecutor(srv, defaultProgressBytes)
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err != nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
 
@@ -280,7 +280,7 @@ func TestExecutor_Download_AlreadyComplete_Skipped(t *testing.T) {
 	progress, _ := collectProgress()
 	e := newTestExecutor(srv, defaultProgressBytes)
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err != nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
 
@@ -299,7 +299,7 @@ func TestExecutor_Download_ListFilesError(t *testing.T) {
 	progress, calls := collectProgress()
 	e := newTestExecutor(srv, defaultProgressBytes)
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err == nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err == nil {
 		t.Fatal("Download() succeeded despite a 500 from the listing endpoint, want an error")
 	}
 
@@ -330,7 +330,7 @@ func TestExecutor_Download_FileDownloadError(t *testing.T) {
 	progress, calls := collectProgress()
 	e := newTestExecutor(srv, defaultProgressBytes)
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err == nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err == nil {
 		t.Fatal("Download() succeeded despite a 500 downloading the file, want an error")
 	}
 
@@ -353,7 +353,7 @@ func TestExecutor_Download_ContextAlreadyCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
-	if err := e.Download(ctx, "test-org/test-model", destDir, progress); err == nil {
+	if err := e.Download(ctx, "test-org/test-model", "", destDir, progress); err == nil {
 		t.Fatal("Download() succeeded with an already-canceled context, want an error")
 	}
 }
@@ -369,7 +369,7 @@ func TestExecutor_Download_NestedFilePath(t *testing.T) {
 	progress, _ := collectProgress()
 	e := newTestExecutor(srv, defaultProgressBytes)
 
-	if err := e.Download(context.Background(), "test-org/test-model", destDir, progress); err != nil {
+	if err := e.Download(context.Background(), "test-org/test-model", "", destDir, progress); err != nil {
 		t.Fatalf("Download() error: %v", err)
 	}
 
@@ -380,4 +380,133 @@ func TestExecutor_Download_NestedFilePath(t *testing.T) {
 	if !bytes.Equal(got, content) {
 		t.Errorf("nested file content = %q, want %q", got, content)
 	}
+}
+
+func TestExecutor_Download_QuantizationDownloadsOnlyMatchingFile(t *testing.T) {
+	files := map[string][]byte{
+		"README.md":              []byte("# test model"),
+		"llama-2-7b.Q4_K_M.gguf": []byte("q4 content"),
+		"llama-2-7b.Q5_K_M.gguf": []byte("q5 content"),
+	}
+	hub := newFakeHubServer("test-org/multi-quant", files)
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	destDir := t.TempDir()
+	progress, calls := collectProgress()
+	e := newTestExecutor(srv, defaultProgressBytes)
+
+	if err := e.Download(context.Background(), "test-org/multi-quant", "Q4_K_M", destDir, progress); err != nil {
+		t.Fatalf("Download() error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "llama-2-7b.Q4_K_M.gguf"))
+	if err != nil {
+		t.Fatalf("ReadFile(Q4_K_M) error: %v", err)
+	}
+	if !bytes.Equal(got, files["llama-2-7b.Q4_K_M.gguf"]) {
+		t.Errorf("Q4_K_M content = %q, want %q", got, files["llama-2-7b.Q4_K_M.gguf"])
+	}
+
+	for _, unwanted := range []string{"llama-2-7b.Q5_K_M.gguf", "README.md"} {
+		if _, err := os.Stat(filepath.Join(destDir, unwanted)); !os.IsNotExist(err) {
+			t.Errorf("%s was downloaded, want only the matching quantization fetched", unwanted)
+		}
+	}
+
+	final := calls()[len(calls())-1]
+	wantTotal := int64(len(files["llama-2-7b.Q4_K_M.gguf"]))
+	if final.status != StatusCompleted || final.bytesTotal != wantTotal {
+		t.Errorf("final progress = %+v, want status=%q bytesTotal=%d", final, StatusCompleted, wantTotal)
+	}
+}
+
+func TestExecutor_Download_QuantizationNoMatch_FailsFastWithAvailableFiles(t *testing.T) {
+	files := map[string][]byte{
+		"llama-2-7b.Q4_K_M.gguf": []byte("q4 content"),
+		"llama-2-7b.Q5_K_M.gguf": []byte("q5 content"),
+	}
+	hub := newFakeHubServer("test-org/multi-quant", files)
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	destDir := t.TempDir()
+	progress, calls := collectProgress()
+	e := newTestExecutor(srv, defaultProgressBytes)
+
+	err := e.Download(context.Background(), "test-org/multi-quant", "Q8_0", destDir, progress)
+	if err == nil {
+		t.Fatal("Download() succeeded for a quantization matching no file, want an error")
+	}
+	if !strings.Contains(err.Error(), "Q4_K_M") || !strings.Contains(err.Error(), "Q5_K_M") {
+		t.Errorf("error = %v, want it to list the repo's actual .gguf filenames", err)
+	}
+
+	// Fails before ever creating destDir/downloading anything.
+	if entries, _ := os.ReadDir(destDir); len(entries) != 0 {
+		t.Errorf("destDir has %d entries, want 0 - a no-match failure should download nothing", len(entries))
+	}
+	if len(calls()) != 1 || calls()[0].status != StatusFailed {
+		t.Errorf("progress calls = %+v, want exactly one StatusFailed call", calls())
+	}
+}
+
+func TestExecutor_Download_QuantizationAmbiguousMatch_Fails(t *testing.T) {
+	files := map[string][]byte{
+		"llama-2-7b.Q4_K_M.gguf":    []byte("q4 content"),
+		"llama-2-7b.Q4_K_M-v2.gguf": []byte("q4 v2 content"),
+	}
+	hub := newFakeHubServer("test-org/ambiguous-quant", files)
+	srv := httptest.NewServer(hub)
+	defer srv.Close()
+
+	destDir := t.TempDir()
+	progress, _ := collectProgress()
+	e := newTestExecutor(srv, defaultProgressBytes)
+
+	err := e.Download(context.Background(), "test-org/ambiguous-quant", "Q4_K_M", destDir, progress)
+	if err == nil {
+		t.Fatal("Download() succeeded for an ambiguous quantization match, want an error")
+	}
+	if !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("error = %v, want it to mention the match is ambiguous", err)
+	}
+}
+
+func TestSelectQuantizedFile(t *testing.T) {
+	files := []string{"README.md", "config.json", "model.Q4_K_M.gguf", "model.Q5_K_M.gguf"}
+
+	t.Run("exactly one match", func(t *testing.T) {
+		got, err := selectQuantizedFile(files, "Q4_K_M")
+		if err != nil {
+			t.Fatalf("selectQuantizedFile() error: %v", err)
+		}
+		if len(got) != 1 || got[0] != "model.Q4_K_M.gguf" {
+			t.Errorf("selectQuantizedFile() = %v, want [model.Q4_K_M.gguf]", got)
+		}
+	})
+
+	t.Run("no match lists available .gguf files only, not every file", func(t *testing.T) {
+		_, err := selectQuantizedFile(files, "Q8_0")
+		if err == nil {
+			t.Fatal("selectQuantizedFile() succeeded, want an error")
+		}
+		if strings.Contains(err.Error(), "README.md") || strings.Contains(err.Error(), "config.json") {
+			t.Errorf("error = %v, want it to list only .gguf filenames, not every repo file", err)
+		}
+		if !strings.Contains(err.Error(), "model.Q4_K_M.gguf") || !strings.Contains(err.Error(), "model.Q5_K_M.gguf") {
+			t.Errorf("error = %v, want it to list both available .gguf files", err)
+		}
+	})
+
+	t.Run("substring match against a non-gguf file never matches", func(t *testing.T) {
+		filesWithReadmeMention := []string{"README.md mentioning Q4_K_M", "model.Q4_K_M.gguf"}
+		got, err := selectQuantizedFile(filesWithReadmeMention, "Q4_K_M")
+		if err != nil {
+			t.Fatalf("selectQuantizedFile() error: %v", err)
+		}
+		if len(got) != 1 || got[0] != "model.Q4_K_M.gguf" {
+			t.Errorf("selectQuantizedFile() = %v, want only the .gguf file, not the non-.gguf one containing the same substring", got)
+		}
+	})
 }

@@ -86,15 +86,15 @@ type repoInfo struct {
 	} `json:"siblings"`
 }
 
-// Download fetches every file in modelRef's default revision into destDir
-// (created if it doesn't exist, along with any subdirectory a filename
-// implies - a repo's siblings entries may nest, e.g. "onnx/model.onnx").
-// v0.1.0 downloads every file in the repo, not just the one an engine
-// adapter actually needs - correct and necessary for a vLLM/full-residency
-// profile (the whole HF Transformers-format directory is required anyway)
-// but wasteful for a multi-quantization GGUF repo, where only one file
-// matters - a known, deliberate v0.1.0 simplification, see PLANNING.md's
-// Decisions Log.
+// Download fetches modelRef's default revision into destDir (created if
+// it doesn't exist, along with any subdirectory a filename implies - a
+// repo's siblings entries may nest, e.g. "onnx/model.onnx"). When
+// quantization is empty, every file in the repo is fetched - correct and
+// necessary for a vLLM/full-residency profile (the whole HF
+// Transformers-format directory is required anyway) and harmless for a
+// single-file GGUF repo, but wasteful for a multi-quantization GGUF repo.
+// When quantization is non-empty, only the one file whose name contains
+// it is fetched - see selectQuantizedFile for the matching/error rules.
 //
 // A file already fully present in destDir at the remote's exact size is
 // skipped. A partially present file is resumed via a Range request when
@@ -110,11 +110,19 @@ type repoInfo struct {
 //
 // No checksum verification is performed - SCHEMA.md's node_model_inventory
 // has no field for one yet, so there is nothing to verify against.
-func (e *Executor) Download(ctx context.Context, modelRef, destDir string, progress ProgressFunc) error {
+func (e *Executor) Download(ctx context.Context, modelRef, quantization, destDir string, progress ProgressFunc) error {
 	files, err := e.listFiles(ctx, modelRef)
 	if err != nil {
 		progress(0, 0, StatusFailed, err.Error())
 		return fmt.Errorf("list files for %s: %w", modelRef, err)
+	}
+
+	if quantization != "" {
+		files, err = selectQuantizedFile(files, quantization)
+		if err != nil {
+			progress(0, 0, StatusFailed, err.Error())
+			return fmt.Errorf("select quantization %q for %s: %w", quantization, modelRef, err)
+		}
 	}
 
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
@@ -175,6 +183,37 @@ func (e *Executor) listFiles(ctx context.Context, modelRef string) ([]string, er
 		files[i] = s.RFilename
 	}
 	return files, nil
+}
+
+// selectQuantizedFile narrows files down to the single .gguf file whose
+// name contains quantization, e.g. "Q4_K_M" matching
+// "llama-2-7b.Q4_K_M.gguf" - llama.cpp's own naming convention. Restricted
+// to .gguf files specifically (not just any filename containing the
+// substring) so an unrelated file that happens to mention the quant label
+// - a README, for instance - can never match. Returns a clear error
+// listing the repo's actual .gguf filenames when nothing matches (no live
+// repo-check UI exists yet - see PLANNING.md's Decisions Log - so this is
+// the fast-failure safety net a bad or misspelled quantization value gets
+// instead), or when more than one file matches (ambiguous).
+func selectQuantizedFile(files []string, quantization string) ([]string, error) {
+	var ggufFiles, matches []string
+	for _, f := range files {
+		if !strings.HasSuffix(strings.ToLower(f), ".gguf") {
+			continue
+		}
+		ggufFiles = append(ggufFiles, f)
+		if strings.Contains(f, quantization) {
+			matches = append(matches, f)
+		}
+	}
+	switch len(matches) {
+	case 0:
+		return nil, fmt.Errorf("no .gguf file matched, available: %s", strings.Join(ggufFiles, ", "))
+	case 1:
+		return matches, nil
+	default:
+		return nil, fmt.Errorf("ambiguous, matched: %s", strings.Join(matches, ", "))
+	}
 }
 
 // fileSize issues a HEAD request against the resolve endpoint to learn a

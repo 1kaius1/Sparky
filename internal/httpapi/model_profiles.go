@@ -175,6 +175,7 @@ type profileFormValues struct {
 	EngineParamsJSON string
 	RequiredMemoryGB string
 	EngineVersion    string
+	Quantization     string
 	TargetNodeID     string
 	Port             string
 }
@@ -204,6 +205,10 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 	if p.EngineVersion != nil {
 		engineVersion = *p.EngineVersion
 	}
+	var quantization string
+	if p.Quantization != nil {
+		quantization = *p.Quantization
+	}
 	return profileFormValues{
 		Name:             p.Name,
 		ModelRef:         p.ModelRef,
@@ -211,6 +216,7 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 		EngineParamsJSON: string(p.EngineParams),
 		RequiredMemoryGB: requiredMemoryGB,
 		EngineVersion:    engineVersion,
+		Quantization:     quantization,
 		TargetNodeID:     targetNodeID,
 		Port:             strconv.Itoa(p.Port),
 	}
@@ -248,6 +254,11 @@ func fieldsFromForm(form profileFormValues) (profiles.Fields, error) {
 		engineVersion = &trimmed
 	}
 
+	var quantization *string
+	if trimmed := strings.TrimSpace(form.Quantization); trimmed != "" {
+		quantization = &trimmed
+	}
+
 	return profiles.Fields{
 		Name:             form.Name,
 		ModelRef:         form.ModelRef,
@@ -255,6 +266,7 @@ func fieldsFromForm(form profileFormValues) (profiles.Fields, error) {
 		EngineParams:     json.RawMessage(engineParamsRaw),
 		RequiredMemoryGB: requiredMemoryGB,
 		EngineVersion:    engineVersion,
+		Quantization:     quantization,
 		TargetNodeID:     form.TargetNodeID,
 		Port:             port,
 	}, nil
@@ -375,6 +387,7 @@ func (a *API) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		EngineParamsJSON: r.PostFormValue("engine_params"),
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
 		EngineVersion:    r.PostFormValue("engine_version"),
+		Quantization:     r.PostFormValue("quantization"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
 		Port:             r.PostFormValue("port"),
 	}
@@ -432,6 +445,7 @@ func (a *API) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		EngineParamsJSON: r.PostFormValue("engine_params"),
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
 		EngineVersion:    r.PostFormValue("engine_version"),
+		Quantization:     r.PostFormValue("quantization"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
 		Port:             r.PostFormValue("port"),
 	}

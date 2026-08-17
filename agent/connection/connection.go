@@ -18,6 +18,7 @@ import (
 	"math/rand"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -60,7 +61,7 @@ type runtimeBackend = runtime.Backend
 // transferExecutor is the subset of *transfer.Executor this package
 // needs - narrow enough to fake in tests without a real HTTP download.
 type transferExecutor interface {
-	Download(ctx context.Context, modelRef, destDir string, progress transfer.ProgressFunc) error
+	Download(ctx context.Context, modelRef, quantization, destDir string, progress transfer.ProgressFunc) error
 }
 
 // engineTransferExecutor is the subset of *enginetransfer.Executor this
@@ -572,7 +573,7 @@ func (c *Conn) runTransfer(ctx context.Context, conn *websocket.Conn, start agen
 		}
 	}
 
-	if err := c.transfer.Download(ctx, start.ModelRef, destDir, progress); err != nil {
+	if err := c.transfer.Download(ctx, start.ModelRef, start.Quantization, destDir, progress); err != nil {
 		c.logger.Printf("agent connection: transfer %s failed: %v", start.TransferID, err)
 	}
 }
@@ -630,12 +631,14 @@ func (c *Conn) runEngineTransfer(ctx context.Context, conn *websocket.Conn, star
 // engine (vLLM-style) is pointed at that directory itself, since it expects
 // a whole HF Transformers-format directory (config, tokenizer, every
 // safetensors shard); a partial-offload engine (llama.cpp-style) is
-// pointed at a single .gguf file within it, since v0.1.0's downloader
-// fetches every file in a GGUF repo's default revision (PLANNING.md's
-// 2026-08-11 Decisions Log), which can include multiple quantizations -
-// exactly one is required here, since there is no quantization selector
-// yet to prefer one over another.
-func (c *Conn) resolveModelPath(modelRef string, requiresFullGPUResidency bool) (string, error) {
+// pointed at a single .gguf file within it. When quantization is empty,
+// this preserves the original v0.1.0 behavior exactly: require exactly
+// one .gguf file present, erroring on ambiguity (correct for a
+// single-quantization repo; still fails clearly for a not-yet-pinned
+// multi-quantization one, same as before). When quantization is
+// non-empty, it resolves directly to the one file matching it - no
+// exactly-one requirement, since the value already disambiguates.
+func (c *Conn) resolveModelPath(modelRef, quantization string, requiresFullGPUResidency bool) (string, error) {
 	dir := filepath.Join(c.cfg.ModelStoragePath, filepath.FromSlash(modelRef))
 	if requiresFullGPUResidency {
 		return dir, nil
@@ -645,6 +648,20 @@ func (c *Conn) resolveModelPath(modelRef string, requiresFullGPUResidency bool) 
 	if err != nil {
 		return "", fmt.Errorf("glob for a .gguf file in %s: %w", dir, err)
 	}
+
+	if quantization != "" {
+		var filtered []string
+		for _, m := range matches {
+			if strings.Contains(filepath.Base(m), quantization) {
+				filtered = append(filtered, m)
+			}
+		}
+		if len(filtered) != 1 {
+			return "", fmt.Errorf("expected exactly one .gguf file matching quantization %q in %s, found %d", quantization, dir, len(filtered))
+		}
+		return filtered[0], nil
+	}
+
 	if len(matches) != 1 {
 		return "", fmt.Errorf("expected exactly one .gguf file in %s, found %d", dir, len(matches))
 	}
@@ -712,7 +729,7 @@ func buildEngineLaunchArgs(runtimeBackend, engineType, modelPath string, port in
 // silently dropped, since the central app has no other way to learn what
 // actually happened on this node.
 func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentproto.LoadInstance) {
-	modelPath, err := c.resolveModelPath(load.ModelRef, load.RequiresFullGPUResidency)
+	modelPath, err := c.resolveModelPath(load.ModelRef, load.Quantization, load.RequiresFullGPUResidency)
 	if err != nil {
 		c.logger.Printf("agent connection: resolve model path for instance %s: %v", load.InstanceID, err)
 		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())

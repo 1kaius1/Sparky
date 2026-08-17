@@ -39,7 +39,7 @@ func (f *fakeProfileStore) List(_ context.Context) ([]*db.Profile, error) {
 	return f.listResult, nil
 }
 
-func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -49,20 +49,20 @@ func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engi
 	}
 	p := &db.Profile{
 		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
-		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion,
+		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, CreatedBy: createdBy,
 	}
 	f.created = append(f.created, p)
 	return p, nil
 }
 
-func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
 	p := &db.Profile{
 		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
-		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion,
+		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, UpdatedBy: updatedBy,
 	}
 	f.updated = append(f.updated, p)
