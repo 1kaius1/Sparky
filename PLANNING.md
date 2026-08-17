@@ -37,83 +37,30 @@ and its GPU/CPU/memory usage, and an admin can see exactly who did what, when.
 
 ## Current Status
 
-**Status:** v0.1.0 substantially complete; v0.2.0 well underway - see Milestones
-below for the authoritative, phase-level detail; this is a summary only.
+Quick reference only - see Milestones below for the authoritative, phase-level
+detail (PR references, design rationale, bugs found and fixed).
 
-Architecture and design are complete. Built and merged: AD/LDAP bind auth and
-session handling; Users/RBAC tiers/SuperAdmin break-glass; the `sparky setup` CLI
-wizard; the audit log; the node registry; the full agent runtime/WebSocket stack
-(Docker/Podman runtime backend, `internal/agentproto`, node bearer tokens, the
-server-side Agent-Communication Layer, and the agent-side connection goroutine -
-all five phases done, though the top-level checklist item stays unchecked pending
-real-hardware CDI GPU passthrough verification, a known gap, not an oversight); and
-Model profiles (schema, engine adapters, RBAC-gated CRUD service). Model transfers
-is done, all four phases (`model_transfers` + `node_model_inventory` schema and
-repositories; `internal/agentproto`'s `TypeStartTransfer`/`TypeTransferProgress`
-and `internal/agentconn`'s `Registry.Send`/`Handler.OnMessage`; `agent/transfer`'s
-native Hugging Face downloader wired into `agent/connection.Conn`'s dispatch;
-`internal/transfers.Service`'s RBAC-gated `InitiateTransfer` and its
-`HandleTransferProgress` `OnMessageFunc` callback). Running instances is also done
-(single-node load/unload - `running_instances` schema, engine adapters' translation
-into an image/launch command, `TypeLoadInstance`/`TypeUnloadInstance`/
-`TypeInstanceResult` protocol and agent-side dispatch, `internal/lifecycle.Service`'s
-RBAC-gated `LoadInstance`/`UnloadInstance`). Metrics is also done (live
-telemetry collection and ingestion, no historical retention yet -
-`agent/telemetry.Collector`, `TypeTelemetry`, `internal/metrics.Service`).
-Dashboard UI Phases 1-10 are done (base layout/sidebar shell,
-session-gated routing, all eight sidebar sections have a working
-read-only page - Dashboard overview, Nodes, Model profiles, Transfers,
-Metrics, Audit log, Users & permissions, Settings; a real HTML login page
-and a logout control; three write/action forms - Users & permissions
-tier changes, node registration, model profile create/edit - no SSE
-wiring yet). Two new singleton config tables (`metrics_export_config`,
-`audit_settings`) were migrated as part of Phase 6, closing a gap where
-SCHEMA.md had long documented their shape but neither had ever actually
-been created; Phase 7 similarly gave `internal/metrics.Service` its first
-real production caller (`Chart.js`, vendored per ARCHITECTURE.md's no-CDN
-policy, is the Metrics page's chart library); Phases 8, 9, and 10 gave
-`rbac.Service.ElevateTier`, `nodes.Service.RegisterNode`, and
-`profiles.Service.CreateProfile`/`UpdateProfile` - all fully built and
-tested well before this Dashboard UI milestone started - their first
-HTTP callers; Phase 11, the milestone's last phase, gave
-`lifecycle.Service.LoadInstance`/`UnloadInstance` their first HTTP
-callers (the instance load/unload controls on the Model profiles page),
-combined the three services' `OnMessageFunc`-shaped handlers into the
-single dispatching callback `cmd/sparky-server/main.go` had been passing
-`nil` for, and added SSE wiring (a new `internal/events` broker plus
-`GET /events`) so the browser reflects a load/unload/transfer/telemetry
-change without a manual reload. Dashboard UI is now fully done - all
-eleven phases. v0.1.0's only remaining item is real-hardware CDI GPU
-passthrough verification for the Docker/Podman runtime backend, blocked
-on DGX Spark hardware not yet in hand - a known, documented gap, not
-unfinished work.
+| Milestone | Status | Remaining |
+|---|---|---|
+| v0.1.0 - Core foundation | Substantially complete | Real-hardware CDI GPU passthrough verification (Docker/Podman backend) - blocked on DGX Spark hardware not yet in hand, not unfinished work |
+| v0.2.0 - Bare-metal backend + Spark validation | Well underway | Same CDI passthrough validation as v0.1.0 |
+| v0.3.0 - Multi-Spark clustering | Not started | Everything |
+| v0.4.0 - Historical metrics | Not started | Everything |
+| v0.5.0 - Deployment maturity | Not started | Everything |
+| v1.0.0 - Production-ready release | Not started | Everything |
 
-v0.2.0 is well underway. Bare-metal packaging (`.deb`/`.rpm`/tarball,
-`scripts/build_packages.sh` via `nfpm`) is done. The bare-metal runtime
-backend itself (`agent/runtime/baremetal`) is done, including real-hardware
-validation - not just built and unit-tested, but actually run: a real
-`llamacpp` profile loaded as a genuine child process of `sparky-agent`
-running as `serviceloop` on this project's own RTX 4090 laptop, GPU
-offload confirmed via `nvidia-smi`, a real inference request served, and
-clean unload/shutdown confirmed - see the 2026-08-14/2026-08-15 Decisions
-Log entries for the two real bugs that validation pass found and fixed
-(the `/opt/sparky/serviceloop` home-directory fix, `KillMode=mixed`). The
-`sparky-agent setup` subcommand is also done, with its own real-hardware
-verification. Engine-binary provisioning from GitHub Releases
-(`agent/enginetransfer`, `internal/engineprovision`) is also done - real
-test coverage throughout, though not yet exercised against an actual
-published release tarball on real hardware, and with no HTTP/UI surface yet
-(logic and agent-side mechanics only, matching this project's own repeated
-"logic before HTTP wiring" precedent) - see the 2026-08-15 Decisions Log
-entries. Per-profile engine version pinning - the follow-up deliberately
-scoped out of that provisioning work - is also done: a nullable
-`model_profiles.engine_version` column plus agent-side launch-time
-resolution (`agent/connection.resolveEngineBinaryPath`), letting two
-otherwise-identical profiles pin different installed versions for direct
-comparison, with zero behavior change for any unpinned profile - see the
-new dated Decisions Log entry. v0.2.0's only remaining item is the same
-Docker/Podman-on-Spark CDI validation v0.1.0 is waiting on - see Current
-Sprint / Active Work below.
+**v0.1.0** - built and merged: AD/LDAP auth and session handling; Users/RBAC
+tiers/SuperAdmin break-glass; the audit log; the node registry; the full agent
+runtime/WebSocket stack; Model profiles; Model transfers; Running instances
+(single-node load/unload); Metrics (live telemetry, no historical retention
+yet); and the full 11-phase Dashboard UI (all eight sidebar sections, login/
+logout, three write/action forms, SSE live updates).
+
+**v0.2.0** - built and merged: bare-metal packaging (`.deb`/`.rpm`/tarball);
+the bare-metal runtime backend, validated end-to-end on real GPU hardware (a
+real inference engine loaded, served a request, and cleanly unloaded, not
+just simulated); `sparky-agent setup`; engine-binary provisioning from GitHub
+Releases; and per-profile engine version pinning.
 
 ---
 
