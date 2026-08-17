@@ -8,13 +8,13 @@ import (
 	"github.com/1kaius1/Sparky/internal/db"
 )
 
-// Note: this package has no existing test coverage for the Model profiles
-// create/edit form's HTTP handlers (handleCreateProfile/handleUpdateProfile
-// themselves) - a pre-existing gap, not introduced here. These tests cover
-// the two pure functions the engine_version field touches directly:
-// fieldsFromForm (submitted form -> profiles.Fields) and
+// These tests cover the two pure functions the engine_version field touches
+// directly: fieldsFromForm (submitted form -> profiles.Fields) and
 // profileFormValuesFromProfile (a persisted profile -> form values, for
-// the edit form's prefill).
+// the edit form's prefill). The handlers themselves
+// (handleCreateProfile/handleUpdateProfile/handleNewProfileForm/
+// handleEditProfileForm) have their own coverage in dashboard_test.go,
+// alongside every other Dashboard UI page's handler tests.
 
 func validProfileForm() profileFormValues {
 	return profileFormValues{
