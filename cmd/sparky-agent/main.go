@@ -74,6 +74,7 @@ func main() {
 		},
 		ModelStoragePath:      cfg.ModelStoragePath,
 		EngineInstallPath:     cfg.EngineInstallPath,
+		RuntimeBackend:        cfg.RuntimeBackend,
 		TelemetryPollInterval: telemetryPollInterval,
 	}, runtimeBackend, transfer.New(), enginetransfer.New(), telemetry.NewCollector(), logger)
 

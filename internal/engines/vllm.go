@@ -9,11 +9,13 @@ import (
 )
 
 // vllmImage is the container image vLLM profiles launch - vllm/vllm-openai
-// is vLLM's own official OpenAI-compatible server image, well-documented
-// and stable, but - like vllmParams below - not confirmed against a live
-// install in this environment: installing vLLM's CUDA/torch dependency
-// chain wasn't practical here. An honest confidence gap, not glossed
-// over, same as vllmParams' own doc comment already carries.
+// is vLLM's own official OpenAI-compatible server image. Confirmed via a
+// real `podman pull`/`podman inspect` (PLANNING.md Decisions Log) that its
+// ENTRYPOINT is ["vllm","serve"] - which is why agent/connection's
+// buildEngineLaunchArgs does not prepend "serve" for the containers
+// backend, only bare-metal. vllmParams below remains a separate,
+// still-unconfirmed question - which specific engine_params flags vLLM
+// accepts - see its own doc comment.
 const vllmImage = "vllm/vllm-openai:latest"
 
 // vllmAdapter is the Adapter for db.ProfileEngineVLLM.

@@ -115,6 +115,19 @@ type Config struct {
 	// software via container images, not this mechanism.
 	EngineInstallPath string
 
+	// RuntimeBackend is SPARKY_RUNTIME_BACKEND ("bare-metal" / "docker" /
+	// "podman", per docs/AGENT.md Configuration) - agent/config.Config's
+	// own copy of the same value, already used once at startup to decide
+	// which runtime.Backend implementation to construct. Threaded through
+	// separately here because buildEngineLaunchArgs needs it too: a vLLM
+	// load_instance on bare-metal execs the raw vllm binary directly and
+	// must prepend its "serve" subcommand itself, while the containers
+	// backend's vllm/vllm-openai image already bakes "serve" into its own
+	// ENTRYPOINT (confirmed via a real `podman inspect` - PLANNING.md
+	// Decisions Log) - so this same launch-arg logic needs to answer
+	// differently per backend, not just per engine type.
+	RuntimeBackend string
+
 	// TelemetryPollInterval is how often the telemetry goroutine takes
 	// and pushes a reading - SPARKY_TELEMETRY_POLL_INTERVAL, per
 	// docs/AGENT.md Configuration. Parsed by cmd/sparky-agent from
@@ -669,6 +682,29 @@ func (c *Conn) resolveEngineBinaryPath(engineType, version string) string {
 	return filepath.Join(c.cfg.EngineInstallPath, engineType, version, filepath.Base(configured))
 }
 
+// buildEngineLaunchArgs assembles the argv Sparky passes to the engine. The
+// --model/--port/--host flag form is confirmed valid vllm serve syntax
+// (PLANNING.md Decisions Log: a real `vllm serve --help=ModelConfig`
+// documents --model as a real flag, not just the positional model_tag its
+// usage synopsis shows) - so this same flag shape already works for both
+// llama.cpp and vLLM. "serve" itself is only prepended for the bare-metal
+// backend running a vLLM profile: bare-metal execs the raw vllm binary
+// directly (agent/runtime/baremetal.Backend.Start), which has no entrypoint
+// to supply the subcommand, so `vllm --model ...` with no subcommand is
+// invalid syntax. The containers backend needs no such prepending - a real
+// `podman inspect` against docker.io/vllm/vllm-openai:latest (PLANNING.md
+// Decisions Log) confirmed its ENTRYPOINT already is ["vllm","serve"], and
+// Docker/Podman appends spec.Args after a container's ENTRYPOINT, so
+// prepending "serve" there would double it ("vllm serve serve ...",
+// invalid).
+func buildEngineLaunchArgs(runtimeBackend, engineType, modelPath string, port int, extra []string) []string {
+	args := []string{"--model", modelPath, "--port", strconv.Itoa(port), "--host", "0.0.0.0"}
+	if engineType == "vllm" && runtimeBackend == "bare-metal" {
+		args = append([]string{"serve"}, args...)
+	}
+	return append(args, extra...)
+}
+
 // runLoad starts a Running instance - one goroutine per load/unload
 // command, same reasoning as runTransfer, so a slow image pull or process
 // start never blocks readLoop's command handling. The outcome is always
@@ -683,7 +719,7 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		return
 	}
 
-	args := append([]string{"--model", modelPath, "--port", strconv.Itoa(load.Port), "--host", "0.0.0.0"}, load.Args...)
+	args := buildEngineLaunchArgs(c.cfg.RuntimeBackend, load.EngineType, modelPath, load.Port, load.Args)
 	spec := runtime.Spec{
 		InstanceID: load.InstanceID,
 		EngineType: load.EngineType,
