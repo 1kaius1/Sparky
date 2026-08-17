@@ -81,7 +81,7 @@ func (a *API) handleAuditLog(w http.ResponseWriter, r *http.Request) {
 	records, err := a.audit.List(ctx, actor)
 	switch {
 	case errors.Is(err, rbac.ErrNotPermitted):
-		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "admin tier required")
+		a.renderForbidden(w, r, actor.Tier)
 		return
 	case err != nil:
 		a.logger.Printf("httpapi: list audit records: %v", err)

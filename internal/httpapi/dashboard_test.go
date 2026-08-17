@@ -814,6 +814,16 @@ func TestHandleAuditLog_NonAdmin_Forbidden(t *testing.T) {
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html - a friendly page, not the old raw JSON 403", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Access denied") {
+		t.Errorf("body does not contain %q: %s", "Access denied", body)
+	}
+	if !strings.Contains(body, "developer") {
+		t.Errorf("body does not contain the viewer's current tier %q: %s", "developer", body)
+	}
 }
 
 func TestHandleAuditLog_Empty(t *testing.T) {
@@ -930,6 +940,16 @@ func TestHandleUsers_NonAdmin_Forbidden(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html - a friendly page, not the old raw JSON 403", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Access denied") {
+		t.Errorf("body does not contain %q: %s", "Access denied", body)
+	}
+	if !strings.Contains(body, "developer") {
+		t.Errorf("body does not contain the viewer's current tier %q: %s", "developer", body)
 	}
 }
 
@@ -1077,6 +1097,16 @@ func TestHandleSettings_NonAdmin_Forbidden(t *testing.T) {
 
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+	if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("Content-Type = %q, want text/html - a friendly page, not the old raw JSON 403", ct)
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "Access denied") {
+		t.Errorf("body does not contain %q: %s", "Access denied", body)
+	}
+	if !strings.Contains(body, "developer") {
+		t.Errorf("body does not contain the viewer's current tier %q: %s", "developer", body)
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"html/template"
 	"net/http"
 
+	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/web"
 )
 
@@ -30,7 +31,7 @@ type pageData struct {
 // base+one-page per entry keeps each page's "content" definition private
 // to its own set.
 func loadPageTemplates() (map[string]*template.Template, error) {
-	pages := []string{"dashboard", "nodes", "profiles", "transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "profile_form"}
+	pages := []string{"dashboard", "nodes", "profiles", "transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "profile_form", "forbidden"}
 	result := make(map[string]*template.Template, len(pages)+1)
 	for _, name := range pages {
 		t, err := template.ParseFS(web.FS, "templates/layouts/base.html", "templates/pages/"+name+".html")
@@ -85,4 +86,21 @@ func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string,
 	if err := t.ExecuteTemplate(w, name, pageData{Title: title, ActiveSection: page, CSRFToken: csrfTokenFromContext(r.Context()), Data: data}); err != nil {
 		a.logger.Printf("httpapi: render %s: %v", page, err)
 	}
+}
+
+// forbiddenPageData is the "access denied" page's view model.
+type forbiddenPageData struct {
+	CurrentTier string
+}
+
+// renderForbidden renders a friendly "access denied" HTML page in place of
+// writeError's raw JSON 403 - used by the Admin-floor pages (Audit log,
+// Users & permissions, Settings) when a non-Admin viewer's own RBAC check
+// refuses them. Costs no extra DB lookup: each caller has already resolved
+// the actor's tier for its own RBAC gate by the time this is called - see
+// actorFromIdentity. Sidebar links are unaffected (deliberately still
+// visible to every tier - see PLANNING.md Known Issues/Decisions Log).
+func (a *API) renderForbidden(w http.ResponseWriter, r *http.Request, currentTier db.Tier) {
+	w.WriteHeader(http.StatusForbidden)
+	a.render(w, r, "forbidden", "Access denied", forbiddenPageData{CurrentTier: string(currentTier)})
 }
