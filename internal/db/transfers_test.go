@@ -13,7 +13,7 @@ import (
 // after the test.
 func createTestTransfer(t *testing.T, transfers *ModelTransferRepository, destNodeID string, requestedBy *string) *ModelTransfer {
 	t.Helper()
-	tr, err := transfers.Create(context.Background(), destNodeID, "test-org/test-model", TransferSourceInternet, nil, requestedBy)
+	tr, err := transfers.Create(context.Background(), destNodeID, "test-org/test-model", TransferSourceInternet, nil, nil, requestedBy)
 	if err != nil {
 		t.Fatalf("create test transfer: %v", err)
 	}
@@ -33,7 +33,7 @@ func TestModelTransferRepository_Create_Internet(t *testing.T) {
 	requester := createTestUser(t, users, fmt.Sprintf("S-1-TEST-%s", t.Name()))
 	dest := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
 
-	tr, err := transfers.Create(ctx, dest.ID, "meta-llama/Llama-3-8B", TransferSourceInternet, nil, &requester.ID)
+	tr, err := transfers.Create(ctx, dest.ID, "meta-llama/Llama-3-8B", TransferSourceInternet, nil, nil, &requester.ID)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -41,6 +41,9 @@ func TestModelTransferRepository_Create_Internet(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM model_transfers WHERE id = $1`, tr.ID)
 	})
 
+	if tr.Quantization != nil {
+		t.Errorf("Quantization = %v, want nil when not set", *tr.Quantization)
+	}
 	if tr.ID == "" {
 		t.Error("ID is empty, want a generated uuid")
 	}
@@ -72,7 +75,7 @@ func TestModelTransferRepository_Create_PeerNode(t *testing.T) {
 
 	// requestedBy is nil here for the same reason nodes.registered_by can
 	// be: the break-glass SuperAdmin is not a Users row.
-	tr, err := transfers.Create(ctx, dest.ID, "meta-llama/Llama-3-8B", TransferSourcePeerNode, &source.ID, nil)
+	tr, err := transfers.Create(ctx, dest.ID, "meta-llama/Llama-3-8B", TransferSourcePeerNode, &source.ID, nil, nil)
 	if err != nil {
 		t.Fatalf("Create() error: %v", err)
 	}
@@ -100,12 +103,34 @@ func TestModelTransferRepository_Create_SourceNodeMismatchRejectedByDatabase(t *
 	dest := createTestNode(t, nodes, fmt.Sprintf("node-dest-%s", t.Name()))
 	source := createTestNode(t, nodes, fmt.Sprintf("node-source-%s", t.Name()))
 
-	if _, err := transfers.Create(ctx, dest.ID, "test/model", TransferSourcePeerNode, nil, nil); err == nil {
+	if _, err := transfers.Create(ctx, dest.ID, "test/model", TransferSourcePeerNode, nil, nil, nil); err == nil {
 		t.Error("Create() succeeded for a peer_node transfer with no source_node_id, want the CHECK constraint to reject it")
 	}
 
-	if _, err := transfers.Create(ctx, dest.ID, "test/model", TransferSourceInternet, &source.ID, nil); err == nil {
+	if _, err := transfers.Create(ctx, dest.ID, "test/model", TransferSourceInternet, &source.ID, nil, nil); err == nil {
 		t.Error("Create() succeeded for an internet transfer with a source_node_id set, want the CHECK constraint to reject it")
+	}
+}
+
+func TestModelTransferRepository_Create_WithQuantization(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	ctx := context.Background()
+
+	dest := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	quant := "Q4_K_M"
+
+	tr, err := transfers.Create(ctx, dest.ID, "TheBloke/test-GGUF", TransferSourceInternet, nil, &quant, nil)
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM model_transfers WHERE id = $1`, tr.ID)
+	})
+
+	if tr.Quantization == nil || *tr.Quantization != quant {
+		t.Errorf("Quantization = %v, want %q", tr.Quantization, quant)
 	}
 }
 

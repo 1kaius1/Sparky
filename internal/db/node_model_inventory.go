@@ -27,12 +27,19 @@ const (
 // SCHEMA.md Node model inventory. Current-state answer to "does this node
 // have this model right now", distinct from ModelTransfer (history).
 type NodeModelInventory struct {
-	NodeID    string
-	ModelRef  string
-	Status    InventoryStatus
-	SizeBytes int64
-	PlacedAt  time.Time
-	PlacedVia string
+	NodeID   string
+	ModelRef string
+	// Quantization is part of the composite primary key alongside NodeID
+	// and ModelRef - "" means "whole repo" (vLLM/Aphrodite, or a
+	// single-file GGUF repo), the same meaning Model profiles/Model
+	// transfers express as NULL, just NOT NULL-compatible for a PK
+	// column. Without this, two quantizations of the same model_ref on
+	// the same node would collide under the old (node_id, model_ref) key.
+	Quantization string
+	Status       InventoryStatus
+	SizeBytes    int64
+	PlacedAt     time.Time
+	PlacedVia    string
 }
 
 // ErrNodeModelInventoryNotFound is returned when a lookup finds no
@@ -52,11 +59,11 @@ func NewNodeModelInventoryRepository(pool *pgxpool.Pool) *NodeModelInventoryRepo
 	return &NodeModelInventoryRepository{pool: pool}
 }
 
-const nodeModelInventoryColumns = `node_id, model_ref, status, size_bytes, placed_at, placed_via`
+const nodeModelInventoryColumns = `node_id, model_ref, quantization, status, size_bytes, placed_at, placed_via`
 
 func scanNodeModelInventory(row pgx.Row) (*NodeModelInventory, error) {
 	var inv NodeModelInventory
-	err := row.Scan(&inv.NodeID, &inv.ModelRef, &inv.Status, &inv.SizeBytes, &inv.PlacedAt, &inv.PlacedVia)
+	err := row.Scan(&inv.NodeID, &inv.ModelRef, &inv.Quantization, &inv.Status, &inv.SizeBytes, &inv.PlacedAt, &inv.PlacedVia)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNodeModelInventoryNotFound
 	}
@@ -66,20 +73,22 @@ func scanNodeModelInventory(row pgx.Row) (*NodeModelInventory, error) {
 	return &inv, nil
 }
 
-// Upsert records (or replaces) a node's inventory entry for a model,
-// keyed on the (node_id, model_ref) composite primary key - completing a
-// new transfer for a model the node already has replaces the existing row
-// rather than erroring, the same ON CONFLICT pattern as
-// PermissionOverrideRepository.Grant. placedVia must reference the
-// ModelTransfer that produced this entry.
-func (r *NodeModelInventoryRepository) Upsert(ctx context.Context, nodeID, modelRef string, status InventoryStatus, sizeBytes int64, placedVia string) (*NodeModelInventory, error) {
+// Upsert records (or replaces) a node's inventory entry for a model
+// quantization, keyed on the (node_id, model_ref, quantization) composite
+// primary key - completing a new transfer for a model the node already
+// has replaces the existing row rather than erroring, the same ON
+// CONFLICT pattern as PermissionOverrideRepository.Grant. quantization ""
+// means "whole repo" - two different quantizations of the same model_ref
+// coexist as separate rows rather than colliding. placedVia must
+// reference the ModelTransfer that produced this entry.
+func (r *NodeModelInventoryRepository) Upsert(ctx context.Context, nodeID, modelRef, quantization string, status InventoryStatus, sizeBytes int64, placedVia string) (*NodeModelInventory, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO node_model_inventory (node_id, model_ref, status, size_bytes, placed_via)
-		 VALUES ($1, $2, $3, $4, $5)
-		 ON CONFLICT (node_id, model_ref) DO UPDATE SET
+		`INSERT INTO node_model_inventory (node_id, model_ref, quantization, status, size_bytes, placed_via)
+		 VALUES ($1, $2, $3, $4, $5, $6)
+		 ON CONFLICT (node_id, model_ref, quantization) DO UPDATE SET
 		     status = EXCLUDED.status, size_bytes = EXCLUDED.size_bytes, placed_at = now(), placed_via = EXCLUDED.placed_via
 		 RETURNING `+nodeModelInventoryColumns,
-		nodeID, modelRef, status, sizeBytes, placedVia)
+		nodeID, modelRef, quantization, status, sizeBytes, placedVia)
 
 	inv, err := scanNodeModelInventory(row)
 	if err != nil {
@@ -88,12 +97,12 @@ func (r *NodeModelInventoryRepository) Upsert(ctx context.Context, nodeID, model
 	return inv, nil
 }
 
-// Get looks up a node's inventory entry for a specific model. Returns
-// ErrNodeModelInventoryNotFound if no row matches.
-func (r *NodeModelInventoryRepository) Get(ctx context.Context, nodeID, modelRef string) (*NodeModelInventory, error) {
+// Get looks up a node's inventory entry for a specific model
+// quantization. Returns ErrNodeModelInventoryNotFound if no row matches.
+func (r *NodeModelInventoryRepository) Get(ctx context.Context, nodeID, modelRef, quantization string) (*NodeModelInventory, error) {
 	row := r.pool.QueryRow(ctx,
-		`SELECT `+nodeModelInventoryColumns+` FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`,
-		nodeID, modelRef)
+		`SELECT `+nodeModelInventoryColumns+` FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2 AND quantization = $3`,
+		nodeID, modelRef, quantization)
 	return scanNodeModelInventory(row)
 }
 

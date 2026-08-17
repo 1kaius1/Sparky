@@ -92,6 +92,7 @@ A saved, named configuration for running a model.
 | `requires_full_gpu_residency` | boolean | Capability of the selected engine type - `true` for vLLM/Aphrodite, `false` for llama.cpp-style partial-offload engines. Gates whether the memory-capacity check below applies |
 | `required_memory_gb` | numeric, nullable | Optional. When set and `requires_full_gpu_residency` is true, checked against aggregate `gpu_memory_gb` of the target node(s) before launch. When null, the app attempts the launch and reports failure if it doesn't fit - no estimate is computed on the app's behalf |
 | `engine_version` | text, nullable | Optional. Pins this profile's launch to a specific installed engine binary version (see Node engine inventory) instead of whatever the target node's `latest` symlink currently points to - lets two otherwise-identical profiles each pin a different version for side-by-side output/timing/tuning comparison. Not validated against Node engine inventory at save time - a pin that doesn't correspond to an actually-installed version fails clearly at launch time instead, same philosophy as `required_memory_gb` above |
+| `quantization` | text, nullable | Optional, only meaningful for `llamacpp` (partial-offload) profiles. Selects which `.gguf` file to download/load when `model_ref`'s repo contains more than one quantization - must match the label as it appears in the repo's filenames (e.g. `Q4_K_M`), llama.cpp's own naming convention. `null`/empty means "not applicable" (`vllm`/`aphrodite`) or "the repo has only one `.gguf` file", today's unchanged behavior. Not validated against the repo's actual contents at save time - a value matching zero or more than one file fails clearly at download/launch time instead, same philosophy as `engine_version` above |
 | `topology` | enum | `single_node` / `clustered` |
 | `target_node_id` | uuid, nullable, FK -> Nodes.id | Single-node profiles only |
 | `fabric_group_id` | uuid, nullable, FK -> Fabric groups.id | Clustered profiles only |
@@ -300,6 +301,7 @@ in source.
 | `source_node_id` | uuid, nullable, FK -> Nodes.id | Populated only when `source_type = peer_node` |
 | `status` | enum | `queued` / `transferring` / `completed` / `failed` / `cancelled` |
 | `bytes_transferred` / `bytes_total` | bigint | |
+| `quantization` | text, nullable | Optional. `null`/empty means "download the whole repo" (today's unchanged behavior, correct for `vllm`/`aphrodite` and a single-file GGUF repo); a non-empty value restricts the download to just the one matching `.gguf` file - see Model profiles' own `quantization` column |
 | `requested_by` | uuid, nullable, FK -> Users.id | Null when the break-glass SuperAdmin initiated the transfer - same reasoning as Nodes' `registered_by`, since the SuperAdmin is not a `Users` row |
 | `requested_at` / `completed_at` | timestamptz | |
 | `error_message` | text, nullable | |
@@ -314,8 +316,9 @@ profiles (intent). This is what the launch-eligibility UI actually queries.
 
 | Field | Type | Notes |
 |---|---|---|
-| `node_id` | uuid, FK -> Nodes.id | |
-| `model_ref` | text | |
+| `node_id` | uuid, FK -> Nodes.id | Part of the composite primary key alongside `model_ref` and `quantization` |
+| `model_ref` | text | Part of the composite primary key |
+| `quantization` | text, NOT NULL, default `''` | Part of the composite primary key - unlike Model profiles/Model transfers' nullable `quantization`, this one can't be `NULL` (a primary key column can't be), so empty string is the sentinel for "whole repo", carrying the same meaning. Without this as part of the key, two quantizations of the same `model_ref` downloaded to the same node would collide and silently overwrite each other's row |
 | `status` | enum | `present` / `stale` / `removed` |
 | `size_bytes` | bigint | |
 | `placed_at` | timestamptz | |
@@ -364,7 +367,7 @@ run against two different engine versions for direct comparison (not yet built -
 |---|---|---|
 | `node_id` | uuid, FK -> Nodes.id | |
 | `engine_type` | enum | Same `engine_type` enum as Engine transfers |
-| `version` | text | Part of the primary key alongside `node_id`/`engine_type` - unlike Node model inventory's `(node_id, model_ref)` key, a second version does not overwrite the first |
+| `version` | text | Part of the primary key alongside `node_id`/`engine_type` - unlike Node model inventory's `(node_id, model_ref, quantization)` key, a second version does not overwrite the first |
 | `status` | enum | Reuses Node model inventory's `present` / `stale` / `removed` enum |
 | `install_path` | text | The node-local absolute path this version was installed to (`$SPARKY_ENGINE_INSTALL_PATH/<engine_type>/<version>`) - recorded so a later version-pinning resolution step can read it directly rather than reconstructing the on-disk convention |
 | `size_bytes` | bigint | The actual on-disk size after extraction - distinct from Engine transfers' `bytes_total` (the compressed download size) |

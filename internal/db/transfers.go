@@ -51,6 +51,7 @@ type ModelTransfer struct {
 	Status           TransferStatus
 	BytesTransferred int64
 	BytesTotal       int64
+	Quantization     *string
 	RequestedBy      *string
 	RequestedAt      time.Time
 	CompletedAt      *time.Time
@@ -74,12 +75,12 @@ func NewModelTransferRepository(pool *pgxpool.Pool) *ModelTransferRepository {
 }
 
 const modelTransferColumns = `id, dest_node_id, model_ref, source_type, source_node_id, status,
-	bytes_transferred, bytes_total, requested_by, requested_at, completed_at, error_message`
+	bytes_transferred, bytes_total, quantization, requested_by, requested_at, completed_at, error_message`
 
 func scanModelTransfer(row pgx.Row) (*ModelTransfer, error) {
 	var t ModelTransfer
 	err := row.Scan(&t.ID, &t.DestNodeID, &t.ModelRef, &t.SourceType, &t.SourceNodeID, &t.Status,
-		&t.BytesTransferred, &t.BytesTotal, &t.RequestedBy, &t.RequestedAt, &t.CompletedAt, &t.ErrorMessage)
+		&t.BytesTransferred, &t.BytesTotal, &t.Quantization, &t.RequestedBy, &t.RequestedAt, &t.CompletedAt, &t.ErrorMessage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrModelTransferNotFound
 	}
@@ -94,12 +95,12 @@ func scanModelTransfer(row pgx.Row) (*ModelTransfer, error) {
 // - the database enforces this via model_transfers_source_node_matches_type
 // regardless of caller discipline. requestedBy is nil only for the
 // break-glass SuperAdmin, which is not a Users row.
-func (r *ModelTransferRepository) Create(ctx context.Context, destNodeID, modelRef string, sourceType TransferSourceType, sourceNodeID *string, requestedBy *string) (*ModelTransfer, error) {
+func (r *ModelTransferRepository) Create(ctx context.Context, destNodeID, modelRef string, sourceType TransferSourceType, sourceNodeID *string, quantization, requestedBy *string) (*ModelTransfer, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO model_transfers (dest_node_id, model_ref, source_type, source_node_id, requested_by)
-		 VALUES ($1, $2, $3, $4, $5)
+		`INSERT INTO model_transfers (dest_node_id, model_ref, source_type, source_node_id, quantization, requested_by)
+		 VALUES ($1, $2, $3, $4, $5, $6)
 		 RETURNING `+modelTransferColumns,
-		destNodeID, modelRef, sourceType, sourceNodeID, requestedBy)
+		destNodeID, modelRef, sourceType, sourceNodeID, quantization, requestedBy)
 
 	t, err := scanModelTransfer(row)
 	if err != nil {

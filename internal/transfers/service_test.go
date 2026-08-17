@@ -42,7 +42,7 @@ type statusCall struct {
 	errMsg *string
 }
 
-func (f *fakeTransferStore) Create(_ context.Context, destNodeID, modelRef string, sourceType db.TransferSourceType, sourceNodeID *string, requestedBy *string) (*db.ModelTransfer, error) {
+func (f *fakeTransferStore) Create(_ context.Context, destNodeID, modelRef string, sourceType db.TransferSourceType, sourceNodeID, quantization, requestedBy *string) (*db.ModelTransfer, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -52,7 +52,7 @@ func (f *fakeTransferStore) Create(_ context.Context, destNodeID, modelRef strin
 	}
 	t := &db.ModelTransfer{
 		ID: id, DestNodeID: destNodeID, ModelRef: modelRef, SourceType: sourceType,
-		SourceNodeID: sourceNodeID, Status: db.TransferStatusQueued, RequestedBy: requestedBy,
+		SourceNodeID: sourceNodeID, Status: db.TransferStatusQueued, Quantization: quantization, RequestedBy: requestedBy,
 	}
 	f.created = append(f.created, t)
 	return t, nil
@@ -92,18 +92,18 @@ type fakeInventoryStore struct {
 }
 
 type upsertCall struct {
-	nodeID, modelRef string
-	status           db.InventoryStatus
-	sizeBytes        int64
-	placedVia        string
+	nodeID, modelRef, quantization string
+	status                         db.InventoryStatus
+	sizeBytes                      int64
+	placedVia                      string
 }
 
-func (f *fakeInventoryStore) Upsert(_ context.Context, nodeID, modelRef string, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error) {
+func (f *fakeInventoryStore) Upsert(_ context.Context, nodeID, modelRef, quantization string, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error) {
 	if f.upsertErr != nil {
 		return nil, f.upsertErr
 	}
-	f.calls = append(f.calls, upsertCall{nodeID, modelRef, status, sizeBytes, placedVia})
-	return &db.NodeModelInventory{NodeID: nodeID, ModelRef: modelRef, Status: status, SizeBytes: sizeBytes, PlacedVia: placedVia}, nil
+	f.calls = append(f.calls, upsertCall{nodeID, modelRef, quantization, status, sizeBytes, placedVia})
+	return &db.NodeModelInventory{NodeID: nodeID, ModelRef: modelRef, Quantization: quantization, Status: status, SizeBytes: sizeBytes, PlacedVia: placedVia}, nil
 }
 
 // fakeOverrideStore implements overrideStore for tests.

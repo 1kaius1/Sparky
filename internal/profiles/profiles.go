@@ -46,6 +46,16 @@ type Fields struct {
 	// out from under it anyway.
 	EngineVersion *string
 
+	// Quantization selects which .gguf file to download/load when the
+	// target repo contains more than one quantization - only meaningful
+	// for llama.cpp (partial-offload) profiles; nil/empty means "not
+	// applicable" (vLLM/Aphrodite) or "the repo has only one .gguf file"
+	// (today's unchanged behavior). Deliberately not validated against the
+	// repo's actual contents here or in Service, same "attempt and report
+	// failure" philosophy as EngineVersion above - a value that doesn't
+	// match any file in the repo fails clearly at download/launch time.
+	Quantization *string
+
 	TargetNodeID string
 	Port         int
 }

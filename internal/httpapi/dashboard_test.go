@@ -1788,9 +1788,10 @@ func TestHandleEditProfileForm_PrefillsExistingValues(t *testing.T) {
 	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
 	nodeID := "node-1"
 	memGB := 40.0
+	quant := "Q4_K_M"
 	profileEditorFake := &fakeProfileEditor{getResult: &db.Profile{
 		ID: "profile-1", Name: "llama-70b", ModelRef: "meta-llama/Llama-3-70B", EngineType: db.ProfileEngineVLLM,
-		EngineParams: []byte(`{"tensor_parallel_size":2}`), RequiredMemoryGB: &memGB, TargetNodeID: &nodeID, Port: 8001,
+		EngineParams: []byte(`{"tensor_parallel_size":2}`), RequiredMemoryGB: &memGB, Quantization: &quant, TargetNodeID: &nodeID, Port: 8001,
 	}}
 	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
 
@@ -1807,6 +1808,9 @@ func TestHandleEditProfileForm_PrefillsExistingValues(t *testing.T) {
 	}
 	if !strings.Contains(body, `tensor_parallel_size`) {
 		t.Errorf("response does not preserve the existing engine_params: %s", body)
+	}
+	if !strings.Contains(body, "Q4_K_M") {
+		t.Errorf("response does not preserve the existing quantization: %s", body)
 	}
 	if !strings.Contains(body, "action=\"/profiles/profile-1/edit\"") {
 		t.Errorf("response does not post back to the edit URL: %s", body)
@@ -1885,6 +1889,28 @@ func TestHandleCreateProfile_Success(t *testing.T) {
 	}
 	if string(params.EngineParams) != "{}" {
 		t.Errorf("CreateProfile params.EngineParams = %s, want {} for a blank submission", params.EngineParams)
+	}
+}
+
+func TestHandleCreateProfile_Quantization(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(url.Values{"engine_type": {"llamacpp"}, "quantization": {"Q4_K_M"}}))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+	if len(profileEditorFake.created) != 1 {
+		t.Fatalf("CreateProfile called %d times, want 1", len(profileEditorFake.created))
+	}
+	params := profileEditorFake.created[0]
+	if params.Quantization == nil || *params.Quantization != "Q4_K_M" {
+		t.Errorf("CreateProfile params.Quantization = %v, want %q", params.Quantization, "Q4_K_M")
 	}
 }
 

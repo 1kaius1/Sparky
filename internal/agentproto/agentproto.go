@@ -170,10 +170,15 @@ type ErrorPayload struct {
 // db.ModelTransfer row (by ID, not embedded) an agent should act on, and
 // the model to fetch. Everything else about the transfer (destination
 // node, source) is already implied by which agent this was sent to and is
-// looked up from that row rather than duplicated on the wire.
+// looked up from that row rather than duplicated on the wire. Quantization
+// is empty for "download the whole repo" (today's unchanged behavior,
+// correct for vLLM/Aphrodite and a single-file GGUF repo) - a non-empty
+// value restricts agent/transfer.Executor.Download to just the one
+// matching .gguf file.
 type StartTransfer struct {
-	TransferID string `json:"transfer_id"`
-	ModelRef   string `json:"model_ref"`
+	TransferID   string `json:"transfer_id"`
+	ModelRef     string `json:"model_ref"`
+	Quantization string `json:"quantization,omitempty"`
 }
 
 // TransferProgress is TypeTransferProgress's payload. Status is a plain
@@ -213,12 +218,17 @@ type TransferProgress struct {
 // launch to a specific version installed under SPARKY_ENGINE_INSTALL_PATH
 // instead - resolved agent-side (agent/connection.resolveEngineBinaryPath),
 // same "host-local knowledge stays host-local" reasoning as EngineType's
-// binary-path resolution above.
+// binary-path resolution above. Quantization is empty for "not applicable"
+// (vLLM/Aphrodite) or "the repo has only one .gguf file" - resolveModelPath
+// preserves today's exact glob-and-require-exactly-one behavior in that
+// case. A non-empty value resolves directly to the one file matching it,
+// no exactly-one requirement needed since the value already disambiguates.
 type LoadInstance struct {
 	InstanceID               string   `json:"instance_id"`
 	ModelRef                 string   `json:"model_ref"`
 	EngineType               string   `json:"engine_type"`
 	EngineVersion            string   `json:"engine_version,omitempty"`
+	Quantization             string   `json:"quantization,omitempty"`
 	Image                    string   `json:"image"`
 	Args                     []string `json:"args,omitempty"`
 	Port                     int      `json:"port"`

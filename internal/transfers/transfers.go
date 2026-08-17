@@ -32,6 +32,13 @@ var ErrDestNodeOffline = errors.New("destination node is not connected")
 type InitiateTransferParams struct {
 	DestNodeID string
 	ModelRef   string
+
+	// Quantization restricts the download to just the one .gguf file
+	// matching this value, instead of every file in the repo - empty
+	// means "download the whole repo" (today's unchanged behavior,
+	// correct for vLLM/Aphrodite and a single-file GGUF repo). See
+	// agent/transfer.Executor.Download for the matching logic.
+	Quantization string
 }
 
 // validate checks InitiateTransferParams' own shape - the things knowable

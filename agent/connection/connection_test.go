@@ -10,6 +10,8 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -113,7 +115,7 @@ type fakeTransferExecutor struct {
 	started chan struct{}
 }
 
-func (f *fakeTransferExecutor) Download(ctx context.Context, modelRef, destDir string, progress transfer.ProgressFunc) error {
+func (f *fakeTransferExecutor) Download(ctx context.Context, modelRef, quantization, destDir string, progress transfer.ProgressFunc) error {
 	f.mu.Lock()
 	f.calls = append(f.calls, struct{ modelRef, destDir string }{modelRef, destDir})
 	f.mu.Unlock()
@@ -686,6 +688,90 @@ func TestConn_ResolveEngineBinaryPath_Pinned_ButNoInstallPath_ReturnsConfiguredP
 	want := "/opt/sparky/serviceloop/engines/llamacpp/latest/llama-server"
 	if got != want {
 		t.Errorf("resolveEngineBinaryPath() = %q, want %q (degrade to configured path)", got, want)
+	}
+}
+
+// writeTestModelFiles creates modelRef's directory under storagePath and
+// populates it with empty files named names - resolveModelPath only cares
+// about filenames, not content.
+func writeTestModelFiles(t *testing.T, storagePath, modelRef string, names ...string) string {
+	t.Helper()
+	dir := filepath.Join(storagePath, filepath.FromSlash(modelRef))
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll(%s) error: %v", dir, err)
+	}
+	for _, name := range names {
+		if err := os.WriteFile(filepath.Join(dir, name), nil, 0o644); err != nil {
+			t.Fatalf("WriteFile(%s) error: %v", name, err)
+		}
+	}
+	return dir
+}
+
+func TestConn_ResolveModelPath_FullGPUResidency_IgnoresQuantization(t *testing.T) {
+	storagePath := t.TempDir()
+	dir := writeTestModelFiles(t, storagePath, "test-org/test-model", "config.json")
+	conn := New(Config{ModelStoragePath: storagePath}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	got, err := conn.resolveModelPath("test-org/test-model", "Q4_K_M", true)
+	if err != nil {
+		t.Fatalf("resolveModelPath() error: %v", err)
+	}
+	if got != dir {
+		t.Errorf("resolveModelPath() = %q, want the whole directory %q regardless of quantization", got, dir)
+	}
+}
+
+func TestConn_ResolveModelPath_NoQuantization_ExactlyOneGGUF_Unchanged(t *testing.T) {
+	storagePath := t.TempDir()
+	dir := writeTestModelFiles(t, storagePath, "test-org/test-model", "model.gguf")
+	conn := New(Config{ModelStoragePath: storagePath}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	got, err := conn.resolveModelPath("test-org/test-model", "", false)
+	if err != nil {
+		t.Fatalf("resolveModelPath() error: %v", err)
+	}
+	want := filepath.Join(dir, "model.gguf")
+	if got != want {
+		t.Errorf("resolveModelPath() = %q, want %q", got, want)
+	}
+}
+
+func TestConn_ResolveModelPath_NoQuantization_MultipleGGUF_Errors(t *testing.T) {
+	storagePath := t.TempDir()
+	writeTestModelFiles(t, storagePath, "test-org/multi-quant", "model.Q4_K_M.gguf", "model.Q5_K_M.gguf")
+	conn := New(Config{ModelStoragePath: storagePath}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	// Original v0.1.0 behavior preserved exactly: an unpinned profile
+	// against a multi-quantization repo still fails clearly, same as
+	// before this feature existed.
+	if _, err := conn.resolveModelPath("test-org/multi-quant", "", false); err == nil {
+		t.Fatal("resolveModelPath() succeeded with two .gguf files and no quantization, want an error")
+	}
+}
+
+func TestConn_ResolveModelPath_Quantization_ResolvesDirectly(t *testing.T) {
+	storagePath := t.TempDir()
+	dir := writeTestModelFiles(t, storagePath, "test-org/multi-quant", "model.Q4_K_M.gguf", "model.Q5_K_M.gguf")
+	conn := New(Config{ModelStoragePath: storagePath}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	got, err := conn.resolveModelPath("test-org/multi-quant", "Q4_K_M", false)
+	if err != nil {
+		t.Fatalf("resolveModelPath() error: %v", err)
+	}
+	want := filepath.Join(dir, "model.Q4_K_M.gguf")
+	if got != want {
+		t.Errorf("resolveModelPath() = %q, want %q (no exactly-one requirement needed once quantization disambiguates)", got, want)
+	}
+}
+
+func TestConn_ResolveModelPath_Quantization_NoMatch_Errors(t *testing.T) {
+	storagePath := t.TempDir()
+	writeTestModelFiles(t, storagePath, "test-org/multi-quant", "model.Q4_K_M.gguf", "model.Q5_K_M.gguf")
+	conn := New(Config{ModelStoragePath: storagePath}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+
+	if _, err := conn.resolveModelPath("test-org/multi-quant", "Q8_0", false); err == nil {
+		t.Fatal("resolveModelPath() succeeded for a quantization matching no local file, want an error")
 	}
 }
 

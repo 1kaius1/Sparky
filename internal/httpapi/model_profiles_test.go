@@ -93,3 +93,74 @@ func TestProfileFormValuesFromProfile_EngineVersion_NilIsBlank(t *testing.T) {
 		t.Errorf("EngineVersion = %q, want empty for an unpinned profile", form.EngineVersion)
 	}
 }
+
+func TestFieldsFromForm_Quantization_Set(t *testing.T) {
+	form := validProfileForm()
+	form.Quantization = "Q4_K_M"
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Quantization == nil || *fields.Quantization != "Q4_K_M" {
+		t.Errorf("Quantization = %v, want %q", fields.Quantization, "Q4_K_M")
+	}
+}
+
+func TestFieldsFromForm_Quantization_BlankIsNil(t *testing.T) {
+	form := validProfileForm()
+	form.Quantization = ""
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Quantization != nil {
+		t.Errorf("Quantization = %v, want nil for a blank field", *fields.Quantization)
+	}
+}
+
+func TestFieldsFromForm_Quantization_WhitespaceOnlyIsNil(t *testing.T) {
+	form := validProfileForm()
+	form.Quantization = "   "
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Quantization != nil {
+		t.Errorf("Quantization = %v, want nil for a whitespace-only field", *fields.Quantization)
+	}
+}
+
+func TestFieldsFromForm_Quantization_Trimmed(t *testing.T) {
+	form := validProfileForm()
+	form.Quantization = "  Q4_K_M  "
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Quantization == nil || *fields.Quantization != "Q4_K_M" {
+		t.Errorf("Quantization = %v, want trimmed %q", fields.Quantization, "Q4_K_M")
+	}
+}
+
+func TestProfileFormValuesFromProfile_Quantization_Set(t *testing.T) {
+	quant := "Q4_K_M"
+	p := &db.Profile{Quantization: &quant, Port: 8000}
+
+	form := profileFormValuesFromProfile(p)
+	if form.Quantization != quant {
+		t.Errorf("Quantization = %q, want %q", form.Quantization, quant)
+	}
+}
+
+func TestProfileFormValuesFromProfile_Quantization_NilIsBlank(t *testing.T) {
+	p := &db.Profile{Port: 8000}
+
+	form := profileFormValuesFromProfile(p)
+	if form.Quantization != "" {
+		t.Errorf("Quantization = %q, want empty when not set", form.Quantization)
+	}
+}

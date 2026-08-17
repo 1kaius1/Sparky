@@ -1195,6 +1195,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   computed once per full page load (never on an htmx partial swap, which
   never re-renders the sidebar at all) via the existing `actorFromIdentity` +
   `rbac.CanViewAuditLog`. See PLANNING.md's Decisions Log for the full design.
+- A Model profile whose GGUF (llama.cpp) repo contains more than one
+  quantization no longer fails to load - `resolveModelPath` used to require
+  exactly one `.gguf` file on disk and error otherwise. New optional
+  `quantization` field on Model profiles (e.g. `Q4_K_M`) lets a profile name
+  which file to use; when set, the download path (`agent/transfer.Executor
+  .Download`) now fetches only that one matching file instead of every file
+  in the repo, and the load path resolves directly to it - no exactly-one
+  requirement needed once the value disambiguates. A value matching no file
+  fails fast with the repo's actual `.gguf` filenames listed; a value
+  matching more than one fails with an ambiguous-match error. Leaving the
+  field blank preserves today's exact behavior for every existing profile
+  and for vLLM/Aphrodite profiles (unaffected - they already handle
+  quantization via `engine_params`). See PLANNING.md's Decisions Log for
+  the full design, including the UI/protocol options considered.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
