@@ -21,8 +21,9 @@ work.
 **v0.2.0's bare-metal runtime backend and its `sparky-agent setup` subcommand are
 also done**, validated end-to-end on real GPU hardware: a real inference engine
 has been loaded, served a request, and cleanly unloaded through it, not just
-exercised in simulation. v0.2.0's remaining items (engine-binary provisioning from
-GitHub Releases, and the same Spark-hardware CDI validation above) are open.
+exercised in simulation. Engine-binary provisioning from GitHub Releases and
+per-profile engine version pinning are also done. v0.2.0's only remaining item is
+the same Spark-hardware CDI validation v0.1.0 is waiting on.
 
 See `PLANNING.md` for the full milestone breakdown, decisions log, and what's
 next.
