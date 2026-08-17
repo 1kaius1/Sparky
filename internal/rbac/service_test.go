@@ -3,13 +3,20 @@
 package rbac
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/db"
 )
+
+func testLogger() *log.Logger {
+	return log.New(&bytes.Buffer{}, "", 0)
+}
 
 // fakeAuditRecorder implements auditRecorder for tests without a real
 // Postgres - same pattern as fakeUserStore.
@@ -43,6 +50,21 @@ type fakeUserStore struct {
 	findErr       error
 	updateTierErr error
 	listErr       error
+
+	// updateTierFailAfter delays updateTierErr until this many UpdateTier
+	// calls have already succeeded - lets a test simulate the forward tier
+	// update succeeding and a later revert call failing. Zero (the
+	// default) fails immediately, same pattern as internal/lifecycle's
+	// fakeInstanceStore.setStatusFailAfter.
+	updateTierFailAfter int
+	updateTierCalls     []updateTierCall
+}
+
+type updateTierCall struct {
+	id         string
+	tier       db.Tier
+	elevatedBy *string
+	elevatedAt *time.Time
 }
 
 func newFakeUserStore(users ...*db.User) *fakeUserStore {
@@ -64,17 +86,18 @@ func (f *fakeUserStore) FindByID(_ context.Context, id string) (*db.User, error)
 	return u, nil
 }
 
-func (f *fakeUserStore) UpdateTier(_ context.Context, id string, tier db.Tier, elevatedBy *string, at time.Time) error {
-	if f.updateTierErr != nil {
+func (f *fakeUserStore) UpdateTier(_ context.Context, id string, tier db.Tier, elevatedBy *string, elevatedAt *time.Time) error {
+	if f.updateTierErr != nil && len(f.updateTierCalls) >= f.updateTierFailAfter {
 		return f.updateTierErr
 	}
+	f.updateTierCalls = append(f.updateTierCalls, updateTierCall{id, tier, elevatedBy, elevatedAt})
 	u, ok := f.byID[id]
 	if !ok {
 		return db.ErrUserNotFound
 	}
 	u.Tier = tier
 	u.ElevatedBy = elevatedBy
-	u.ElevatedAt = &at
+	u.ElevatedAt = elevatedAt
 	return nil
 }
 
@@ -93,7 +116,7 @@ func TestService_ElevateTier_PermittedByAdmin(t *testing.T) {
 	target := &db.User{ID: "target-1", Tier: db.TierReadOnly}
 	store := newFakeUserStore(target)
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, audit, testLogger())
 	actor := Actor{Tier: db.TierAdmin, UserID: "admin-1"}
 
 	err := svc.ElevateTier(context.Background(), actor, "target-1", db.TierDeveloper)
@@ -129,7 +152,7 @@ func TestService_ElevateTier_PermittedBySuperAdmin_NilElevatedBy(t *testing.T) {
 	target := &db.User{ID: "target-1", Tier: db.TierReadOnly}
 	store := newFakeUserStore(target)
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, audit, testLogger())
 	actor := Actor{IsSuperAdmin: true}
 
 	// SuperAdmin can jump straight to Admin - something no regular Admin
@@ -163,7 +186,7 @@ func TestService_ElevateTier_NotPermitted(t *testing.T) {
 	target := &db.User{ID: "target-1", Tier: db.TierReadOnly}
 	store := newFakeUserStore(target)
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, audit, testLogger())
 	actor := Actor{Tier: db.TierAdmin, UserID: "admin-1"}
 
 	// Read-only -> PowerDev skips a step; not even an Admin can do this.
@@ -182,7 +205,7 @@ func TestService_ElevateTier_NotPermitted(t *testing.T) {
 func TestService_ElevateTier_TargetNotFound(t *testing.T) {
 	store := newFakeUserStore()
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, audit, testLogger())
 	actor := Actor{IsSuperAdmin: true}
 
 	err := svc.ElevateTier(context.Background(), actor, "does-not-exist", db.TierAdmin)
@@ -199,7 +222,7 @@ func TestService_ElevateTier_UpdateFails(t *testing.T) {
 	store := newFakeUserStore(target)
 	store.updateTierErr = errors.New("database unreachable")
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, audit, testLogger())
 	actor := Actor{IsSuperAdmin: true}
 
 	err := svc.ElevateTier(context.Background(), actor, "target-1", db.TierDeveloper)
@@ -218,17 +241,52 @@ func TestService_ElevateTier_AuditFailurePropagates(t *testing.T) {
 	target := &db.User{ID: "target-1", Tier: db.TierReadOnly}
 	store := newFakeUserStore(target)
 	audit := &fakeAuditRecorder{recordErr: errors.New("database unreachable")}
-	svc := NewService(store, audit)
+	svc := NewService(store, audit, testLogger())
 	actor := Actor{IsSuperAdmin: true}
 
 	err := svc.ElevateTier(context.Background(), actor, "target-1", db.TierDeveloper)
 	if err == nil {
 		t.Fatal("ElevateTier() succeeded despite an audit Record failure")
 	}
-	// The tier change is not rolled back - see ElevateTier's doc comment
-	// and PLANNING.md Known Issues and Technical Debt.
-	if target.Tier != db.TierDeveloper {
-		t.Errorf("Tier = %q, want %q (persisted before the audit write was attempted)", target.Tier, db.TierDeveloper)
+	// The tier change is reverted rather than left unaudited - see
+	// ElevateTier's doc comment and PLANNING.md Decisions Log.
+	if target.Tier != db.TierReadOnly {
+		t.Errorf("Tier = %q, want %q (reverted after the audit write failed)", target.Tier, db.TierReadOnly)
+	}
+	if target.ElevatedBy != nil {
+		t.Errorf("ElevatedBy = %v, want nil (reverted to never-elevated)", *target.ElevatedBy)
+	}
+	if target.ElevatedAt != nil {
+		t.Errorf("ElevatedAt = %v, want nil (reverted to never-elevated)", *target.ElevatedAt)
+	}
+	if len(store.updateTierCalls) != 2 {
+		t.Fatalf("UpdateTier called %d times, want 2 (forward, then revert)", len(store.updateTierCalls))
+	}
+	if store.updateTierCalls[1].tier != db.TierReadOnly {
+		t.Errorf("revert call tier = %q, want %q", store.updateTierCalls[1].tier, db.TierReadOnly)
+	}
+}
+
+// TestService_ElevateTier_AuditFailure_RevertAlsoFails_StillReturnsAuditError
+// confirms the original audit error - not a secondary revert error - is
+// what ElevateTier returns when both writes fail, same defensive-failure
+// coverage as the running_instances dispatch-recovery fix's own
+// *_SetStatusAlsoFails tests.
+func TestService_ElevateTier_AuditFailure_RevertAlsoFails_StillReturnsAuditError(t *testing.T) {
+	target := &db.User{ID: "target-1", Tier: db.TierReadOnly}
+	store := newFakeUserStore(target)
+	store.updateTierErr = errors.New("database unreachable")
+	store.updateTierFailAfter = 1
+	audit := &fakeAuditRecorder{recordErr: errors.New("audit database unreachable")}
+	svc := NewService(store, audit, testLogger())
+	actor := Actor{IsSuperAdmin: true}
+
+	err := svc.ElevateTier(context.Background(), actor, "target-1", db.TierDeveloper)
+	if err == nil {
+		t.Fatal("ElevateTier() succeeded despite an audit Record failure")
+	}
+	if !strings.Contains(err.Error(), "audit database unreachable") {
+		t.Errorf("ElevateTier() error = %v, want the original audit error, not the revert failure", err)
 	}
 }
 
@@ -237,7 +295,7 @@ func TestService_ListUsers_PermittedForAdmin(t *testing.T) {
 		&db.User{ID: "user-1", DisplayName: "Jane Admin", Tier: db.TierAdmin},
 		&db.User{ID: "user-2", DisplayName: "Sam Developer", Tier: db.TierDeveloper},
 	)
-	svc := NewService(store, &fakeAuditRecorder{})
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
 	actor := Actor{Tier: db.TierAdmin, UserID: "user-1"}
 
 	users, err := svc.ListUsers(context.Background(), actor)
@@ -251,7 +309,7 @@ func TestService_ListUsers_PermittedForAdmin(t *testing.T) {
 
 func TestService_ListUsers_PermittedForSuperAdmin(t *testing.T) {
 	store := newFakeUserStore(&db.User{ID: "user-1", Tier: db.TierReadOnly})
-	svc := NewService(store, &fakeAuditRecorder{})
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
 	actor := Actor{IsSuperAdmin: true}
 
 	users, err := svc.ListUsers(context.Background(), actor)
@@ -265,7 +323,7 @@ func TestService_ListUsers_PermittedForSuperAdmin(t *testing.T) {
 
 func TestService_ListUsers_NotPermittedBelowAdmin(t *testing.T) {
 	store := newFakeUserStore(&db.User{ID: "user-1", Tier: db.TierPowerDev})
-	svc := NewService(store, &fakeAuditRecorder{})
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
 	actor := Actor{Tier: db.TierPowerDev, UserID: "user-1"}
 
 	_, err := svc.ListUsers(context.Background(), actor)
@@ -277,7 +335,7 @@ func TestService_ListUsers_NotPermittedBelowAdmin(t *testing.T) {
 func TestService_ListUsers_StoreFailurePropagates(t *testing.T) {
 	store := newFakeUserStore()
 	store.listErr = errors.New("database unreachable")
-	svc := NewService(store, &fakeAuditRecorder{})
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
 	actor := Actor{IsSuperAdmin: true}
 
 	_, err := svc.ListUsers(context.Background(), actor)

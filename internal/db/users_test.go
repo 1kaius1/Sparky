@@ -163,7 +163,7 @@ func TestUserRepository_UpdateTier(t *testing.T) {
 	}
 
 	elevatedAt := time.Now().UTC().Truncate(time.Microsecond)
-	if err := repo.UpdateTier(ctx, target.ID, TierPowerDev, &admin.ID, elevatedAt); err != nil {
+	if err := repo.UpdateTier(ctx, target.ID, TierPowerDev, &admin.ID, &elevatedAt); err != nil {
 		t.Fatalf("UpdateTier() error: %v", err)
 	}
 
@@ -196,7 +196,8 @@ func TestUserRepository_UpdateTier_NilElevatedBy(t *testing.T) {
 		t.Fatalf("Create() error: %v", err)
 	}
 
-	if err := repo.UpdateTier(ctx, target.ID, TierAdmin, nil, time.Now().UTC()); err != nil {
+	now := time.Now().UTC()
+	if err := repo.UpdateTier(ctx, target.ID, TierAdmin, nil, &now); err != nil {
 		t.Fatalf("UpdateTier() error: %v", err)
 	}
 
@@ -212,11 +213,59 @@ func TestUserRepository_UpdateTier_NilElevatedBy(t *testing.T) {
 	}
 }
 
+func TestUserRepository_UpdateTier_NilElevatedAt(t *testing.T) {
+	// A revert to a user's pre-elevation state (rbac.Service.ElevateTier,
+	// on an audit-write failure) needs to be able to restore NULL for a
+	// user who was never previously elevated, not just a real timestamp.
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+
+	adminADSID := uniqueADSID(t) + "-admin"
+	cleanupUser(t, repo, adminADSID)
+	admin, err := repo.Create(ctx, adminADSID, "Admin User", TierAdmin)
+	if err != nil {
+		t.Fatalf("Create(admin) error: %v", err)
+	}
+
+	targetADSID := uniqueADSID(t) + "-target"
+	cleanupUser(t, repo, targetADSID)
+	target, err := repo.Create(ctx, targetADSID, "Target User", TierReadOnly)
+	if err != nil {
+		t.Fatalf("Create(target) error: %v", err)
+	}
+
+	// First elevate with a real timestamp, then revert with a nil one -
+	// confirms the nil case actually clears a previously-set value rather
+	// than just never having been set.
+	elevatedAt := time.Now().UTC().Truncate(time.Microsecond)
+	if err := repo.UpdateTier(ctx, target.ID, TierPowerDev, &admin.ID, &elevatedAt); err != nil {
+		t.Fatalf("UpdateTier() (elevate) error: %v", err)
+	}
+	if err := repo.UpdateTier(ctx, target.ID, TierReadOnly, nil, nil); err != nil {
+		t.Fatalf("UpdateTier() (revert) error: %v", err)
+	}
+
+	found, err := repo.FindByADSID(ctx, targetADSID)
+	if err != nil {
+		t.Fatalf("FindByADSID() error: %v", err)
+	}
+	if found.Tier != TierReadOnly {
+		t.Errorf("Tier = %q, want %q", found.Tier, TierReadOnly)
+	}
+	if found.ElevatedBy != nil {
+		t.Errorf("ElevatedBy = %v, want nil", *found.ElevatedBy)
+	}
+	if found.ElevatedAt != nil {
+		t.Errorf("ElevatedAt = %v, want nil", *found.ElevatedAt)
+	}
+}
+
 func TestUserRepository_UpdateTier_NotFound(t *testing.T) {
 	repo := newTestUserRepo(t)
 
 	elevatedBy := "00000000-0000-0000-0000-000000000000"
-	err := repo.UpdateTier(context.Background(), "00000000-0000-0000-0000-000000000000", TierAdmin, &elevatedBy, time.Now())
+	now := time.Now()
+	err := repo.UpdateTier(context.Background(), "00000000-0000-0000-0000-000000000000", TierAdmin, &elevatedBy, &now)
 	if err != ErrUserNotFound {
 		t.Errorf("UpdateTier() error = %v, want ErrUserNotFound", err)
 	}

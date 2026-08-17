@@ -131,7 +131,7 @@ func main() {
 	// passed twice below, once per narrow interface httpapi expects
 	// (userRoster, userElevator), since both were already this Service's
 	// job before either had an HTTP caller.
-	rbacService := rbac.NewService(users, auditRecorder)
+	rbacService := rbac.NewService(users, auditRecorder, logger)
 
 	// settingsService backs the Settings page's read-only view of the two
 	// singleton config rows - no write path exists yet in the Dashboard

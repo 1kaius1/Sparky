@@ -116,7 +116,12 @@ func (r *UserRepository) UpdateLastLogin(ctx context.Context, id string, at time
 // when - see SCHEMA.md Users, Elevation rules. elevatedBy is nil when the
 // SuperAdmin made the change, since the SuperAdmin is not a Users row and
 // elevated_by cannot reference one - see SCHEMA.md Break-glass credential.
-func (r *UserRepository) UpdateTier(ctx context.Context, id string, tier Tier, elevatedBy *string, elevatedAt time.Time) error {
+// elevatedAt is a pointer, not a plain time.Time, so a caller reverting a
+// tier change (rbac.Service.ElevateTier, on an audit-write failure) can
+// restore the exact prior value, including nil/NULL for a user who was
+// never previously elevated - pgx binds a nil *time.Time to SQL NULL
+// natively, no special-casing needed here.
+func (r *UserRepository) UpdateTier(ctx context.Context, id string, tier Tier, elevatedBy *string, elevatedAt *time.Time) error {
 	tag, err := r.pool.Exec(ctx,
 		`UPDATE users SET tier = $1, elevated_by = $2, elevated_at = $3 WHERE id = $4`,
 		tier, elevatedBy, elevatedAt, id)
