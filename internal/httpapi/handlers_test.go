@@ -5,12 +5,15 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/auth"
+	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/events"
 	"github.com/1kaius1/Sparky/internal/session"
 )
@@ -19,7 +22,7 @@ func newTestServer(t *testing.T, idp auth.IdentityProvider, store *fakeUserStore
 	t.Helper()
 	svc := NewLoginService(idp, store, testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -216,7 +219,8 @@ func TestRequireSession(t *testing.T) {
 	}}
 	svc := NewLoginService(idp, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
+	users := newFakeUserLister()
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -277,6 +281,7 @@ func TestRequireSession(t *testing.T) {
 	})
 
 	t.Run("valid cookie", func(t *testing.T) {
+		idp.isInAccessGroupCalls = nil
 		cookieValue, err := session.Sign(testSessionSecret, session.New("user-42", sessionDuration))
 		if err != nil {
 			t.Fatalf("session.Sign() error: %v", err)
@@ -296,6 +301,179 @@ func TestRequireSession(t *testing.T) {
 		}
 		if gotIdentity.IsSuperAdmin {
 			t.Error("Identity.IsSuperAdmin = true, want false for a regular user session")
+		}
+		// A freshly-minted session (LastVerifiedAt == now) is nowhere near
+		// stale - the recheck must not have fired at all.
+		if len(idp.isInAccessGroupCalls) != 0 {
+			t.Errorf("IsInAccessGroup called %d times for a fresh session, want 0", len(idp.isInAccessGroupCalls))
+		}
+	})
+
+	t.Run("stale session still in group refreshes the cookie", func(t *testing.T) {
+		idp.isInAccessGroupCalls = nil
+		idp.isInAccessGroupErr = nil
+		idp.isInAccessGroupResult = true
+		dn := "CN=stillmember,DC=example,DC=internal"
+		users.byID["user-stale-ok"] = &db.User{ID: "user-stale-ok", LDAPDN: &dn}
+
+		staleSess := session.Session{
+			UserID:         "user-stale-ok",
+			ExpiresAt:      time.Now().UTC().Add(sessionDuration),
+			LastVerifiedAt: time.Now().UTC().Add(-2 * testAuthRecheckInterval),
+		}
+		cookieValue, err := session.Sign(testSessionSecret, staleSess)
+		if err != nil {
+			t.Fatalf("session.Sign() error: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET error: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if gotIdentity.UserID != "user-stale-ok" {
+			t.Errorf("Identity.UserID = %q, want %q", gotIdentity.UserID, "user-stale-ok")
+		}
+		if len(idp.isInAccessGroupCalls) != 1 || idp.isInAccessGroupCalls[0] != dn {
+			t.Errorf("IsInAccessGroup calls = %v, want exactly one call with %q", idp.isInAccessGroupCalls, dn)
+		}
+
+		var newCookie *http.Cookie
+		for _, c := range resp.Cookies() {
+			if c.Name == sessionCookieName {
+				newCookie = c
+			}
+		}
+		if newCookie == nil {
+			t.Fatal("no refreshed session cookie in the response")
+		}
+		refreshed, err := session.Verify(testSessionSecret, newCookie.Value)
+		if err != nil {
+			t.Fatalf("session.Verify() on the refreshed cookie error: %v", err)
+		}
+		if !refreshed.LastVerifiedAt.After(staleSess.LastVerifiedAt) {
+			t.Errorf("refreshed LastVerifiedAt = %v, want after the stale value %v", refreshed.LastVerifiedAt, staleSess.LastVerifiedAt)
+		}
+		if !refreshed.ExpiresAt.Equal(staleSess.ExpiresAt) {
+			t.Errorf("refreshed ExpiresAt = %v, want unchanged %v - a recheck must not extend the absolute session lifetime", refreshed.ExpiresAt, staleSess.ExpiresAt)
+		}
+	})
+
+	t.Run("stale session no longer in group forces logout", func(t *testing.T) {
+		idp.isInAccessGroupCalls = nil
+		idp.isInAccessGroupErr = nil
+		idp.isInAccessGroupResult = false
+		dn := "CN=removed,DC=example,DC=internal"
+		users.byID["user-stale-removed"] = &db.User{ID: "user-stale-removed", LDAPDN: &dn}
+
+		staleSess := session.Session{
+			UserID:         "user-stale-removed",
+			ExpiresAt:      time.Now().UTC().Add(sessionDuration),
+			LastVerifiedAt: time.Now().UTC().Add(-2 * testAuthRecheckInterval),
+		}
+		cookieValue, err := session.Sign(testSessionSecret, staleSess)
+		if err != nil {
+			t.Fatalf("session.Sign() error: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+		resp, err := noRedirectClient(t).Do(req)
+		if err != nil {
+			t.Fatalf("GET error: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusFound {
+			t.Errorf("status = %d, want %d", resp.StatusCode, http.StatusFound)
+		}
+		if loc := resp.Header.Get("Location"); loc != "/login" {
+			t.Errorf("Location = %q, want %q", loc, "/login")
+		}
+		var cleared *http.Cookie
+		for _, c := range resp.Cookies() {
+			if c.Name == sessionCookieName {
+				cleared = c
+			}
+		}
+		if cleared == nil || cleared.MaxAge >= 0 {
+			t.Errorf("session cookie = %+v, want a cleared (MaxAge < 0) cookie", cleared)
+		}
+	})
+
+	t.Run("stale session, LDAP unreachable, fails open", func(t *testing.T) {
+		idp.isInAccessGroupCalls = nil
+		idp.isInAccessGroupErr = errors.New("LDAP unreachable")
+		dn := "CN=cantverify,DC=example,DC=internal"
+		users.byID["user-stale-ldapdown"] = &db.User{ID: "user-stale-ldapdown", LDAPDN: &dn}
+
+		staleSess := session.Session{
+			UserID:         "user-stale-ldapdown",
+			ExpiresAt:      time.Now().UTC().Add(sessionDuration),
+			LastVerifiedAt: time.Now().UTC().Add(-2 * testAuthRecheckInterval),
+		}
+		cookieValue, err := session.Sign(testSessionSecret, staleSess)
+		if err != nil {
+			t.Fatalf("session.Sign() error: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET error: %v", err)
+		}
+		defer resp.Body.Close()
+		// Fail open: an LDAP error must not force a logout - the request
+		// proceeds on the existing session exactly as if no recheck had
+		// been due, per PLANNING.md's Decisions Log.
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d (fail open on an LDAP error)", resp.StatusCode, http.StatusOK)
+		}
+		if gotIdentity.UserID != "user-stale-ldapdown" {
+			t.Errorf("Identity.UserID = %q, want %q", gotIdentity.UserID, "user-stale-ldapdown")
+		}
+		for _, c := range resp.Cookies() {
+			if c.Name == sessionCookieName {
+				t.Errorf("session cookie was rewritten (%+v) despite the recheck itself failing - nothing should change on fail-open", c)
+			}
+		}
+	})
+
+	t.Run("stale SuperAdmin session is never rechecked", func(t *testing.T) {
+		idp.isInAccessGroupCalls = nil
+		// If RequireSession mistakenly tried to recheck a SuperAdmin
+		// session, this would force a lookup of an empty UserID, which
+		// isn't in users.byID - findErr set here so any such lookup fails
+		// loudly rather than silently succeeding by coincidence.
+		users.findErr = errors.New("should not be called for a SuperAdmin session")
+		defer func() { users.findErr = nil }()
+
+		staleSess := session.Session{
+			IsSuperAdmin:   true,
+			ExpiresAt:      time.Now().UTC().Add(sessionDuration),
+			LastVerifiedAt: time.Now().UTC().Add(-2 * testAuthRecheckInterval),
+		}
+		cookieValue, err := session.Sign(testSessionSecret, staleSess)
+		if err != nil {
+			t.Fatalf("session.Sign() error: %v", err)
+		}
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("GET error: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+		}
+		if !gotIdentity.IsSuperAdmin {
+			t.Error("Identity.IsSuperAdmin = false, want true")
+		}
+		if len(idp.isInAccessGroupCalls) != 0 {
+			t.Errorf("IsInAccessGroup called %d times for a SuperAdmin session, want 0", len(idp.isInAccessGroupCalls))
 		}
 	})
 

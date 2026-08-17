@@ -29,6 +29,13 @@ type AuthenticatedUser struct {
 	// proceed - see ARCHITECTURE.md RBAC & Permission Overrides for where
 	// that decision belongs.
 	InAccessGroup bool
+
+	// DN is the user's LDAP distinguishedName, cached on Users.ldap_dn so a
+	// later mid-session group-membership recheck (IsInAccessGroup below) can
+	// identify the same directory entry without needing the user's password
+	// again - see PLANNING.md Decisions Log for why DN was chosen over a
+	// binary objectSid filter.
+	DN string
 }
 
 // ErrInvalidCredentials covers both "no such user" and "wrong password" -
@@ -40,4 +47,9 @@ var ErrInvalidCredentials = errors.New("invalid credentials")
 // login-gate group membership.
 type IdentityProvider interface {
 	Authenticate(ctx context.Context, username, password string) (*AuthenticatedUser, error)
+
+	// IsInAccessGroup re-checks whether dn (AuthenticatedUser.DN, cached at
+	// login) is still a member of the login-gate group - no password
+	// required, used for a mid-session recheck rather than a fresh login.
+	IsInAccessGroup(ctx context.Context, dn string) (bool, error)
 }

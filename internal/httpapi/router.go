@@ -26,6 +26,7 @@ type API struct {
 	breakGlassLoginPath    string
 	loginRateLimiter       *loginRateLimiter
 	breakGlassRateLimiter  *loginRateLimiter
+	authRecheckInterval    time.Duration
 	setupGate              *setupGate
 	sessionSecret          string
 	agentConn              http.Handler
@@ -105,10 +106,15 @@ type API struct {
 // (AUTH_RATE_LIMIT_MAX_ATTEMPTS/AUTH_RATE_LIMIT_WINDOW_SECONDS) build two
 // independent loginRateLimiter instances, one for POST /login and one for
 // POST breakGlassLoginPath, so a burst against one credential can't exhaust
-// the other's budget - see rate_limit.go. Returns an error if the embedded
-// templates (web.FS) fail to parse - a template syntax error is a build-time
-// bug, caught here rather than surfacing as a broken page on first request.
-func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, sessionSecret string, agentConn http.Handler,
+// the other's budget - see rate_limit.go. authRecheckInterval
+// (AUTH_RECHECK_INTERVAL_SECONDS) is how long a session's AD login-gate
+// group membership is trusted before RequireSession re-verifies it against
+// LDAP - see RequireSession's own doc comment and PLANNING.md's mid-session
+// AD group re-validation Decisions Log entry. Returns an error if the
+// embedded templates (web.FS) fail to parse - a template syntax error is a
+// build-time bug, caught here rather than surfacing as a broken page on
+// first request.
+func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
 	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
@@ -130,6 +136,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		breakGlassLoginPath:    breakGlassLoginPath,
 		loginRateLimiter:       newLoginRateLimiter(authRateLimitMaxAttempts, authRateLimitWindow),
 		breakGlassRateLimiter:  newLoginRateLimiter(authRateLimitMaxAttempts, authRateLimitWindow),
+		authRecheckInterval:    authRecheckInterval,
 		setupGate:              newSetupGate(breakGlassStore),
 		sessionSecret:          sessionSecret,
 		agentConn:              agentConn,
@@ -317,6 +324,12 @@ type Identity struct {
 // or invalid - see respondUnauthenticated. Used by the Dashboard UI's
 // read-only pages; future RBAC-gated write actions will register through
 // it too.
+//
+// Once a session's LastVerifiedAt has gone stale past a.authRecheckInterval,
+// this also re-verifies the user's AD login-gate group membership before
+// letting the request through - see recheckAccessGroup and PLANNING.md's
+// mid-session AD group re-validation Decisions Log entry. A SuperAdmin
+// (break-glass) session is never rechecked - it isn't AD-backed at all.
 func (a *API) RequireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
@@ -331,10 +344,87 @@ func (a *API) RequireSession(next http.Handler) http.Handler {
 			return
 		}
 
+		if !sess.IsSuperAdmin && time.Since(sess.LastVerifiedAt) >= a.authRecheckInterval {
+			refreshed, ok := a.recheckAccessGroup(w, r, sess)
+			if !ok {
+				// The response has already been written (a forced logout) -
+				// nothing left to do.
+				return
+			}
+			sess = refreshed
+		}
+
 		identity := Identity{UserID: sess.UserID, IsSuperAdmin: sess.IsSuperAdmin}
 		ctx := context.WithValue(r.Context(), identityContextKey, identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+// recheckAccessGroup re-verifies sess's AD login-gate group membership,
+// called by RequireSession once LastVerifiedAt has gone stale. Returns the
+// refreshed session and true if the request should proceed; a false second
+// return means the response has already been written (a forced logout) and
+// the caller must return immediately.
+//
+// Two distinct failure modes are handled differently on purpose: a
+// definitive "no longer a member" answer forces a logout, but LDAP itself
+// being transiently unreachable fails open - the request proceeds on the
+// existing, still cryptographically valid session unchanged - confirmed
+// with the user rather than assumed: an LDAP blip must not force every
+// active session off a GPU node someone may be mid-task on.
+func (a *API) recheckAccessGroup(w http.ResponseWriter, r *http.Request, sess *session.Session) (*session.Session, bool) {
+	ctx := r.Context()
+
+	user, err := a.users.FindByID(ctx, sess.UserID)
+	if err != nil {
+		a.logger.Printf("httpapi: recheck: look up user %s: %v", sess.UserID, err)
+		a.forceLogout(w, r, "session invalid")
+		return nil, false
+	}
+	if user.LDAPDN == nil {
+		// No cached DN yet - this user hasn't logged in since ldap_dn
+		// started being recorded, so there's nothing to re-verify against.
+		// Treated the same as "no longer a member" rather than trusted
+		// blindly; self-heals the next time this user does a real login.
+		a.forceLogout(w, r, "session needs re-verification")
+		return nil, false
+	}
+
+	stillMember, err := a.loginService.Recheck(ctx, *user.LDAPDN)
+	if err != nil {
+		a.logger.Printf("httpapi: recheck access group for user %s: %v", sess.UserID, err)
+		return sess, true
+	}
+	if !stillMember {
+		a.forceLogout(w, r, "no longer a member of the access group")
+		return nil, false
+	}
+
+	refreshed := session.Session{
+		UserID:         sess.UserID,
+		IsSuperAdmin:   sess.IsSuperAdmin,
+		ExpiresAt:      sess.ExpiresAt,
+		LastVerifiedAt: time.Now().UTC(),
+	}
+	cookieValue, err := session.Sign(a.sessionSecret, refreshed)
+	if err != nil {
+		// A signing failure here is an internal problem (e.g. a bad
+		// sessionSecret), not a "no longer a member" one - fail open
+		// rather than lock the user out over it, same posture as the
+		// LDAP-unreachable case above.
+		a.logger.Printf("httpapi: recheck: sign refreshed session for user %s: %v", sess.UserID, err)
+		return sess, true
+	}
+	setSessionCookie(w, r, cookieValue, int(time.Until(sess.ExpiresAt).Seconds()))
+	return &refreshed, true
+}
+
+// forceLogout clears the session cookie and responds as if the request had
+// never been authenticated at all - used when a mid-session recheck
+// determines the existing session must not be trusted further.
+func (a *API) forceLogout(w http.ResponseWriter, r *http.Request, message string) {
+	setSessionCookie(w, r, "", -1)
+	a.respondUnauthenticated(w, r, message)
 }
 
 // respondUnauthenticated reports a missing/invalid session. A real browser

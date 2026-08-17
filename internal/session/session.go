@@ -32,18 +32,36 @@ type Session struct {
 	UserID       string    `json:"uid"`
 	IsSuperAdmin bool      `json:"sa,omitempty"`
 	ExpiresAt    time.Time `json:"exp"`
+
+	// LastVerifiedAt is when this session's AD access-group membership was
+	// last confirmed - internal/httpapi's RequireSession re-checks LDAP
+	// once this goes stale past a configured interval, rather than trusting
+	// the cookie blindly for its full lifetime. Meaningless for a
+	// SuperAdmin session (NewSuperAdmin leaves it at the zero value) -
+	// break-glass isn't AD-backed at all, so RequireSession skips the
+	// recheck entirely when IsSuperAdmin is true. A token signed before
+	// this field existed decodes with a zero value here too, which is
+	// already far enough in the past to look immediately stale - every
+	// pre-existing session re-validates on its very next request after
+	// this ships, rather than riding out its remaining lifetime unchecked.
+	LastVerifiedAt time.Time `json:"lva,omitempty"`
 }
 
-// New creates a session for userID, valid for the given duration from now.
+// New creates a session for userID, valid for the given duration from now -
+// LastVerifiedAt starts at the same "now", since a fresh login is itself a
+// real AD group-membership confirmation.
 func New(userID string, duration time.Duration) Session {
+	now := time.Now().UTC()
 	return Session{
-		UserID:    userID,
-		ExpiresAt: time.Now().UTC().Add(duration),
+		UserID:         userID,
+		ExpiresAt:      now.Add(duration),
+		LastVerifiedAt: now,
 	}
 }
 
 // NewSuperAdmin creates a break-glass SuperAdmin session, valid for the
-// given duration from now.
+// given duration from now. LastVerifiedAt is deliberately left at the zero
+// value - see Session's own doc comment.
 func NewSuperAdmin(duration time.Duration) Session {
 	return Session{
 		IsSuperAdmin: true,

@@ -36,7 +36,7 @@ func newTestPool(t *testing.T) *pgxpool.Pool {
 // FK - deleted explicitly) after the test.
 func createTestUser(t *testing.T, users *UserRepository, adSID string) *User {
 	t.Helper()
-	u, err := users.Create(context.Background(), adSID, "Test User", TierReadOnly)
+	u, err := users.Create(context.Background(), adSID, "Test User", "CN=test,DC=example,DC=internal", TierReadOnly)
 	if err != nil {
 		t.Fatalf("create test user: %v", err)
 	}

@@ -3,6 +3,8 @@
 package session
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -27,6 +29,51 @@ func TestSignVerify_RoundTrip(t *testing.T) {
 	}
 	if !got.ExpiresAt.Equal(s.ExpiresAt) {
 		t.Errorf("ExpiresAt = %v, want %v", got.ExpiresAt, s.ExpiresAt)
+	}
+	if !got.LastVerifiedAt.Equal(s.LastVerifiedAt) {
+		t.Errorf("LastVerifiedAt = %v, want %v", got.LastVerifiedAt, s.LastVerifiedAt)
+	}
+}
+
+func TestNew_SetsLastVerifiedAt(t *testing.T) {
+	before := time.Now().UTC()
+	s := New("user-123", time.Hour)
+	after := time.Now().UTC()
+
+	if s.LastVerifiedAt.Before(before) || s.LastVerifiedAt.After(after) {
+		t.Errorf("LastVerifiedAt = %v, want between %v and %v", s.LastVerifiedAt, before, after)
+	}
+}
+
+// TestVerify_LegacyTokenWithoutLastVerifiedAt confirms a session signed
+// before LastVerifiedAt existed (no "lva" field in the payload at all, not
+// just an empty one) still verifies successfully - the field decodes to its
+// zero value, which RequireSession's staleness check treats as "immediately
+// due for a recheck" rather than a decode failure.
+func TestVerify_LegacyTokenWithoutLastVerifiedAt(t *testing.T) {
+	legacyPayload := struct {
+		UserID    string    `json:"uid"`
+		ExpiresAt time.Time `json:"exp"`
+	}{
+		UserID:    "user-123",
+		ExpiresAt: time.Now().UTC().Add(time.Hour),
+	}
+	raw, err := json.Marshal(legacyPayload)
+	if err != nil {
+		t.Fatalf("json.Marshal() error: %v", err)
+	}
+	encodedPayload := base64.RawURLEncoding.EncodeToString(raw)
+	cookieValue := encodedPayload + "." + sign([]byte(testSecret), encodedPayload)
+
+	got, err := Verify(testSecret, cookieValue)
+	if err != nil {
+		t.Fatalf("Verify() error: %v", err)
+	}
+	if got.UserID != "user-123" {
+		t.Errorf("UserID = %q, want %q", got.UserID, "user-123")
+	}
+	if !got.LastVerifiedAt.IsZero() {
+		t.Errorf("LastVerifiedAt = %v, want the zero value for a legacy token", got.LastVerifiedAt)
 	}
 }
 

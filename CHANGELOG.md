@@ -1228,6 +1228,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rendered page's form and `sparky-server setup`'s operator-facing messages
   both reflect whatever path is actually configured. See PLANNING.md's
   2026-08-16 Decisions Log entry for the full design.
+- Active sessions now periodically re-verify their AD login-gate group
+  membership instead of trusting it for the full 24h session lifetime - a
+  user removed from the access group is logged out within
+  `AUTH_RECHECK_INTERVAL_SECONDS` (default 1 hour, configurable) instead of
+  staying signed in until natural expiry. Uses the user's LDAP
+  distinguishedName, cached at login (new `Users.ldap_dn` column) and
+  refreshed on every subsequent one, to re-verify without needing their
+  password again. An LDAP recheck that itself fails (e.g. transiently
+  unreachable) fails open - the session stays valid rather than forcing
+  every active user off mid-task over a blip; a definitive "no longer a
+  member" answer clears the session immediately. SuperAdmin (break-glass)
+  sessions are never rechecked - they aren't AD-backed. See PLANNING.md's
+  Decisions Log for the full design, including the options considered and
+  why DN-based re-lookup was chosen over a binary `objectSid` LDAP filter.
 
 ---
 

@@ -31,8 +31,8 @@ var ErrAccessDenied = errors.New("not a member of the access group")
 // pattern as internal/auth's ldapConn.
 type userStore interface {
 	FindByADSID(ctx context.Context, adSID string) (*db.User, error)
-	Create(ctx context.Context, adSID, displayName string, tier db.Tier) (*db.User, error)
-	UpdateLastLogin(ctx context.Context, id string, at time.Time) error
+	Create(ctx context.Context, adSID, displayName, dn string, tier db.Tier) (*db.User, error)
+	UpdateLastLogin(ctx context.Context, id, dn string, at time.Time) error
 }
 
 // LoginService orchestrates a login attempt: authenticate against the
@@ -71,14 +71,14 @@ func (s *LoginService) Login(ctx context.Context, username, password string) (*d
 	user, err := s.users.FindByADSID(ctx, authUser.ADSID)
 	switch {
 	case errors.Is(err, db.ErrUserNotFound):
-		user, err = s.users.Create(ctx, authUser.ADSID, authUser.DisplayName, db.TierReadOnly)
+		user, err = s.users.Create(ctx, authUser.ADSID, authUser.DisplayName, authUser.DN, db.TierReadOnly)
 		if err != nil {
 			return nil, "", fmt.Errorf("create user: %w", err)
 		}
 	case err != nil:
 		return nil, "", fmt.Errorf("find user: %w", err)
 	default:
-		if err := s.users.UpdateLastLogin(ctx, user.ID, time.Now().UTC()); err != nil {
+		if err := s.users.UpdateLastLogin(ctx, user.ID, authUser.DN, time.Now().UTC()); err != nil {
 			return nil, "", fmt.Errorf("update last login: %w", err)
 		}
 	}
@@ -89,4 +89,14 @@ func (s *LoginService) Login(ctx context.Context, username, password string) (*d
 	}
 
 	return user, cookieValue, nil
+}
+
+// Recheck re-verifies dn's login-gate group membership - no password
+// required, unlike Login - for RequireSession's mid-session staleness
+// check (see PLANNING.md's Decisions Log on mid-session AD group
+// re-validation). Wraps identityProvider.IsInAccessGroup directly so API
+// itself doesn't need a second identity-provider dependency beyond the
+// LoginService it already holds.
+func (s *LoginService) Recheck(ctx context.Context, dn string) (bool, error) {
+	return s.identityProvider.IsInAccessGroup(ctx, dn)
 }

@@ -34,6 +34,12 @@ type User struct {
 	LastLoginAt   *time.Time
 	ElevatedBy    *string
 	ElevatedAt    *time.Time
+
+	// LDAPDN is the user's LDAP distinguishedName, cached at every login -
+	// see SCHEMA.md Users and PLANNING.md's mid-session AD group
+	// re-validation Decisions Log entry. Nil for a user who hasn't logged
+	// in since this column was added.
+	LDAPDN *string
 }
 
 // ErrUserNotFound is returned when a lookup or update finds no matching row.
@@ -54,12 +60,12 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-const userColumns = `id, ad_sid, entra_object_id, display_name, tier, created_at, last_login_at, elevated_by, elevated_at`
+const userColumns = `id, ad_sid, entra_object_id, display_name, tier, created_at, last_login_at, elevated_by, elevated_at, ldap_dn`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.ADSID, &u.EntraObjectID, &u.DisplayName, &u.Tier,
-		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt)
+		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -86,11 +92,12 @@ func (r *UserRepository) FindByID(ctx context.Context, id string) (*User, error)
 
 // Create inserts a new user on first login. tier is the baseline assigned
 // at creation - see SCHEMA.md Users, Elevation rules for who can change it
-// afterward.
-func (r *UserRepository) Create(ctx context.Context, adSID, displayName string, tier Tier) (*User, error) {
+// afterward. dn is the user's LDAP distinguishedName, resolved by the same
+// login that's creating this row - see LDAPDN's own doc comment.
+func (r *UserRepository) Create(ctx context.Context, adSID, displayName, dn string, tier Tier) (*User, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO users (ad_sid, display_name, tier) VALUES ($1, $2, $3) RETURNING `+userColumns,
-		adSID, displayName, tier)
+		`INSERT INTO users (ad_sid, display_name, tier, ldap_dn) VALUES ($1, $2, $3, $4) RETURNING `+userColumns,
+		adSID, displayName, tier, dn)
 
 	u, err := scanUser(row)
 	if err != nil {
@@ -99,10 +106,12 @@ func (r *UserRepository) Create(ctx context.Context, adSID, displayName string, 
 	return u, nil
 }
 
-// UpdateLastLogin records the current login timestamp - called on every
-// successful authentication, not just the first.
-func (r *UserRepository) UpdateLastLogin(ctx context.Context, id string, at time.Time) error {
-	tag, err := r.pool.Exec(ctx, `UPDATE users SET last_login_at = $1 WHERE id = $2`, at, id)
+// UpdateLastLogin records the current login timestamp and refreshes the
+// cached LDAP distinguishedName (dn) - called on every successful
+// authentication, not just the first, so a later mid-session recheck
+// always has an up-to-date DN to search against.
+func (r *UserRepository) UpdateLastLogin(ctx context.Context, id, dn string, at time.Time) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE users SET last_login_at = $1, ldap_dn = $2 WHERE id = $3`, at, dn, id)
 	if err != nil {
 		return fmt.Errorf("update last login: %w", err)
 	}

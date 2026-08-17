@@ -19,10 +19,22 @@ const testSessionSecret = "test-session-secret-value"
 type fakeIdentityProvider struct {
 	user *auth.AuthenticatedUser
 	err  error
+
+	isInAccessGroupResult bool
+	isInAccessGroupErr    error
+	isInAccessGroupCalls  []string
 }
 
 func (f *fakeIdentityProvider) Authenticate(_ context.Context, _, _ string) (*auth.AuthenticatedUser, error) {
 	return f.user, f.err
+}
+
+func (f *fakeIdentityProvider) IsInAccessGroup(_ context.Context, dn string) (bool, error) {
+	f.isInAccessGroupCalls = append(f.isInAccessGroupCalls, dn)
+	if f.isInAccessGroupErr != nil {
+		return false, f.isInAccessGroupErr
+	}
+	return f.isInAccessGroupResult, nil
 }
 
 // fakeUserStore implements userStore for tests without a real Postgres.
@@ -48,22 +60,23 @@ func (f *fakeUserStore) FindByADSID(_ context.Context, adSID string) (*db.User, 
 	return nil, db.ErrUserNotFound
 }
 
-func (f *fakeUserStore) Create(_ context.Context, adSID, displayName string, tier db.Tier) (*db.User, error) {
+func (f *fakeUserStore) Create(_ context.Context, adSID, displayName, dn string, tier db.Tier) (*db.User, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
-	u := &db.User{ID: "new-" + adSID, ADSID: adSID, DisplayName: displayName, Tier: tier, CreatedAt: time.Now().UTC()}
+	u := &db.User{ID: "new-" + adSID, ADSID: adSID, DisplayName: displayName, Tier: tier, CreatedAt: time.Now().UTC(), LDAPDN: &dn}
 	f.byADSID[adSID] = u
 	return u, nil
 }
 
-func (f *fakeUserStore) UpdateLastLogin(_ context.Context, id string, at time.Time) error {
+func (f *fakeUserStore) UpdateLastLogin(_ context.Context, id, dn string, at time.Time) error {
 	if f.updateLastLoginErr != nil {
 		return f.updateLastLoginErr
 	}
 	for _, u := range f.byADSID {
 		if u.ID == id {
 			u.LastLoginAt = &at
+			u.LDAPDN = &dn
 			return nil
 		}
 	}
