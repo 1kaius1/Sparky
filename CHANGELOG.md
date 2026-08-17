@@ -1188,6 +1188,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   revert can restore the exact prior state, including `NULL` for a user who
   was never previously elevated. See PLANNING.md's Decisions Log for the
   full design.
+- The sidebar's `Audit log`, `Users & permissions`, and `Settings` links no
+  longer appear for a viewer below Admin/SuperAdmin - previously shown to
+  every authenticated viewer regardless of tier, relying solely on the
+  friendly "access denied" page (above) if clicked. New `pageData.ShowAdminNav`,
+  computed once per full page load (never on an htmx partial swap, which
+  never re-renders the sidebar at all) via the existing `actorFromIdentity` +
+  `rbac.CanViewAuditLog`. See PLANNING.md's Decisions Log for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

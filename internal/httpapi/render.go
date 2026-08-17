@@ -3,21 +3,24 @@
 package httpapi
 
 import (
+	"context"
 	"fmt"
 	"html/template"
 	"net/http"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/rbac"
 	"github.com/1kaius1/Sparky/web"
 )
 
 // pageData wraps a page's own view model with the shell-level fields the
-// base layout needs (nav highlighting, tab title) - see
-// web/templates/layouts/base.html.
+// base layout needs (nav highlighting, tab title, which Admin-floor nav
+// links to show) - see web/templates/layouts/base.html.
 type pageData struct {
 	Title         string
 	ActiveSection string
 	CSRFToken     string
+	ShowAdminNav  bool
 	Data          any
 }
 
@@ -82,10 +85,40 @@ func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string,
 		name = "content"
 	}
 
+	pd := pageData{Title: title, ActiveSection: page, CSRFToken: csrfTokenFromContext(r.Context()), Data: data}
+	if name == "base" {
+		// The sidebar only exists in the full page shell - an htmx partial
+		// swap never re-renders it (CLAUDE.md Frontend Conventions: "the
+		// sidebar... never reload[s]") - so this extra tier lookup is paid
+		// once per full page load, not on every section change.
+		pd.ShowAdminNav = a.canViewAdminNav(r.Context())
+	}
+
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	if err := t.ExecuteTemplate(w, name, pageData{Title: title, ActiveSection: page, CSRFToken: csrfTokenFromContext(r.Context()), Data: data}); err != nil {
+	if err := t.ExecuteTemplate(w, name, pd); err != nil {
 		a.logger.Printf("httpapi: render %s: %v", page, err)
 	}
+}
+
+// canViewAdminNav reports whether the current viewer should see the
+// Admin-floor sidebar links (Users & permissions, Audit log, Settings) -
+// see PLANNING.md's Decisions Log for why these were previously shown to
+// every viewer regardless of tier. Any failure to resolve the viewer's
+// tier (no identity in context, a lookup error) hides the links rather
+// than failing the page render - this is a display nicety, not the actual
+// security boundary, which remains each Admin-floor handler's own RBAC
+// check (unchanged by this).
+func (a *API) canViewAdminNav(ctx context.Context) bool {
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		return false
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for sidebar nav: %v", err)
+		return false
+	}
+	return rbac.CanViewAuditLog(actor)
 }
 
 // forbiddenPageData is the "access denied" page's view model.
@@ -96,10 +129,10 @@ type forbiddenPageData struct {
 // renderForbidden renders a friendly "access denied" HTML page in place of
 // writeError's raw JSON 403 - used by the Admin-floor pages (Audit log,
 // Users & permissions, Settings) when a non-Admin viewer's own RBAC check
-// refuses them. Costs no extra DB lookup: each caller has already resolved
-// the actor's tier for its own RBAC gate by the time this is called - see
-// actorFromIdentity. Sidebar links are unaffected (deliberately still
-// visible to every tier - see PLANNING.md Known Issues/Decisions Log).
+// refuses them. Costs no extra DB lookup of its own: each caller has
+// already resolved the actor's tier for its own RBAC gate by the time this
+// is called - see actorFromIdentity. render's own canViewAdminNav call
+// resolves the actor a second time for the sidebar - see its doc comment.
 func (a *API) renderForbidden(w http.ResponseWriter, r *http.Request, currentTier db.Tier) {
 	w.WriteHeader(http.StatusForbidden)
 	a.render(w, r, "forbidden", "Access denied", forbiddenPageData{CurrentTier: string(currentTier)})

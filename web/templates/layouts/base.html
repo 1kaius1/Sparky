@@ -36,6 +36,7 @@
           <a href="/metrics" hx-get="/metrics" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "metrics"}}active{{end}}">Metrics</a>
         </li>
+        {{if .ShowAdminNav}}
         <li>
           <a href="/users" hx-get="/users" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "users"}}active{{end}}">Users &amp; permissions</a>
@@ -48,6 +49,7 @@
           <a href="/settings" hx-get="/settings" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "settings"}}active{{end}}">Settings</a>
         </li>
+        {{end}}
       </ul>
       <div class="sidebar-footer">
         <a class="logout-link" hx-post="/logout" hx-swap="none">Logout</a>
