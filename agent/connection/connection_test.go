@@ -841,6 +841,94 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 	}
 }
 
+func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
+	got := buildEngineLaunchArgs("bare-metal", "vllm", "/models/test-org/test-model", 8000, []string{"--tensor-parallel-size", "1"})
+	want := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildEngineLaunchArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestBuildEngineLaunchArgs_BareMetalLlamaCPP_NoServePrepended(t *testing.T) {
+	got := buildEngineLaunchArgs("bare-metal", "llamacpp", "/models/test-org/test-model.gguf", 8080, nil)
+	want := []string{"--model", "/models/test-org/test-model.gguf", "--port", "8080", "--host", "0.0.0.0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("buildEngineLaunchArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestBuildEngineLaunchArgs_ContainersVLLM_NoServePrepended(t *testing.T) {
+	// The vllm/vllm-openai image's own ENTRYPOINT already bakes in "serve"
+	// (confirmed via a real `podman inspect` - PLANNING.md Decisions Log) -
+	// prepending it again here would double it.
+	for _, backend := range []string{"docker", "podman", ""} {
+		got := buildEngineLaunchArgs(backend, "vllm", "/models/test-org/test-model", 8000, nil)
+		want := []string{"--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("buildEngineLaunchArgs(%q, ...) = %v, want %v", backend, got, want)
+		}
+	}
+}
+
+func TestConn_Dispatch_LoadInstance_BareMetalVLLM_PrependsServeSubcommand(t *testing.T) {
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		EngineType:               "vllm",
+		Args:                     []string{"--tensor-parallel-size", "1"},
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{startID: "instance-1"}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models", RuntimeBackend: "bare-metal"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(runtime.startCalls) != 1 {
+		t.Fatalf("Start called %d times, want 1", len(runtime.startCalls))
+	}
+	wantArgs := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	if !reflect.DeepEqual(runtime.startCalls[0].Args, wantArgs) {
+		t.Errorf("Args = %v, want %v", runtime.startCalls[0].Args, wantArgs)
+	}
+}
+
 func TestConn_Dispatch_LoadInstance_PartialOffload_NoGGUFFile_ReportsFailed(t *testing.T) {
 	// requires_full_gpu_residency false with no matching .gguf file on
 	// local storage (nothing was ever downloaded here) - resolveModelPath

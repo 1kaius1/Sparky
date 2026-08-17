@@ -1165,6 +1165,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reused rather than reinvented - `HX-Redirect` navigates the whole page
   itself instead of swapping `/login`'s full document into a small partial
   target. See PLANNING.md's Decisions Log for the full design.
+- A vLLM profile launched on the bare-metal runtime backend no longer fails
+  immediately - `agent/connection` was building `vllm --model ... --port ...`
+  for every engine type unconditionally, but vLLM's CLI is subcommand-only
+  (`vllm serve [model_tag] [options]`), confirmed against a real install.
+  New `buildEngineLaunchArgs` prepends `serve` only for bare-metal vLLM
+  loads; the Docker/Podman containers path needed no change, confirmed via a
+  real `podman inspect` against `vllm/vllm-openai:latest` that its own
+  `ENTRYPOINT` already supplies `serve`. See PLANNING.md's Decisions Log for
+  the full empirical findings.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
