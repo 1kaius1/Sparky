@@ -1180,6 +1180,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   extra DB lookup since the tier was already resolved for the RBAC check
   itself. The sidebar links remain visible to every tier; see PLANNING.md's
   Decisions Log for why that half was scoped out.
+- `rbac.Service.ElevateTier` no longer leaves a tier change unaudited if its
+  audit-log write fails right after a successful update - the elevation is
+  now reverted instead, the same compensating-action approach already used
+  for the `LoadInstance`/`UnloadInstance` dispatch-recovery fix.
+  `UserRepository.UpdateTier`'s `elevatedAt` parameter is now nullable so a
+  revert can restore the exact prior state, including `NULL` for a user who
+  was never previously elevated. See PLANNING.md's Decisions Log for the
+  full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
