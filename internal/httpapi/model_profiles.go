@@ -176,6 +176,7 @@ type profileFormValues struct {
 	RequiredMemoryGB string
 	EngineVersion    string
 	Quantization     string
+	Image            string
 	TargetNodeID     string
 	Port             string
 }
@@ -209,6 +210,10 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 	if p.Quantization != nil {
 		quantization = *p.Quantization
 	}
+	var image string
+	if p.Image != nil {
+		image = *p.Image
+	}
 	return profileFormValues{
 		Name:             p.Name,
 		ModelRef:         p.ModelRef,
@@ -217,6 +222,7 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 		RequiredMemoryGB: requiredMemoryGB,
 		EngineVersion:    engineVersion,
 		Quantization:     quantization,
+		Image:            image,
 		TargetNodeID:     targetNodeID,
 		Port:             strconv.Itoa(p.Port),
 	}
@@ -259,6 +265,11 @@ func fieldsFromForm(form profileFormValues) (profiles.Fields, error) {
 		quantization = &trimmed
 	}
 
+	var image *string
+	if trimmed := strings.TrimSpace(form.Image); trimmed != "" {
+		image = &trimmed
+	}
+
 	return profiles.Fields{
 		Name:             form.Name,
 		ModelRef:         form.ModelRef,
@@ -267,6 +278,7 @@ func fieldsFromForm(form profileFormValues) (profiles.Fields, error) {
 		RequiredMemoryGB: requiredMemoryGB,
 		EngineVersion:    engineVersion,
 		Quantization:     quantization,
+		Image:            image,
 		TargetNodeID:     form.TargetNodeID,
 		Port:             port,
 	}, nil
@@ -388,6 +400,7 @@ func (a *API) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
 		EngineVersion:    r.PostFormValue("engine_version"),
 		Quantization:     r.PostFormValue("quantization"),
+		Image:            r.PostFormValue("image"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
 		Port:             r.PostFormValue("port"),
 	}
@@ -446,6 +459,7 @@ func (a *API) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
 		EngineVersion:    r.PostFormValue("engine_version"),
 		Quantization:     r.PostFormValue("quantization"),
+		Image:            r.PostFormValue("image"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
 		Port:             r.PostFormValue("port"),
 	}

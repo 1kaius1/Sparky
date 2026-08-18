@@ -129,6 +129,14 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 		return nil, fmt.Errorf("build launch spec: %w", err)
 	}
 
+	// A profile-level Image override replaces the adapter's own
+	// engine-type-derived default - containers (Docker/Podman) runtime
+	// backend only; the agent silently ignores Image for bare-metal (see
+	// runtime.Spec's own doc comment).
+	if profile.Image != nil && *profile.Image != "" {
+		spec.Image = *profile.Image
+	}
+
 	var startedBy *string
 	if !actor.IsSuperAdmin {
 		startedBy = &actor.UserID

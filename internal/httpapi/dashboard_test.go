@@ -1789,9 +1789,10 @@ func TestHandleEditProfileForm_PrefillsExistingValues(t *testing.T) {
 	nodeID := "node-1"
 	memGB := 40.0
 	quant := "Q4_K_M"
+	image := "nvcr.io/nvidia/vllm:26.06-py3"
 	profileEditorFake := &fakeProfileEditor{getResult: &db.Profile{
 		ID: "profile-1", Name: "llama-70b", ModelRef: "meta-llama/Llama-3-70B", EngineType: db.ProfileEngineVLLM,
-		EngineParams: []byte(`{"tensor_parallel_size":2}`), RequiredMemoryGB: &memGB, Quantization: &quant, TargetNodeID: &nodeID, Port: 8001,
+		EngineParams: []byte(`{"tensor_parallel_size":2}`), RequiredMemoryGB: &memGB, Quantization: &quant, Image: &image, TargetNodeID: &nodeID, Port: 8001,
 	}}
 	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
 
@@ -1808,6 +1809,9 @@ func TestHandleEditProfileForm_PrefillsExistingValues(t *testing.T) {
 	}
 	if !strings.Contains(body, `tensor_parallel_size`) {
 		t.Errorf("response does not preserve the existing engine_params: %s", body)
+	}
+	if !strings.Contains(body, "nvcr.io/nvidia/vllm:26.06-py3") {
+		t.Errorf("response does not preserve the existing image override: %s", body)
 	}
 	if !strings.Contains(body, "Q4_K_M") {
 		t.Errorf("response does not preserve the existing quantization: %s", body)
@@ -1911,6 +1915,28 @@ func TestHandleCreateProfile_Quantization(t *testing.T) {
 	params := profileEditorFake.created[0]
 	if params.Quantization == nil || *params.Quantization != "Q4_K_M" {
 		t.Errorf("CreateProfile params.Quantization = %v, want %q", params.Quantization, "Q4_K_M")
+	}
+}
+
+func TestHandleCreateProfile_Image(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	profileEditorFake := &fakeProfileEditor{}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(url.Values{"image": {"nvcr.io/nvidia/vllm:26.06-py3"}}))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusSeeOther, rec.Body.String())
+	}
+	if len(profileEditorFake.created) != 1 {
+		t.Fatalf("CreateProfile called %d times, want 1", len(profileEditorFake.created))
+	}
+	params := profileEditorFake.created[0]
+	if params.Image == nil || *params.Image != "nvcr.io/nvidia/vllm:26.06-py3" {
+		t.Errorf("CreateProfile params.Image = %v, want %q", params.Image, "nvcr.io/nvidia/vllm:26.06-py3")
 	}
 }
 

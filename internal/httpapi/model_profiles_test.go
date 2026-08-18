@@ -164,3 +164,74 @@ func TestProfileFormValuesFromProfile_Quantization_NilIsBlank(t *testing.T) {
 		t.Errorf("Quantization = %q, want empty when not set", form.Quantization)
 	}
 }
+
+func TestFieldsFromForm_Image_Set(t *testing.T) {
+	form := validProfileForm()
+	form.Image = "nvcr.io/nvidia/vllm:26.06-py3"
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Image == nil || *fields.Image != "nvcr.io/nvidia/vllm:26.06-py3" {
+		t.Errorf("Image = %v, want %q", fields.Image, "nvcr.io/nvidia/vllm:26.06-py3")
+	}
+}
+
+func TestFieldsFromForm_Image_BlankIsNil(t *testing.T) {
+	form := validProfileForm()
+	form.Image = ""
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Image != nil {
+		t.Errorf("Image = %v, want nil for a blank field", *fields.Image)
+	}
+}
+
+func TestFieldsFromForm_Image_WhitespaceOnlyIsNil(t *testing.T) {
+	form := validProfileForm()
+	form.Image = "   "
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Image != nil {
+		t.Errorf("Image = %v, want nil for a whitespace-only field", *fields.Image)
+	}
+}
+
+func TestFieldsFromForm_Image_Trimmed(t *testing.T) {
+	form := validProfileForm()
+	form.Image = "  nvcr.io/nvidia/vllm:26.06-py3  "
+
+	fields, err := fieldsFromForm(form)
+	if err != nil {
+		t.Fatalf("fieldsFromForm() error: %v", err)
+	}
+	if fields.Image == nil || *fields.Image != "nvcr.io/nvidia/vllm:26.06-py3" {
+		t.Errorf("Image = %v, want trimmed %q", fields.Image, "nvcr.io/nvidia/vllm:26.06-py3")
+	}
+}
+
+func TestProfileFormValuesFromProfile_Image_Set(t *testing.T) {
+	image := "nvcr.io/nvidia/vllm:26.06-py3"
+	p := &db.Profile{Image: &image, Port: 8000}
+
+	form := profileFormValuesFromProfile(p)
+	if form.Image != image {
+		t.Errorf("Image = %q, want %q", form.Image, image)
+	}
+}
+
+func TestProfileFormValuesFromProfile_Image_NilIsBlank(t *testing.T) {
+	p := &db.Profile{Port: 8000}
+
+	form := profileFormValuesFromProfile(p)
+	if form.Image != "" {
+		t.Errorf("Image = %q, want empty when not set", form.Image)
+	}
+}

@@ -1217,6 +1217,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through the existing profile-form error display with no new UI code.
   Applies to every registered engine adapter. See PLANNING.md's Decisions
   Log for the full design.
+- Model profiles can now override the engine type's own default container
+  image (a new optional `image` field, e.g. `nvcr.io/nvidia/vllm:26.06-py3`
+  instead of the hardcoded `vllm/vllm-openai:latest`). Containers
+  (Docker/Podman) runtime backend only - ignored for bare-metal launches,
+  which never use a container image at all. Leaving the field blank
+  preserves today's exact default-image behavior for every existing
+  profile. See PLANNING.md's Decisions Log for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
