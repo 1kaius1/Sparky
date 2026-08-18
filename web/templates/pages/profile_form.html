@@ -54,6 +54,11 @@
     <br><small>Only used for llama.cpp profiles whose repo has more than one GGUF quantization file. Must match the label exactly as it appears in the repo's filenames. Leave blank for vLLM/Aphrodite profiles or a repo with only one .gguf file.</small>
   </p>
   <p>
+    <label for="image">Container image override (optional)</label><br>
+    <input type="text" id="image" name="image" value="{{.Data.Form.Image}}" placeholder="vllm/vllm-openai:latest">
+    <br><small>Overrides the engine type's default container image. Containers (Docker/Podman) backend only - ignored for bare-metal launches. Leave blank to use the default image for this engine type.</small>
+  </p>
+  <p>
     <label for="engine_params">Engine params (JSON, optional)</label><br>
     <textarea id="engine_params" name="engine_params" rows="6" cols="60">{{.Data.Form.EngineParamsJSON}}</textarea>
   </p>

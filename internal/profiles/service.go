@@ -17,8 +17,8 @@ import (
 // needs, narrow enough to fake in tests - same pattern as
 // internal/nodes' nodeStore.
 type profileStore interface {
-	Create(ctx context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error)
-	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
+	Create(ctx context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error)
+	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*db.Profile, error)
 	FindByID(ctx context.Context, id string) (*db.Profile, error)
@@ -107,7 +107,7 @@ func (s *Service) CreateProfile(ctx context.Context, actor rbac.Actor, params Cr
 	}
 
 	p, err := s.profiles.Create(ctx, params.Name, params.ModelRef, params.EngineType, params.EngineParams,
-		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.TargetNodeID, params.Port, createdBy)
+		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Image, params.TargetNodeID, params.Port, createdBy)
 	if err != nil {
 		return nil, fmt.Errorf("create model profile: %w", err)
 	}
@@ -142,7 +142,7 @@ func (s *Service) UpdateProfile(ctx context.Context, actor rbac.Actor, params Up
 	}
 
 	p, err := s.profiles.Update(ctx, params.ID, params.Name, params.ModelRef, params.EngineType, params.EngineParams,
-		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.TargetNodeID, params.Port, updatedBy)
+		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Image, params.TargetNodeID, params.Port, updatedBy)
 	if err != nil {
 		if errors.Is(err, db.ErrProfileNotFound) {
 			return nil, err

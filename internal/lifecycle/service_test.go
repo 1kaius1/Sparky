@@ -325,6 +325,54 @@ func TestService_LoadInstance_UnpinnedEngineVersion_EmptyStringOnEnvelope(t *tes
 	}
 }
 
+func TestService_LoadInstance_ImageOverride_ReachesEnvelope(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1"}
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{Image: "vllm/vllm-openai:latest"}}}
+	dispatch := &fakeDispatcher{connected: true}
+	audit := &fakeAuditRecorder{}
+
+	profile := testProfile()
+	override := "nvcr.io/nvidia/vllm:26.06-py3"
+	profile.Image = &override
+	svc := newTestService(profile, instances, adapters, dispatch, audit)
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	if _, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatalf("decode load_instance payload: %v", err)
+	}
+	if payload.Image != override {
+		t.Errorf("Image = %q, want the profile's override %q, not the adapter's own default", payload.Image, override)
+	}
+}
+
+func TestService_LoadInstance_NoImageOverride_UsesAdapterDefault(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1"}
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{Image: "vllm/vllm-openai:latest"}}}
+	dispatch := &fakeDispatcher{connected: true}
+	audit := &fakeAuditRecorder{}
+
+	// testProfile() leaves Image nil - the unpinned, today-unchanged case.
+	svc := newTestService(testProfile(), instances, adapters, dispatch, audit)
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	if _, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatalf("decode load_instance payload: %v", err)
+	}
+	if payload.Image != "vllm/vllm-openai:latest" {
+		t.Errorf("Image = %q, want the adapter's own default %q unchanged", payload.Image, "vllm/vllm-openai:latest")
+	}
+}
+
 func TestService_LoadInstance_PermittedBySuperAdmin_NilStartedBy(t *testing.T) {
 	instances := &fakeInstanceStore{nextID: "instance-1"}
 	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{}}

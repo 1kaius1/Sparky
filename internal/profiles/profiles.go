@@ -56,6 +56,17 @@ type Fields struct {
 	// match any file in the repo fails clearly at download/launch time.
 	Quantization *string
 
+	// Image optionally overrides the engine type's own default container
+	// image (internal/engines' per-adapter hardcoded constant) - nil/empty
+	// means unpinned, today's unchanged behavior. Only meaningful for the
+	// containers (Docker/Podman) runtime backend; a bare-metal launch
+	// never uses a container image at all, so this field is silently
+	// inert there. Deliberately not validated here or in Service, same
+	// "attempt and report failure" philosophy as EngineVersion/Quantization
+	// above - a bad image reference fails clearly at container
+	// pull/create time instead.
+	Image *string
+
 	TargetNodeID string
 	Port         int
 }
