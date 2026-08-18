@@ -1209,6 +1209,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and for vLLM/Aphrodite profiles (unaffected - they already handle
   quantization via `engine_params`). See PLANNING.md's Decisions Log for
   the full design, including the UI/protocol options considered.
+- Sidebar's `Logout` control (`base.html`) now renders as a real button
+  (solid `--color-primary` background, rounded corners, matching the
+  login form's own submit button) instead of unstyled inline text - found
+  during the first real-browser pass over the Dashboard UI (PLANNING.md
+  Known Issues), which every prior verification of these pages had done
+  via `curl` only. `.logout-link`/`.sidebar-footer` in `main.css` are the
+  only changes; the `hx-post="/logout"` behavior itself is unchanged.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

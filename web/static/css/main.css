@@ -196,11 +196,23 @@ table.data-table:not(.panel .data-table) {
 .sidebar-footer {
   margin-top: 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);
-  padding-top: 8px;
+  padding: 12px 20px 0;
 }
 
 .logout-link {
+  display: block;
+  text-align: center;
+  text-decoration: none;
+  background: var(--color-primary);
+  color: var(--color-primary-contrast);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-weight: 600;
   cursor: pointer;
+}
+
+.logout-link:hover {
+  opacity: 0.92;
 }
 
 .login-body {
