@@ -18,6 +18,7 @@
 package engines
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -66,11 +67,13 @@ type Adapter interface {
 	RequiresFullGPUResidency() bool
 
 	// ValidateParams checks that params is well-formed for this engine.
-	// Unknown keys are not rejected - engine_params is deliberately
-	// opaque to the database and only partially meaningful to Sparky
-	// itself (SCHEMA.md Model profiles); this checks the handful of keys
-	// Sparky recognizes, when present, and otherwise passes the rest
-	// through. Returns an error wrapping ErrInvalidParams if not.
+	// Unknown keys are rejected - a key this engine type doesn't
+	// recognize is treated as a mistake (a typo, a flag meant for a
+	// different engine) rather than silently ignored, since a silently
+	// dropped key gives the operator no signal that what they configured
+	// never actually reached the engine. Returns an error wrapping
+	// ErrInvalidParams if not well-formed or if it contains an
+	// unrecognized key.
 	ValidateParams(params json.RawMessage) error
 
 	// BuildLaunchSpec translates params into a LaunchSpec. Callers are
@@ -110,14 +113,19 @@ func (r *Registry) Adapter(engineType db.ProfileEngineType) (Adapter, error) {
 // adapters. dst is always a pointer to a struct of named, known fields
 // (never a map), so encoding/json itself rejects anything that isn't a
 // JSON object (an array, a bare string, null, etc. all fail to
-// unmarshal into a struct) and silently ignores any key dst doesn't
-// declare - engine_params is documented as opaque beyond the handful of
-// fields Sparky recognizes, so an unrecognized key is not an error.
+// unmarshal into a struct); DisallowUnknownFields additionally rejects
+// any key dst doesn't declare, surfacing the exact key name in the
+// returned error for free from encoding/json's own error text - closes a
+// real footgun where a mistyped or engine-mismatched key (e.g. a vLLM
+// flag set on a llama.cpp profile) used to be silently accepted and
+// simply never take effect.
 func unmarshalParamsObject(params json.RawMessage, dst any) error {
 	if len(params) == 0 {
 		return fmt.Errorf("%w: engine_params must not be empty", ErrInvalidParams)
 	}
-	if err := json.Unmarshal(params, dst); err != nil {
+	dec := json.NewDecoder(bytes.NewReader(params))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
 		return fmt.Errorf("%w: %v", ErrInvalidParams, err)
 	}
 	return nil
