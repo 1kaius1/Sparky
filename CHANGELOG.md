@@ -1209,6 +1209,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and for vLLM/Aphrodite profiles (unaffected - they already handle
   quantization via `engine_params`). See PLANNING.md's Decisions Log for
   the full design, including the UI/protocol options considered.
+- `engine_params` now rejects a key an engine adapter doesn't recognize,
+  instead of silently accepting and ignoring it - a mistyped or
+  engine-mismatched flag (e.g. a vLLM-only key set on a llama.cpp profile)
+  previously saved without error and simply never took effect. The error
+  names the exact rejected key (`json: unknown field "X"`) and surfaces
+  through the existing profile-form error display with no new UI code.
+  Applies to every registered engine adapter. See PLANNING.md's Decisions
+  Log for the full design.
+- Model profiles can now override the engine type's own default container
+  image (a new optional `image` field, e.g. `nvcr.io/nvidia/vllm:26.06-py3`
+  instead of the hardcoded `vllm/vllm-openai:latest`). Containers
+  (Docker/Podman) runtime backend only - ignored for bare-metal launches,
+  which never use a container image at all. Leaving the field blank
+  preserves today's exact default-image behavior for every existing
+  profile. See PLANNING.md's Decisions Log for the full design.
+- `agent/telemetry.Collector`'s `nvidia-smi` CSV parsing and `/proc/stat`/
+  `/proc/meminfo` parsing are now verified against real hardware for the
+  first time (new `TestCollector_Read_RealHardware`, skipped on any
+  environment without a `nvidia-smi` binary) - the real single-GPU CSV
+  shape and real `/proc` field layout matched what the parser already
+  assumed, so no parsing logic changed. Multi-GPU aggregation remains
+  unverified - no multi-GPU node has ever been available to test against -
+  see PLANNING.md's Known Issues, narrowed to that specifically.
 - Sidebar's `Logout` control (`base.html`) now renders as a real button
   (solid `--color-primary` background, rounded corners, matching the
   login form's own submit button) instead of unstyled inline text - found

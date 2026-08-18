@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -13,7 +14,6 @@ func TestVLLMAdapter_ValidateParams_Valid(t *testing.T) {
 	tests := map[string]string{
 		"empty object":                          `{}`,
 		"all known fields":                      `{"tensor_parallel_size":2,"gpu_memory_utilization":0.9,"dtype":"bfloat16","quantization":"awq","max_model_len":4096}`,
-		"unknown fields pass through":           `{"unknown_flag":"whatever","tensor_parallel_size":1}`,
 		"gpu_memory_utilization at upper bound": `{"gpu_memory_utilization":1}`,
 	}
 	a := vllmAdapter{}
@@ -37,6 +37,7 @@ func TestVLLMAdapter_ValidateParams_Invalid(t *testing.T) {
 		"gpu_memory_utilization too high": `{"gpu_memory_utilization":1.5}`,
 		"max_model_len zero":              `{"max_model_len":0}`,
 		"tensor_parallel_size wrong type": `{"tensor_parallel_size":"four"}`,
+		"unknown key":                     `{"unknown_flag":"whatever","tensor_parallel_size":1}`,
 	}
 	a := vllmAdapter{}
 	for name, params := range tests {
@@ -46,6 +47,14 @@ func TestVLLMAdapter_ValidateParams_Invalid(t *testing.T) {
 				t.Errorf("ValidateParams(%s) error = %v, want ErrInvalidParams", params, err)
 			}
 		})
+	}
+}
+
+func TestVLLMAdapter_ValidateParams_UnknownKey_ErrorNamesTheKey(t *testing.T) {
+	a := vllmAdapter{}
+	err := a.ValidateParams(json.RawMessage(`{"unknown_flag":"whatever"}`))
+	if err == nil || !strings.Contains(err.Error(), "unknown_flag") {
+		t.Errorf("ValidateParams() error = %v, want it to name the unrecognized key %q", err, "unknown_flag")
 	}
 }
 
@@ -59,7 +68,6 @@ func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
 			`{"tensor_parallel_size":2,"gpu_memory_utilization":0.9,"dtype":"bfloat16","quantization":"awq","max_model_len":4096}`,
 			[]string{"--tensor-parallel-size", "2", "--gpu-memory-utilization", "0.9", "--dtype", "bfloat16", "--quantization", "awq", "--max-model-len", "4096"},
 		},
-		"unknown fields ignored": {`{"unknown_flag":"whatever","tensor_parallel_size":1}`, []string{"--tensor-parallel-size", "1"}},
 	}
 	a := vllmAdapter{}
 	for name, tt := range tests {
@@ -79,8 +87,16 @@ func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
 }
 
 func TestVLLMAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
+	tests := map[string]string{
+		"empty params": ``,
+		"unknown key":  `{"unknown_flag":"whatever","tensor_parallel_size":1}`,
+	}
 	a := vllmAdapter{}
-	if _, err := a.BuildLaunchSpec(json.RawMessage(``)); !errors.Is(err, ErrInvalidParams) {
-		t.Errorf("BuildLaunchSpec(empty) error = %v, want ErrInvalidParams", err)
+	for name, params := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := a.BuildLaunchSpec(json.RawMessage(params)); !errors.Is(err, ErrInvalidParams) {
+				t.Errorf("BuildLaunchSpec(%s) error = %v, want ErrInvalidParams", params, err)
+			}
+		})
 	}
 }

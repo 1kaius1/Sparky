@@ -33,7 +33,7 @@ func (vllmAdapter) RequiresFullGPUResidency() bool { return true }
 // live vLLM install in this environment - installing vLLM's CUDA/torch
 // dependency chain wasn't practical here - so this reflects
 // well-documented, stable knowledge rather than a fresh empirical check.
-// Any other key in engine_params is passed through unvalidated - see
+// Any other key in engine_params is rejected as an error - see
 // Adapter.ValidateParams.
 type vllmParams struct {
 	TensorParallelSize   *int     `json:"tensor_parallel_size,omitempty"`
