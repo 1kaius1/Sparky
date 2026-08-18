@@ -1224,6 +1224,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which never use a container image at all. Leaving the field blank
   preserves today's exact default-image behavior for every existing
   profile. See PLANNING.md's Decisions Log for the full design.
+- `agent/telemetry.Collector`'s `nvidia-smi` CSV parsing and `/proc/stat`/
+  `/proc/meminfo` parsing are now verified against real hardware for the
+  first time (new `TestCollector_Read_RealHardware`, skipped on any
+  environment without a `nvidia-smi` binary) - the real single-GPU CSV
+  shape and real `/proc` field layout matched what the parser already
+  assumed, so no parsing logic changed. Multi-GPU aggregation remains
+  unverified - no multi-GPU node has ever been available to test against -
+  see PLANNING.md's Known Issues, narrowed to that specifically.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

@@ -6,8 +6,10 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func writeFile(t *testing.T, contents string) string {
@@ -138,6 +140,57 @@ func TestCollector_ReadCPU_SecondCallComputesRealDelta(t *testing.T) {
 func TestParseCPUStatLine_Malformed(t *testing.T) {
 	if _, err := parseCPUStatLine("not a cpu line\n"); err == nil {
 		t.Error("parseCPUStatLine() succeeded on a malformed line, want an error")
+	}
+}
+
+// TestCollector_Read_RealHardware exercises NewCollector's real nvidia-smi
+// shell-out and real /proc parsing against whatever GPU/CPU this machine
+// actually has - skipped (not failed) on a dev/CI environment with no GPU,
+// same pattern as enginetransfer's TestRunCommand_RealTarBinary. Every
+// other test in this file fakes commandRunner specifically because no GPU
+// existed anywhere this project developed against until now (see
+// PLANNING.md Known Issues) - this is the first test to confirm the
+// documented nvidia-smi CSV shape this package assumes is actually what a
+// real binary emits, not just well-documented behavior taken on faith.
+func TestCollector_Read_RealHardware(t *testing.T) {
+	if _, err := exec.LookPath("nvidia-smi"); err != nil {
+		t.Skip("no nvidia-smi binary available")
+	}
+
+	c := NewCollector()
+
+	first, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error against real hardware: %v", err)
+	}
+	if first.GPUMemoryTotalMB <= 0 {
+		t.Errorf("GPUMemoryTotalMB = %v, want > 0", first.GPUMemoryTotalMB)
+	}
+	if first.GPUMemoryUsedMB < 0 || first.GPUMemoryUsedMB > first.GPUMemoryTotalMB {
+		t.Errorf("GPUMemoryUsedMB = %v, want within [0, %v]", first.GPUMemoryUsedMB, first.GPUMemoryTotalMB)
+	}
+	if first.GPUUtilizationPct < 0 || first.GPUUtilizationPct > 100 {
+		t.Errorf("GPUUtilizationPct = %v, want within [0, 100]", first.GPUUtilizationPct)
+	}
+	if first.SystemMemoryTotalMB <= 0 {
+		t.Errorf("SystemMemoryTotalMB = %v, want > 0", first.SystemMemoryTotalMB)
+	}
+	if first.SystemMemoryUsedMB < 0 || first.SystemMemoryUsedMB > first.SystemMemoryTotalMB {
+		t.Errorf("SystemMemoryUsedMB = %v, want within [0, %v]", first.SystemMemoryUsedMB, first.SystemMemoryTotalMB)
+	}
+	// First call has no prior /proc/stat sample - see Read's own doc comment.
+	if first.CPUUtilizationPct != 0 {
+		t.Errorf("CPUUtilizationPct on first real Read() = %v, want 0", first.CPUUtilizationPct)
+	}
+
+	time.Sleep(50 * time.Millisecond)
+
+	second, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("second Read() error against real hardware: %v", err)
+	}
+	if second.CPUUtilizationPct < 0 || second.CPUUtilizationPct > 100 {
+		t.Errorf("CPUUtilizationPct on second real Read() = %v, want within [0, 100]", second.CPUUtilizationPct)
 	}
 }
 
