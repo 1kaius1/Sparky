@@ -1209,6 +1209,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and for vLLM/Aphrodite profiles (unaffected - they already handle
   quantization via `engine_params`). See PLANNING.md's Decisions Log for
   the full design, including the UI/protocol options considered.
+- `engine_params` now rejects a key an engine adapter doesn't recognize,
+  instead of silently accepting and ignoring it - a mistyped or
+  engine-mismatched flag (e.g. a vLLM-only key set on a llama.cpp profile)
+  previously saved without error and simply never took effect. The error
+  names the exact rejected key (`json: unknown field "X"`) and surfaces
+  through the existing profile-form error display with no new UI code.
+  Applies to every registered engine adapter. See PLANNING.md's Decisions
+  Log for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

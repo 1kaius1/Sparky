@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -14,7 +15,6 @@ func TestLlamaCPPAdapter_ValidateParams_Valid(t *testing.T) {
 		"empty object":                 `{}`,
 		"all known fields":             `{"n_gpu_layers":20,"ctx_size":4096,"threads":8}`,
 		"n_gpu_layers zero (CPU only)": `{"n_gpu_layers":0}`,
-		"unknown fields pass through":  `{"rope_freq_base":10000,"threads":4}`,
 	}
 	a := llamaCPPAdapter{}
 	for name, params := range tests {
@@ -35,6 +35,7 @@ func TestLlamaCPPAdapter_ValidateParams_Invalid(t *testing.T) {
 		"ctx_size zero":         `{"ctx_size":0}`,
 		"threads zero":          `{"threads":0}`,
 		"threads wrong type":    `{"threads":"eight"}`,
+		"unknown key":           `{"rope_freq_base":10000,"threads":4}`,
 	}
 	a := llamaCPPAdapter{}
 	for name, params := range tests {
@@ -47,6 +48,14 @@ func TestLlamaCPPAdapter_ValidateParams_Invalid(t *testing.T) {
 	}
 }
 
+func TestLlamaCPPAdapter_ValidateParams_UnknownKey_ErrorNamesTheKey(t *testing.T) {
+	a := llamaCPPAdapter{}
+	err := a.ValidateParams(json.RawMessage(`{"rope_freq_base":10000}`))
+	if err == nil || !strings.Contains(err.Error(), "rope_freq_base") {
+		t.Errorf("ValidateParams() error = %v, want it to name the unrecognized key %q", err, "rope_freq_base")
+	}
+}
+
 func TestLlamaCPPAdapter_BuildLaunchSpec(t *testing.T) {
 	tests := map[string]struct {
 		params string
@@ -55,7 +64,6 @@ func TestLlamaCPPAdapter_BuildLaunchSpec(t *testing.T) {
 		"empty object, no flags":       {`{}`, nil},
 		"all known fields":             {`{"n_gpu_layers":20,"ctx_size":4096,"threads":8}`, []string{"--gpu-layers", "20", "--ctx-size", "4096", "--threads", "8"}},
 		"n_gpu_layers zero (CPU only)": {`{"n_gpu_layers":0}`, []string{"--gpu-layers", "0"}},
-		"unknown fields ignored":       {`{"rope_freq_base":10000,"threads":4}`, []string{"--threads", "4"}},
 	}
 	a := llamaCPPAdapter{}
 	for name, tt := range tests {
@@ -75,8 +83,16 @@ func TestLlamaCPPAdapter_BuildLaunchSpec(t *testing.T) {
 }
 
 func TestLlamaCPPAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
+	tests := map[string]string{
+		"empty params": ``,
+		"unknown key":  `{"rope_freq_base":10000,"threads":4}`,
+	}
 	a := llamaCPPAdapter{}
-	if _, err := a.BuildLaunchSpec(json.RawMessage(``)); !errors.Is(err, ErrInvalidParams) {
-		t.Errorf("BuildLaunchSpec(empty) error = %v, want ErrInvalidParams", err)
+	for name, params := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := a.BuildLaunchSpec(json.RawMessage(params)); !errors.Is(err, ErrInvalidParams) {
+				t.Errorf("BuildLaunchSpec(%s) error = %v, want ErrInvalidParams", params, err)
+			}
+		})
 	}
 }

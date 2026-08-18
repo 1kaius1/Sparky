@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/1kaius1/Sparky/internal/db"
@@ -414,6 +415,35 @@ func TestService_CreateProfile_RealAdapterRegistry_BothEngineTypes(t *testing.T)
 				t.Errorf("RequiresFullGPUResidency = %v, want %v", p.RequiresFullGPUResidency, tt.wantFullGPUResidency)
 			}
 		})
+	}
+}
+
+// TestService_CreateProfile_RealAdapterRegistry_UnknownEngineParamsKey is
+// the real-integration counterpart to the adapter-level unit tests in
+// internal/engines - confirms the unknown-key rejection actually reaches
+// a caller going through Service.CreateProfile, not just the adapter in
+// isolation, and that the rejected key's name survives the error wrap
+// chain (engines.ErrInvalidParams -> ErrInvalidProfile) intact.
+func TestService_CreateProfile_RealAdapterRegistry_UnknownEngineParamsKey(t *testing.T) {
+	store := &fakeProfileStore{nextID: "profile-1"}
+	nodes := &fakeNodeLookup{node: &db.Node{ID: "node-1", Name: "spark-1"}}
+	audit := &fakeAuditRecorder{}
+	svc := NewService(store, nodes, engines.NewRegistry(), audit)
+	actor := rbac.Actor{IsSuperAdmin: true}
+
+	fields := validFields()
+	fields.EngineType = db.ProfileEngineVLLM
+	fields.EngineParams = json.RawMessage(`{"tensor_parallel_size":1,"tool_call_parser":"qwen3_coder"}`)
+
+	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: fields})
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("CreateProfile() error = %v, want ErrInvalidProfile", err)
+	}
+	if !strings.Contains(err.Error(), "tool_call_parser") {
+		t.Errorf("CreateProfile() error = %v, want it to name the unrecognized key %q", err, "tool_call_parser")
+	}
+	if len(store.created) != 0 {
+		t.Error("profileStore.Create was called, want rejection before persistence")
 	}
 }
 

@@ -28,7 +28,7 @@ func (llamaCPPAdapter) RequiresFullGPUResidency() bool { return false }
 // agent/runtime/containers was verified against), not guessed:
 // n_gpu_layers maps to --gpu-layers / --n-gpu-layers / -ngl, ctx_size
 // maps to --ctx-size / -c, threads maps to --threads / -t. Any other
-// key in engine_params is passed through unvalidated - see
+// key in engine_params is rejected as an error - see
 // Adapter.ValidateParams.
 type llamaCPPParams struct {
 	NGPULayers *int `json:"n_gpu_layers,omitempty"`
