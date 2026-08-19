@@ -1300,6 +1300,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Known Issues), which every prior verification of these pages had done
   via `curl` only. `.logout-link`/`.sidebar-footer` in `main.css` are the
   only changes; the `hx-post="/logout"` behavior itself is unchanged.
+- `agent/telemetry.Collector` no longer loses an entire telemetry
+  reading - GPU utilization, CPU, and system memory included, not just
+  GPU memory - when `nvidia-smi` reports its own literal `"[N/A]"`
+  instead of a number for `memory.used`/`memory.total`. Confirmed on a
+  real DGX Spark: its GB10 reports GPU memory as flatly "Not Supported"
+  due to Grace-Blackwell's unified CPU/GPU memory architecture.
+  `memory.total` now falls back to system `MemTotal`; `memory.used`
+  falls back to summing real per-process usage via `nvidia-smi
+  --query-compute-apps`. No behavior change on hardware where the
+  aggregate query already works (RTX 4090, RTX 3080Ti). See
+  PLANNING.md's 2026-08-19 Decisions Log entry for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
