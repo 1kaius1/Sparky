@@ -1049,6 +1049,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   transient restart window as ready; `migrate` is retried briefly against
   the same window as a belt-and-suspenders measure, since the exact log
   wording/count isn't guaranteed stable across postgres image versions.
+- `scripts/bootstrap_dev_env.sh`: prepares a virgin Ubuntu/Debian x86_64
+  workstation to work on Sparky - installs the Go toolchain (matching
+  go.mod's minimum version, downloaded from go.dev with its published
+  checksum verified), the golang-migrate CLI, nfpm, and rootless podman's
+  real prerequisites (`uidmap`/`slirp4netns`/`fuse-overlayfs`/
+  `dbus-user-session`, plus a `/etc/subuid`/`/etc/subgid` range if the
+  user doesn't already have one). Idempotent - safe to re-run. Proves
+  each piece actually works rather than just checking it's present: a
+  real rootless container pull/run, a real arm64 cross-compile of
+  `sparky-agent` (matching `scripts/build_packages.sh`'s own step), and a
+  full pass through CLAUDE.md's disposable-Postgres-via-podman recipe
+  (real migrations, then the entire `go test ./...` suite with
+  `DATABASE_URL` set so the Postgres-gated integration tests run too).
+  Written for setting up a second workstation to run `sparky-server`
+  alongside a DGX Spark agent node that can't share a LAN with the
+  primary dev machine.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
