@@ -33,10 +33,45 @@
     }, refreshDebounceMs);
   }
 
+  // metricsUpdateTimer is a separate debounce timer from refreshTimer
+  // above, not a shared one - transfer_progress/instance_result still
+  // trigger scheduleRefresh's full-page htmx refetch unconditionally, and
+  // could in principle land in the same window as a telemetry event;
+  // sharing one timer variable between two different actions (a full-page
+  // refetch vs. an in-place chart update) would let one silently cancel
+  // or starve the other.
+  var metricsUpdateTimer = null;
+
+  function scheduleMetricsLiveUpdate() {
+    if (metricsUpdateTimer !== null) {
+      return;
+    }
+    metricsUpdateTimer = window.setTimeout(function () {
+      metricsUpdateTimer = null;
+      if (document.visibilityState !== "visible") {
+        return;
+      }
+      window.sparkyMetricsLiveUpdate();
+    }, refreshDebounceMs);
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var source = new EventSource("/events");
     source.addEventListener("transfer_progress", scheduleRefresh);
     source.addEventListener("instance_result", scheduleRefresh);
-    source.addEventListener("telemetry", scheduleRefresh);
+    // The Metrics page's own live-update path (web/static/js/metrics.js)
+    // replaces just its chart data in place instead of the full-page
+    // refetch every other page still uses for this event - see
+    // PLANNING.md's Decisions Log for why this page's live-update
+    // mechanism deliberately diverges. Falls back to scheduleRefresh when
+    // metrics.js hasn't defined sparkyMetricsLiveUpdate (every other
+    // page's unchanged behavior).
+    source.addEventListener("telemetry", function () {
+      if (typeof window.sparkyMetricsLiveUpdate === "function") {
+        scheduleMetricsLiveUpdate();
+      } else {
+        scheduleRefresh();
+      }
+    });
   });
 })();

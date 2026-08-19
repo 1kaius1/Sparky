@@ -24,9 +24,21 @@ import (
 // narrow enough to fake in tests without a real Postgres instance.
 type metricsStore interface {
 	Create(ctx context.Context, recordedAt time.Time, nodeID string, runningInstanceID *string,
-		gpuUtilizationPct, gpuMemoryUsedMB, gpuMemoryTotalMB, cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB float64) (*db.Metric, error)
+		cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB float64) (*db.Metric, error)
 	LatestByNode(ctx context.Context) ([]*db.Metric, error)
 	Recent(ctx context.Context) ([]*db.Metric, error)
+}
+
+// gpuMetricsStore is the subset of *db.GPUMetricsRepository this package
+// needs - a separate interface from metricsStore, one per repository/table,
+// matching this codebase's existing convention (e.g. internal/transfers.
+// Service composes multiple single-table repo interfaces via separate
+// constructor params rather than one merged interface).
+type gpuMetricsStore interface {
+	Create(ctx context.Context, recordedAt time.Time, nodeID string, gpuIndex int, runningInstanceID *string,
+		utilizationPct, usedMB, totalMB float64) (*db.GPUMetric, error)
+	LatestByNodeAndGPU(ctx context.Context) ([]*db.GPUMetric, error)
+	Recent(ctx context.Context) ([]*db.GPUMetric, error)
 }
 
 // instanceLookup is the subset of *db.RunningInstanceRepository this
@@ -49,17 +61,18 @@ type instanceLookup interface {
 // telemetry is available at the lowest tier (CLAUDE.md Frontend
 // Conventions, Metrics' sidebar tier "Read-only").
 type Service struct {
-	metrics   metricsStore
-	instances instanceLookup
-	logger    *log.Logger
+	metrics    metricsStore
+	gpuMetrics gpuMetricsStore
+	instances  instanceLookup
+	logger     *log.Logger
 }
 
 // NewService constructs a Service. logger is used because
 // HandleTelemetry, as an agentconn.OnMessageFunc, has no return value to
 // propagate an error through - same reasoning as internal/transfers.Service
 // and internal/lifecycle.Service's logger dependency.
-func NewService(metrics metricsStore, instances instanceLookup, logger *log.Logger) *Service {
-	return &Service{metrics: metrics, instances: instances, logger: logger}
+func NewService(metrics metricsStore, gpuMetrics gpuMetricsStore, instances instanceLookup, logger *log.Logger) *Service {
+	return &Service{metrics: metrics, gpuMetrics: gpuMetrics, instances: instances, logger: logger}
 }
 
 // HandleTelemetry implements agentconn.OnMessageFunc for
@@ -73,6 +86,15 @@ func NewService(metrics metricsStore, instances instanceLookup, logger *log.Logg
 // internal/lifecycle.Service.HandleInstanceResult already trust it, not a
 // value read out of the payload - agentproto.Telemetry deliberately
 // carries no node identity of its own.
+//
+// Writes the node-level row (metrics) and one row per reported GPU
+// (gpu_metrics) as independent best-effort inserts, not inside a
+// transaction - matching this path's existing philosophy that one missed
+// reading isn't worth failing the rest over (the correlation lookup below
+// already treats its own failure this way). A partial tick - the
+// node-level row lands but one GPU's insert fails, or vice versa - is a
+// self-healing gap the next ~5s tick corrects, not a consistency
+// violation.
 func (s *Service) HandleTelemetry(nodeID string, env agentproto.Envelope) {
 	if env.Type != agentproto.TypeTelemetry {
 		return
@@ -105,9 +127,16 @@ func (s *Service) HandleTelemetry(nodeID string, env agentproto.Envelope) {
 	}
 
 	if _, err := s.metrics.Create(ctx, t.RecordedAt, nodeID, runningInstanceID,
-		t.GPUUtilizationPct, t.GPUMemoryUsedMB, t.GPUMemoryTotalMB,
 		t.CPUUtilizationPct, t.SystemMemoryUsedMB, t.SystemMemoryTotalMB); err != nil {
 		s.logger.Printf("metrics: create metric for node %s: %v", nodeID, err)
+	}
+
+	for _, g := range t.GPUs {
+		if _, err := s.gpuMetrics.Create(ctx, t.RecordedAt, nodeID, g.Index, runningInstanceID,
+			g.UtilizationPct, g.MemoryUsedMB, g.MemoryTotalMB); err != nil {
+			s.logger.Printf("metrics: create gpu metric for node %s gpu %d: %v", nodeID, g.Index, err)
+			continue
+		}
 	}
 }
 
@@ -129,6 +158,28 @@ func (s *Service) ListRecent(ctx context.Context) ([]*db.Metric, error) {
 	metrics, err := s.metrics.Recent(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list recent metrics: %w", err)
+	}
+	return metrics, nil
+}
+
+// ListLatestGPUByNode returns the single most recent reading for every
+// (node, GPU index) pair that has ever reported one - same unguarded-by-RBAC
+// reasoning as ListLatestByNode, see this type's own doc comment.
+func (s *Service) ListLatestGPUByNode(ctx context.Context) ([]*db.GPUMetric, error) {
+	metrics, err := s.gpuMetrics.LatestByNodeAndGPU(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list latest gpu metrics by node and gpu: %w", err)
+	}
+	return metrics, nil
+}
+
+// ListRecentGPU returns the most recent GPU readings across every node/GPU,
+// up to db.GPUMetricsRepository's own recent-window cap - the Metrics
+// page's GPU utilization/memory chart panels' data source.
+func (s *Service) ListRecentGPU(ctx context.Context) ([]*db.GPUMetric, error) {
+	metrics, err := s.gpuMetrics.Recent(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list recent gpu metrics: %w", err)
 	}
 	return metrics, nil
 }

@@ -1479,7 +1479,7 @@ func TestConn_SendTelemetry_PushesReading(t *testing.T) {
 	defer srv.Close()
 
 	reading := telemetry.Reading{
-		GPUUtilizationPct: 45, GPUMemoryUsedMB: 8192, GPUMemoryTotalMB: 24576,
+		GPUs:              []telemetry.GPUReading{{Index: 0, UtilizationPct: 45, MemoryUsedMB: 8192, MemoryTotalMB: 24576}},
 		CPUUtilizationPct: 12.5, SystemMemoryUsedMB: 4096, SystemMemoryTotalMB: 16384,
 	}
 	collector := &fakeTelemetryCollector{reading: reading}
@@ -1520,8 +1520,8 @@ func TestConn_SendTelemetry_PushesReading(t *testing.T) {
 		t.Fatal("Run() did not return after context cancellation")
 	}
 
-	if got.GPUUtilizationPct != reading.GPUUtilizationPct || got.GPUMemoryUsedMB != reading.GPUMemoryUsedMB ||
-		got.GPUMemoryTotalMB != reading.GPUMemoryTotalMB || got.CPUUtilizationPct != reading.CPUUtilizationPct ||
+	wantGPUs := mapGPUReadings(reading.GPUs)
+	if !reflect.DeepEqual(got.GPUs, wantGPUs) || got.CPUUtilizationPct != reading.CPUUtilizationPct ||
 		got.SystemMemoryUsedMB != reading.SystemMemoryUsedMB || got.SystemMemoryTotalMB != reading.SystemMemoryTotalMB {
 		t.Errorf("telemetry payload = %+v, want values matching %+v", got, reading)
 	}

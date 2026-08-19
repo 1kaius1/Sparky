@@ -402,9 +402,7 @@ func (c *Conn) sendTelemetry(ctx context.Context, conn *websocket.Conn) {
 
 			env, err := agentproto.NewEnvelope(agentproto.TypeTelemetry, "", agentproto.Telemetry{
 				RecordedAt:          time.Now(),
-				GPUUtilizationPct:   reading.GPUUtilizationPct,
-				GPUMemoryUsedMB:     reading.GPUMemoryUsedMB,
-				GPUMemoryTotalMB:    reading.GPUMemoryTotalMB,
+				GPUs:                mapGPUReadings(reading.GPUs),
 				CPUUtilizationPct:   reading.CPUUtilizationPct,
 				SystemMemoryUsedMB:  reading.SystemMemoryUsedMB,
 				SystemMemoryTotalMB: reading.SystemMemoryTotalMB,
@@ -423,6 +421,24 @@ func (c *Conn) sendTelemetry(ctx context.Context, conn *websocket.Conn) {
 			}
 		}
 	}
+}
+
+// mapGPUReadings converts agent/telemetry's own GPUReading slice to
+// agentproto's wire-shaped GPUTelemetry slice, field-for-field - a separate
+// type in each package so agent/telemetry stays free of any agentproto
+// dependency (the same layering agentproto.Telemetry's own doc comment
+// already draws for RecordedAt/running_instance_id).
+func mapGPUReadings(rs []telemetry.GPUReading) []agentproto.GPUTelemetry {
+	gpus := make([]agentproto.GPUTelemetry, len(rs))
+	for i, r := range rs {
+		gpus[i] = agentproto.GPUTelemetry{
+			Index:          r.Index,
+			UtilizationPct: r.UtilizationPct,
+			MemoryUsedMB:   r.MemoryUsedMB,
+			MemoryTotalMB:  r.MemoryTotalMB,
+		}
+	}
+	return gpus
 }
 
 // readLoop blocks reading messages until the connection errors or ctx is

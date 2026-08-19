@@ -3,40 +3,65 @@
 
 <section class="panel">
   <h2>GPU utilization (recent)</h2>
-  <canvas id="metrics-chart" height="90"></canvas>
+  <canvas id="metrics-gpu-util-chart" height="90"></canvas>
 </section>
 
 <section class="panel">
-  <h2>Latest reading per node</h2>
+  <h2>GPU memory (recent)</h2>
+  <canvas id="metrics-gpu-mem-chart" height="90"></canvas>
+</section>
+
+<section class="panel">
+  <h2>System memory (recent)</h2>
+  <canvas id="metrics-mem-chart" height="90"></canvas>
+</section>
+
+<section class="panel">
+  <h2>CPU utilization (recent)</h2>
+  <canvas id="metrics-cpu-chart" height="90"></canvas>
+</section>
+
+<section class="panel">
+  <h2>Latest reading per GPU</h2>
   <table class="data-table">
     <thead>
       <tr>
         <th>Node</th>
-        <th>GPU</th>
+        <th>GPU #</th>
+        <th>GPU utilization</th>
         <th>GPU memory</th>
         <th>CPU</th>
         <th>System memory</th>
+        <th>Running model</th>
+        <th>Port</th>
         <th>Recorded at</th>
       </tr>
     </thead>
     <tbody>
-      {{range .Data.Nodes}}
+      {{range .Data.Rows}}
       <tr>
         <td>{{.NodeName}}</td>
+        <td>{{.GPUIndex}}</td>
         <td>{{.GPUUtilizationPct}}</td>
         <td>{{.GPUMemory}}</td>
         <td>{{.CPUUtilizationPct}}</td>
         <td>{{.SystemMemory}}</td>
+        <td>{{.RunningModel}}</td>
+        <td>{{.Port}}</td>
         <td>{{.RecordedAt}}</td>
       </tr>
       {{else}}
-      <tr><td colspan="6" class="empty">No telemetry reported yet.</td></tr>
+      <tr><td colspan="9" class="empty">No telemetry reported yet.</td></tr>
       {{end}}
     </tbody>
   </table>
 </section>
 
 <script>
-  initMetricsChart("metrics-chart", {{.Data.ChartSeriesJSON}});
+  var chartData = {{.Data.ChartDataJSON}};
+  initMetricsChart("metrics-gpu-util-chart", chartData.gpuUtilization, "GPU utilization %");
+  initMetricsChart("metrics-gpu-mem-chart", chartData.gpuMemory, "GPU memory %");
+  initMetricsChart("metrics-mem-chart", chartData.systemMemory, "System memory %");
+  initMetricsChart("metrics-cpu-chart", chartData.cpu, "CPU utilization %");
 </script>
 {{end}}

@@ -184,9 +184,11 @@ grantable capability like model store management) and with no HTTP handler or
 dashboard form yet - logic and agent-side mechanics only so far, see `PLANNING.md`.
 
 #### Metrics Ingestion & Retention
-Polls agents for telemetry on an interval, writes to Metrics, and runs two background
-jobs: downsampling raw data older than 6 months into aggregates, and exporting those
-aggregates to the configured NFS or S3 destination (Metrics export config).
+Polls agents for telemetry on an interval, writing one node-level row (Metrics - CPU,
+system memory) plus one row per reported GPU (GPU metrics) per poll, and runs two
+background jobs: downsampling raw data older than 6 months into aggregates, and
+exporting those aggregates to the configured NFS or S3 destination (Metrics export
+config).
 
 #### HTTP/API + Dashboard
 REST/JSON for all actions, Server-Sent Events for live telemetry and transfer
@@ -220,6 +222,11 @@ any particular hardware class:
 Reads `nvidia-smi` and `/proc/stat`, `/proc/meminfo`, `/proc/diskstats` directly -
 the same technique proven by existing Spark-hardware Prometheus exporters, and one
 that generalizes to any Linux box with an NVIDIA GPU without modification.
+`nvidia-smi` is queried with an explicit GPU index field and reports one reading per
+physical GPU it lists, not an aggregated value across all of them - NVIDIA-only by
+design, since Sparky's engine adapters are CUDA-first and could never schedule
+inference onto a non-NVIDIA GPU anyway. CPU and system memory stay node-level,
+regardless of GPU count.
 
 #### Transfer Executor & Local Store Manager
 Executes downloads and rsync replications, writing to node-local storage

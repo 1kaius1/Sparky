@@ -262,6 +262,10 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession, a.RequireCSRF).Post("/instances/{id}/unload", a.handleUnloadInstance)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	r.With(a.RequireSession).Get("/metrics", a.handleMetrics)
+	// The Metrics page's live-update fetch target (web/static/js/metrics.js's
+	// sparkyMetricsLiveUpdate) - same Read-only/no-audit posture as /metrics
+	// itself, just a JSON response instead of an HTML page.
+	r.With(a.RequireSession).Get("/metrics/chart-data", a.handleMetricsChartData)
 	// /audit-log's floor is Admin, not Read-only - RequireSession only
 	// confirms a session exists; the actual tier check happens inside
 	// handleAuditLog via audit.Recorder.List (see its own doc comment for

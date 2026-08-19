@@ -307,23 +307,34 @@ type EngineTransferProgress struct {
 	InstalledSizeBytes int64  `json:"installed_size_bytes,omitempty"`
 }
 
+// GPUTelemetry is a single point-in-time reading from one physical GPU -
+// see SCHEMA.md GPU metrics. Index comes from the agent's own
+// agent/telemetry.GPUReading.Index (nvidia-smi's reported index field, not
+// assumed line order).
+type GPUTelemetry struct {
+	Index          int     `json:"index"`
+	UtilizationPct float64 `json:"utilization_pct"`
+	MemoryUsedMB   float64 `json:"memory_used_mb"`
+	MemoryTotalMB  float64 `json:"memory_total_mb"`
+}
+
 // Telemetry is TypeTelemetry's payload - a single point-in-time hardware
-// reading, per SCHEMA.md Metrics. RecordedAt is set by the agent itself
-// (the same trust level already extended to Heartbeat.SentAt), not
-// stamped when the central app receives it, so the value reflects when
+// reading, per SCHEMA.md Metrics and GPU metrics. RecordedAt is set by the
+// agent itself (the same trust level already extended to Heartbeat.SentAt),
+// not stamped when the central app receives it, so the value reflects when
 // the reading was actually taken, not network/processing latency after
 // the fact. There is no running_instance_id field - only the central app
 // knows which Running instance (if any) is currently associated with a
 // node (internal/db.RunningInstance.PrimaryNodeID), so internal/metrics
 // resolves that correlation server-side rather than trusting the agent to
 // track its own Running instance state, which it doesn't otherwise need
-// to.
+// to. CPU/system-memory stay flat, node-level fields regardless of GPU
+// count; GPUs is one entry per physical GPU the agent's nvidia-smi
+// invocation reported.
 type Telemetry struct {
-	RecordedAt          time.Time `json:"recorded_at"`
-	GPUUtilizationPct   float64   `json:"gpu_utilization_pct"`
-	GPUMemoryUsedMB     float64   `json:"gpu_memory_used_mb"`
-	GPUMemoryTotalMB    float64   `json:"gpu_memory_total_mb"`
-	CPUUtilizationPct   float64   `json:"cpu_utilization_pct"`
-	SystemMemoryUsedMB  float64   `json:"system_memory_used_mb"`
-	SystemMemoryTotalMB float64   `json:"system_memory_total_mb"`
+	RecordedAt          time.Time      `json:"recorded_at"`
+	GPUs                []GPUTelemetry `json:"gpus"`
+	CPUUtilizationPct   float64        `json:"cpu_utilization_pct"`
+	SystemMemoryUsedMB  float64        `json:"system_memory_used_mb"`
+	SystemMemoryTotalMB float64        `json:"system_memory_total_mb"`
 }

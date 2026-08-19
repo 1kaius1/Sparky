@@ -163,24 +163,58 @@ inference framework supports adding a node to an already-running distributed job
 
 ## Metrics
 
-Append-only telemetry history. High write volume by design - kept in the same
-Postgres instance as everything else rather than a dedicated time-series database,
-since the scale here (a handful of nodes, a few-second poll interval) doesn't justify
-that infrastructure.
+Append-only node-level telemetry history - CPU and system memory only. GPU
+readings live in the separate GPU metrics table below, since a node has
+exactly one CPU/RAM pool regardless of GPU count, while GPU readings are
+genuinely per-device (migration `000023_split_gpu_metrics`, replacing the
+original single-aggregated-GPU-reading design - see `PLANNING.md`'s Decisions
+Log for the full history). High write volume by design - kept in the same
+Postgres instance as everything else rather than a dedicated time-series
+database, since the scale here (a handful of nodes, a few-second poll
+interval) doesn't justify that infrastructure.
 
 | Field | Type | Notes |
 |---|---|---|
 | `recorded_at` | timestamptz | |
 | `node_id` | uuid, FK -> Nodes.id | |
 | `running_instance_id` | uuid, nullable, FK -> Running instances.id | Which model was loaded at the time, for correlation |
-| `gpu_utilization_pct` | numeric | |
-| `gpu_memory_used_mb` / `gpu_memory_total_mb` | numeric | |
 | `cpu_utilization_pct` | numeric | |
 | `system_memory_used_mb` / `system_memory_total_mb` | numeric | |
 
 Retention: 6 months at raw resolution, then downsampled to aggregates for a
 configurable additional retention period (default not yet decided - see
 `PLANNING.md` Open Questions).
+
+---
+
+## GPU metrics
+
+Append-only per-GPU telemetry history - one row per (node, GPU index) per
+poll, not summed/averaged into one aggregate reading per node as the
+original design did. `running_instance_id` deliberately duplicates the
+sibling Metrics row's value for the same (`node_id`, `recorded_at`) rather
+than requiring a join back to it - both come from the same telemetry reading
+(one tick, one correlation lookup), so this is the same value recorded
+twice, not a second source of truth.
+
+| Field | Type | Notes |
+|---|---|---|
+| `recorded_at` | timestamptz | |
+| `node_id` | uuid, FK -> Nodes.id | |
+| `gpu_index` | integer | The GPU's own index as reported by `nvidia-smi`, not assumed line order - see `docs/AGENT.md` Telemetry Collector |
+| `running_instance_id` | uuid, nullable, FK -> Running instances.id | Which model was loaded at the time, for correlation - duplicated from the sibling Metrics row, see above |
+| `gpu_utilization_pct` | numeric | |
+| `gpu_memory_used_mb` / `gpu_memory_total_mb` | numeric | |
+
+No FK/CHECK ties a GPU metrics row back to its sibling Metrics row - they are
+two independent best-effort inserts from one telemetry reading, matching this
+path's existing "one missed reading isn't worth failing the rest over"
+philosophy. `nvidia-smi` is NVIDIA-proprietary tooling scoped to NVIDIA
+hardware only, which is the correct scope here: Sparky's engine adapters
+(vLLM, Aphrodite, llama.cpp) are CUDA-first, so a non-NVIDIA GPU on a node
+never appears in this table, since nothing in this project could ever
+schedule an inference engine onto it. Retention: same 6-month raw /
+configurable downsampled window as Metrics above.
 
 ---
 

@@ -48,17 +48,23 @@ Cached:          5499228 kB
 
 func TestCollector_Read_SingleGPU(t *testing.T) {
 	procStat := "cpu  310703 190 114282 3059121 21317 0 5464 0 0 0\n"
-	c := newTestCollector(t, fakeNvidiaSMI("45, 8192, 24576", nil), procStat, sampleMeminfo)
+	c := newTestCollector(t, fakeNvidiaSMI("0, 45, 8192, 24576", nil), procStat, sampleMeminfo)
 
 	reading, err := c.Read(context.Background())
 	if err != nil {
 		t.Fatalf("Read() error: %v", err)
 	}
-	if reading.GPUUtilizationPct != 45 {
-		t.Errorf("GPUUtilizationPct = %v, want 45", reading.GPUUtilizationPct)
+	if len(reading.GPUs) != 1 {
+		t.Fatalf("len(GPUs) = %d, want 1", len(reading.GPUs))
 	}
-	if reading.GPUMemoryUsedMB != 8192 || reading.GPUMemoryTotalMB != 24576 {
-		t.Errorf("GPUMemoryUsedMB/TotalMB = %v/%v, want 8192/24576", reading.GPUMemoryUsedMB, reading.GPUMemoryTotalMB)
+	if reading.GPUs[0].Index != 0 {
+		t.Errorf("GPUs[0].Index = %v, want 0", reading.GPUs[0].Index)
+	}
+	if reading.GPUs[0].UtilizationPct != 45 {
+		t.Errorf("GPUs[0].UtilizationPct = %v, want 45", reading.GPUs[0].UtilizationPct)
+	}
+	if reading.GPUs[0].MemoryUsedMB != 8192 || reading.GPUs[0].MemoryTotalMB != 24576 {
+		t.Errorf("GPUs[0].MemoryUsedMB/MemoryTotalMB = %v/%v, want 8192/24576", reading.GPUs[0].MemoryUsedMB, reading.GPUs[0].MemoryTotalMB)
 	}
 	// First call from a fresh Collector - no prior /proc/stat sample yet.
 	if reading.CPUUtilizationPct != 0 {
@@ -74,23 +80,26 @@ func TestCollector_Read_SingleGPU(t *testing.T) {
 	}
 }
 
-func TestCollector_Read_MultipleGPUs_Aggregated(t *testing.T) {
+func TestCollector_Read_MultipleGPUs_PerGPU(t *testing.T) {
 	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
-	// Two GPUs: utilization averaged (40, 60 -> 50), memory summed.
-	c := newTestCollector(t, fakeNvidiaSMI("40, 4096, 24576\n60, 6144, 24576", nil), procStat, sampleMeminfo)
+	// Two GPUs, indices 0 and 1 - no summing/averaging, one GPUReading each.
+	c := newTestCollector(t, fakeNvidiaSMI("0, 40, 4096, 24576\n1, 60, 6144, 24576", nil), procStat, sampleMeminfo)
 
 	reading, err := c.Read(context.Background())
 	if err != nil {
 		t.Fatalf("Read() error: %v", err)
 	}
-	if reading.GPUUtilizationPct != 50 {
-		t.Errorf("GPUUtilizationPct = %v, want 50 (average of 40 and 60)", reading.GPUUtilizationPct)
+	if len(reading.GPUs) != 2 {
+		t.Fatalf("len(GPUs) = %d, want 2", len(reading.GPUs))
 	}
-	if reading.GPUMemoryUsedMB != 10240 {
-		t.Errorf("GPUMemoryUsedMB = %v, want 10240 (sum of 4096 and 6144)", reading.GPUMemoryUsedMB)
+	want := []GPUReading{
+		{Index: 0, UtilizationPct: 40, MemoryUsedMB: 4096, MemoryTotalMB: 24576},
+		{Index: 1, UtilizationPct: 60, MemoryUsedMB: 6144, MemoryTotalMB: 24576},
 	}
-	if reading.GPUMemoryTotalMB != 49152 {
-		t.Errorf("GPUMemoryTotalMB = %v, want 49152 (sum of 24576 and 24576)", reading.GPUMemoryTotalMB)
+	for i, w := range want {
+		if reading.GPUs[i] != w {
+			t.Errorf("GPUs[%d] = %+v, want %+v", i, reading.GPUs[i], w)
+		}
 	}
 }
 
@@ -115,7 +124,7 @@ func TestCollector_Read_NvidiaSMIEmptyOutput(t *testing.T) {
 }
 
 func TestCollector_ReadCPU_SecondCallComputesRealDelta(t *testing.T) {
-	c := newTestCollector(t, fakeNvidiaSMI("0, 0, 1", nil), "", sampleMeminfo)
+	c := newTestCollector(t, fakeNvidiaSMI("0, 0, 0, 1", nil), "", sampleMeminfo)
 	c.procStatPath = writeFile(t, "cpu  1000 0 0 9000 0 0 0 0 0 0\n") // 10000 total, 9000 idle
 
 	if _, err := c.Read(context.Background()); err != nil {
@@ -152,6 +161,10 @@ func TestParseCPUStatLine_Malformed(t *testing.T) {
 // PLANNING.md Known Issues) - this is the first test to confirm the
 // documented nvidia-smi CSV shape this package assumes is actually what a
 // real binary emits, not just well-documented behavior taken on faith.
+// This also confirms the newer explicit index field parses correctly
+// against this dev machine's real (single-GPU) nvidia-smi output - it does
+// not confirm real multi-GPU line ordering, since no multi-GPU node exists
+// here (PLANNING.md Known Issues).
 func TestCollector_Read_RealHardware(t *testing.T) {
 	if _, err := exec.LookPath("nvidia-smi"); err != nil {
 		t.Skip("no nvidia-smi binary available")
@@ -163,14 +176,19 @@ func TestCollector_Read_RealHardware(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Read() error against real hardware: %v", err)
 	}
-	if first.GPUMemoryTotalMB <= 0 {
-		t.Errorf("GPUMemoryTotalMB = %v, want > 0", first.GPUMemoryTotalMB)
+	if len(first.GPUs) < 1 {
+		t.Fatalf("len(GPUs) = %d, want >= 1", len(first.GPUs))
 	}
-	if first.GPUMemoryUsedMB < 0 || first.GPUMemoryUsedMB > first.GPUMemoryTotalMB {
-		t.Errorf("GPUMemoryUsedMB = %v, want within [0, %v]", first.GPUMemoryUsedMB, first.GPUMemoryTotalMB)
-	}
-	if first.GPUUtilizationPct < 0 || first.GPUUtilizationPct > 100 {
-		t.Errorf("GPUUtilizationPct = %v, want within [0, 100]", first.GPUUtilizationPct)
+	for _, g := range first.GPUs {
+		if g.MemoryTotalMB <= 0 {
+			t.Errorf("GPU %d MemoryTotalMB = %v, want > 0", g.Index, g.MemoryTotalMB)
+		}
+		if g.MemoryUsedMB < 0 || g.MemoryUsedMB > g.MemoryTotalMB {
+			t.Errorf("GPU %d MemoryUsedMB = %v, want within [0, %v]", g.Index, g.MemoryUsedMB, g.MemoryTotalMB)
+		}
+		if g.UtilizationPct < 0 || g.UtilizationPct > 100 {
+			t.Errorf("GPU %d UtilizationPct = %v, want within [0, 100]", g.Index, g.UtilizationPct)
+		}
 	}
 	if first.SystemMemoryTotalMB <= 0 {
 		t.Errorf("SystemMemoryTotalMB = %v, want > 0", first.SystemMemoryTotalMB)
@@ -196,7 +214,7 @@ func TestCollector_Read_RealHardware(t *testing.T) {
 
 func TestCollector_Read_MissingMeminfoFields(t *testing.T) {
 	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
-	c := newTestCollector(t, fakeNvidiaSMI("0, 0, 1", nil), procStat, "SomeOtherField: 123 kB\n")
+	c := newTestCollector(t, fakeNvidiaSMI("0, 0, 0, 1", nil), procStat, "SomeOtherField: 123 kB\n")
 
 	_, err := c.Read(context.Background())
 	if err == nil {
