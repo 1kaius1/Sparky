@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -219,5 +220,130 @@ func TestCollector_Read_MissingMeminfoFields(t *testing.T) {
 	_, err := c.Read(context.Background())
 	if err == nil {
 		t.Fatal("Read() succeeded despite /proc/meminfo missing MemTotal/MemAvailable")
+	}
+}
+
+// fakeNvidiaSMIRouter dispatches a different canned response depending on
+// which nvidia-smi query is being run - needed once a single Read() can
+// invoke nvidia-smi twice (the primary --query-gpu, and the
+// --query-compute-apps fallback), unlike fakeNvidiaSMI's single fixed
+// response.
+func fakeNvidiaSMIRouter(queryGPU, computeApps string) commandRunner {
+	return func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		for _, a := range args {
+			if strings.HasPrefix(a, "--query-compute-apps") {
+				return []byte(computeApps), nil
+			}
+		}
+		return []byte(queryGPU), nil
+	}
+}
+
+// TestCollector_Read_UnifiedMemory_NAFallback reproduces the real DGX
+// Spark shape confirmed in PLANNING.md's 2026-08-19 Decisions Log entry:
+// nvidia-smi's aggregate memory.used/memory.total both come back "[N/A]"
+// on the GB10's unified memory architecture, but utilization.gpu and
+// per-process compute-apps memory are both real.
+func TestCollector_Read_UnifiedMemory_NAFallback(t *testing.T) {
+	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
+	run := fakeNvidiaSMIRouter(
+		"0, 96, [N/A], [N/A]",
+		"30662, 133\n30822, 127\n2986705, 10726",
+	)
+	c := newTestCollector(t, run, procStat, sampleMeminfo)
+
+	reading, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error: %v", err)
+	}
+	if len(reading.GPUs) != 1 {
+		t.Fatalf("len(GPUs) = %d, want 1", len(reading.GPUs))
+	}
+	g := reading.GPUs[0]
+	if g.UtilizationPct != 96 {
+		t.Errorf("UtilizationPct = %v, want 96 (must not be lost to the memory fallback)", g.UtilizationPct)
+	}
+	wantUsed := float64(133 + 127 + 10726)
+	if g.MemoryUsedMB != wantUsed {
+		t.Errorf("MemoryUsedMB = %v, want %v (summed from compute-apps)", g.MemoryUsedMB, wantUsed)
+	}
+	wantTotal := float64(16186088) / 1024 // sampleMeminfo's MemTotal, in MB
+	if g.MemoryTotalMB != wantTotal {
+		t.Errorf("MemoryTotalMB = %v, want %v (system MemTotal)", g.MemoryTotalMB, wantTotal)
+	}
+}
+
+// TestCollector_Read_UnifiedMemory_OnlyTotalNA covers the total-only half
+// of the fallback independently of the used-memory half, in case a future
+// driver reports them differently.
+func TestCollector_Read_UnifiedMemory_OnlyTotalNA(t *testing.T) {
+	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
+	c := newTestCollector(t, fakeNvidiaSMI("0, 50, 4096, [N/A]", nil), procStat, sampleMeminfo)
+
+	reading, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error: %v", err)
+	}
+	g := reading.GPUs[0]
+	if g.MemoryUsedMB != 4096 {
+		t.Errorf("MemoryUsedMB = %v, want 4096 (real value, no fallback needed)", g.MemoryUsedMB)
+	}
+	wantTotal := float64(16186088) / 1024
+	if g.MemoryTotalMB != wantTotal {
+		t.Errorf("MemoryTotalMB = %v, want %v (system MemTotal)", g.MemoryTotalMB, wantTotal)
+	}
+}
+
+// TestCollector_Read_UnifiedMemory_ComputeAppsQueryFails confirms a
+// failure in the fallback query itself degrades to 0 rather than failing
+// the whole reading - this is already the degraded path, so utilization/
+// CPU/system-memory telemetry must still get through.
+func TestCollector_Read_UnifiedMemory_ComputeAppsQueryFails(t *testing.T) {
+	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
+	callCount := 0
+	run := func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		callCount++
+		for _, a := range args {
+			if strings.HasPrefix(a, "--query-compute-apps") {
+				return nil, errors.New("nvidia-smi: compute-apps query failed")
+			}
+		}
+		return []byte("0, 96, [N/A], [N/A]"), nil
+	}
+	c := newTestCollector(t, run, procStat, sampleMeminfo)
+
+	reading, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("nvidia-smi called %d times, want 2 (primary query + fallback)", callCount)
+	}
+	if reading.GPUs[0].MemoryUsedMB != 0 {
+		t.Errorf("MemoryUsedMB = %v, want 0 (fallback query failed)", reading.GPUs[0].MemoryUsedMB)
+	}
+	if reading.GPUs[0].UtilizationPct != 96 {
+		t.Errorf("UtilizationPct = %v, want 96 (must still get through)", reading.GPUs[0].UtilizationPct)
+	}
+}
+
+// TestCollector_Read_UnifiedMemory_SkipsUnparseableComputeAppsLines
+// confirms one bad line in the compute-apps fallback (an N/A used_memory,
+// or a malformed line) doesn't zero out or fail the whole sum - see
+// sumComputeAppsMemory's own doc comment.
+func TestCollector_Read_UnifiedMemory_SkipsUnparseableComputeAppsLines(t *testing.T) {
+	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
+	run := fakeNvidiaSMIRouter(
+		"0, 10, [N/A], [N/A]",
+		"111, 500\n222, [N/A]\nnot,a,valid,line\n333, 250",
+	)
+	c := newTestCollector(t, run, procStat, sampleMeminfo)
+
+	reading, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error: %v", err)
+	}
+	if reading.GPUs[0].MemoryUsedMB != 750 {
+		t.Errorf("MemoryUsedMB = %v, want 750 (500+250, skipping the N/A and malformed lines)", reading.GPUs[0].MemoryUsedMB)
 	}
 }
