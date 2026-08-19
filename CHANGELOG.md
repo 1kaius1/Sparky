@@ -1036,6 +1036,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /metrics/chart-data` JSON endpoint backs the page's live updates. See
   PLANNING.md's Decisions Log for the full design, including the honest gap
   that this has never run against a real multi-GPU node.
+- `scripts/dev-server.sh`: automates CLAUDE.md's disposable-Postgres-via-podman
+  recipe end to end - starts a throwaway Postgres container, runs migrations,
+  sets a throwaway SuperAdmin break-glass password, builds and starts
+  `sparky-server`, and opens the break-glass sign-in page
+  (`/login/break-glass`) in your browser with the password copied to your
+  clipboard. Ctrl-C stops the server and tears down the Postgres container -
+  nothing persists between runs, and `.env` / any real database are never
+  touched. Waits for two "ready to accept connections" log lines rather than
+  a single `pg_isready` check, since the official postgres image restarts
+  once during first-run initdb and `pg_isready` alone can observe that
+  transient restart window as ready; `migrate` is retried briefly against
+  the same window as a belt-and-suspenders measure, since the exact log
+  wording/count isn't guaranteed stable across postgres image versions.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
