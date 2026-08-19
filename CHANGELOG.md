@@ -1029,7 +1029,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `000023_split_gpu_metrics`). CPU and system memory stay node-level. Four
   chart panels (GPU utilization, GPU memory, system memory, CPU utilization)
   replace the single GPU-utilization-only chart; each line now shows a
-  hover tooltip with the precise value at that point. The per-node summary
+  hover tooltip with the precise value at that point. The memory panels plot
+  used MB, not a percentage of total, since an absolute value is more
+  directly useful for capacity planning. The per-node summary
   table gained `GPU #`, `Running model`, and `Port` columns. New
   `GET /metrics/chart-data` JSON endpoint backs the page's live updates. See
   PLANNING.md's Decisions Log for the full design, including the honest gap

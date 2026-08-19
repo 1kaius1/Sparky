@@ -59,9 +59,9 @@
 
 <script>
   var chartData = {{.Data.ChartDataJSON}};
-  initMetricsChart("metrics-gpu-util-chart", chartData.gpuUtilization, "GPU utilization %");
-  initMetricsChart("metrics-gpu-mem-chart", chartData.gpuMemory, "GPU memory %");
-  initMetricsChart("metrics-mem-chart", chartData.systemMemory, "System memory %");
-  initMetricsChart("metrics-cpu-chart", chartData.cpu, "CPU utilization %");
+  initMetricsChart("metrics-gpu-util-chart", chartData.gpuUtilization, "GPU utilization %", 100);
+  initMetricsChart("metrics-gpu-mem-chart", chartData.gpuMemory, "GPU memory used (MB)");
+  initMetricsChart("metrics-mem-chart", chartData.systemMemory, "System memory used (MB)");
+  initMetricsChart("metrics-cpu-chart", chartData.cpu, "CPU utilization %", 100);
 </script>
 {{end}}

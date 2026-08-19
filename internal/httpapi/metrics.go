@@ -68,8 +68,12 @@ type chartSeries struct {
 // metricsChartData is the four-panel chart data shape - GPU utilization
 // and GPU memory are one series per (node, GPU index); CPU and system
 // memory are one series per node (not GPU-indexed - a node has one CPU/RAM
-// pool regardless of GPU count). Shared by handleMetrics' inline page
-// render and handleMetricsChartData's live-update JSON endpoint.
+// pool regardless of GPU count). GPUMemory/SystemMemory points are used MB
+// (not a percentage of total) - an absolute value is more directly useful
+// for capacity planning than a ratio, and avoids a point looking identical
+// whether it's 1GB used on a 2GB GPU or 40GB used on an 80GB one. Shared by
+// handleMetrics' inline page render and handleMetricsChartData's
+// live-update JSON endpoint.
 type metricsChartData struct {
 	GPUUtilization []chartSeries `json:"gpuUtilization"`
 	GPUMemory      []chartSeries `json:"gpuMemory"`
@@ -79,16 +83,6 @@ type metricsChartData struct {
 
 func formatMetricMB(used, total float64) string {
 	return fmt.Sprintf("%.0f MB / %.0f MB", used, total)
-}
-
-// percentOf returns used/total as a percentage, guarding against a zero
-// total (a malformed or not-yet-populated reading) rather than dividing by
-// zero.
-func percentOf(used, total float64) float64 {
-	if total == 0 {
-		return 0
-	}
-	return used / total * 100
 }
 
 // buildMetricsChartData groups recent readings into the four chart panels.
@@ -112,7 +106,7 @@ func buildMetricsChartData(recentNode []*db.Metric, recentGPU []*db.GPUMetric, n
 		}
 		x := m.RecordedAt.Format("15:04:05")
 		utilByGPU[key] = append(utilByGPU[key], chartPoint{X: x, Y: m.UtilizationPct})
-		memByGPU[key] = append(memByGPU[key], chartPoint{X: x, Y: percentOf(m.MemoryUsedMB, m.MemoryTotalMB)})
+		memByGPU[key] = append(memByGPU[key], chartPoint{X: x, Y: m.MemoryUsedMB})
 	}
 	gpuUtilization := make([]chartSeries, 0, len(gpuOrder))
 	gpuMemory := make([]chartSeries, 0, len(gpuOrder))
@@ -134,7 +128,7 @@ func buildMetricsChartData(recentNode []*db.Metric, recentGPU []*db.GPUMetric, n
 		}
 		x := m.RecordedAt.Format("15:04:05")
 		cpuByNode[m.NodeID] = append(cpuByNode[m.NodeID], chartPoint{X: x, Y: m.CPUUtilizationPct})
-		memNodeByNode[m.NodeID] = append(memNodeByNode[m.NodeID], chartPoint{X: x, Y: percentOf(m.SystemMemoryUsedMB, m.SystemMemoryTotalMB)})
+		memNodeByNode[m.NodeID] = append(memNodeByNode[m.NodeID], chartPoint{X: x, Y: m.SystemMemoryUsedMB})
 	}
 	cpu := make([]chartSeries, 0, len(nodeOrder))
 	systemMemory := make([]chartSeries, 0, len(nodeOrder))
