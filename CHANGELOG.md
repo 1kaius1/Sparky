@@ -1158,6 +1158,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pattern (`web/static/js/sse.js`), which was tearing down and recreating
   the chart's canvas element on every tick. Every other page's live-update
   behavior (Dashboard, Nodes, Profiles, Transfers) is unchanged.
+- Docs (`PLANNING.md`, `README.md`) corrected: DGX Spark's GPU passthrough
+  validation is a Docker runtime-backend question, not "Docker/Podman" as
+  previously stated - the fleet's Spark workstations ship with Docker and
+  stay on it deliberately, matching NVIDIA's own Spark workflow
+  assumptions, with no desire to switch to Podman there. CDI/Podman GPU
+  passthrough validation is unaffected by Spark hardware access at all and
+  now waits on a separate machine, a Dell Precision RTX 3080Ti, coming
+  online. See `PLANNING.md`'s 2026-08-19 Decisions Log entry.
 
 ### Deprecated
 
