@@ -17,12 +17,23 @@ import (
 	"strings"
 )
 
+// GPUReading is a single point-in-time reading from one physical GPU - see
+// SCHEMA.md GPU metrics. Index comes from nvidia-smi's own reported index
+// field, not assumed line order - see readGPU.
+type GPUReading struct {
+	Index          int
+	UtilizationPct float64
+	MemoryUsedMB   float64
+	MemoryTotalMB  float64
+}
+
 // Reading is a single point-in-time hardware snapshot - see SCHEMA.md
-// Metrics, whose columns this mirrors exactly.
+// Metrics and GPU metrics, whose columns this mirrors exactly. CPU and
+// system memory stay node-level regardless of GPU count (one CPU, one RAM
+// pool per node), while GPUs is one entry per physical GPU nvidia-smi
+// reports - see readGPU.
 type Reading struct {
-	GPUUtilizationPct   float64
-	GPUMemoryUsedMB     float64
-	GPUMemoryTotalMB    float64
+	GPUs                []GPUReading
 	CPUUtilizationPct   float64
 	SystemMemoryUsedMB  float64
 	SystemMemoryTotalMB float64
@@ -75,7 +86,7 @@ func NewCollector() *Collector {
 // counters since boot), so a first reading has no prior sample to compute
 // a delta against; every subsequent call reports a real value.
 func (c *Collector) Read(ctx context.Context) (Reading, error) {
-	gpuUtil, gpuUsedMB, gpuTotalMB, err := c.readGPU(ctx)
+	gpus, err := c.readGPU(ctx)
 	if err != nil {
 		return Reading{}, fmt.Errorf("read GPU telemetry: %w", err)
 	}
@@ -89,59 +100,64 @@ func (c *Collector) Read(ctx context.Context) (Reading, error) {
 	}
 
 	return Reading{
-		GPUUtilizationPct:   gpuUtil,
-		GPUMemoryUsedMB:     gpuUsedMB,
-		GPUMemoryTotalMB:    gpuTotalMB,
+		GPUs:                gpus,
 		CPUUtilizationPct:   cpuUtil,
 		SystemMemoryUsedMB:  memUsedMB,
 		SystemMemoryTotalMB: memTotalMB,
 	}, nil
 }
 
-// readGPU shells out to nvidia-smi and aggregates across every GPU it
-// reports - utilization averaged, memory summed - matching Nodes'
-// existing single gpu_memory_gb scalar per node (SCHEMA.md Nodes), not a
-// per-GPU breakdown. Every v0.1.0 target node in practice has exactly one
-// GPU (the laptop RTX 4090 and Dell Precision RTX 3080Ti this project
-// develops against - PLANNING.md Dependencies and Blockers), so this
-// aggregation choice is a reasonable default, not empirically verified
-// against a real multi-GPU node - same honesty standard already applied
-// to the vLLM adapter's unverified launch spec.
-func (c *Collector) readGPU(ctx context.Context) (utilizationPct, usedMB, totalMB float64, err error) {
-	out, err := c.runCommand(ctx, "nvidia-smi", "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits")
+// readGPU shells out to nvidia-smi and reports one GPUReading per physical
+// GPU it lists - nvidia-smi is NVIDIA-proprietary tooling scoped to NVIDIA
+// hardware only, which is the correct scope here: Sparky's engine adapters
+// (vLLM, Aphrodite, llama.cpp) are CUDA-first, so a non-NVIDIA GPU on a node
+// (e.g. an integrated GPU that's part of the CPU) is never something Sparky
+// could schedule an inference engine onto, and deliberately never appears
+// in this reading. The query requests an explicit index field so GPU
+// identity comes from nvidia-smi itself rather than assumed line order.
+// This has been verified against real single-GPU nvidia-smi output
+// (PLANNING.md Decisions Log) but never against a real multi-GPU node -
+// every node available to this project (the laptop RTX 4090, the Dell
+// Precision RTX 3080Ti) has exactly one GPU, so whether a real multi-GPU
+// nvidia-smi invocation emits one CSV line per GPU in the order assumed
+// here remains an honest, documented gap (PLANNING.md Known Issues).
+func (c *Collector) readGPU(ctx context.Context) ([]GPUReading, error) {
+	out, err := c.runCommand(ctx, "nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits")
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("run nvidia-smi: %w", err)
+		return nil, fmt.Errorf("run nvidia-smi: %w", err)
 	}
 
 	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
 	if len(lines) == 0 || lines[0] == "" {
-		return 0, 0, 0, fmt.Errorf("nvidia-smi reported no GPUs")
+		return nil, fmt.Errorf("nvidia-smi reported no GPUs")
 	}
 
-	var utilSum, usedSum, totalSum float64
+	gpus := make([]GPUReading, 0, len(lines))
 	for _, line := range lines {
 		fields := strings.Split(line, ",")
-		if len(fields) != 3 {
-			return 0, 0, 0, fmt.Errorf("unexpected nvidia-smi output line %q", line)
+		if len(fields) != 4 {
+			return nil, fmt.Errorf("unexpected nvidia-smi output line %q", line)
 		}
-		util, err := strconv.ParseFloat(strings.TrimSpace(fields[0]), 64)
+		index, err := strconv.Atoi(strings.TrimSpace(fields[0]))
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("parse utilization.gpu from %q: %w", line, err)
+			return nil, fmt.Errorf("parse index from %q: %w", line, err)
 		}
-		used, err := strconv.ParseFloat(strings.TrimSpace(fields[1]), 64)
+		util, err := strconv.ParseFloat(strings.TrimSpace(fields[1]), 64)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("parse memory.used from %q: %w", line, err)
+			return nil, fmt.Errorf("parse utilization.gpu from %q: %w", line, err)
 		}
-		total, err := strconv.ParseFloat(strings.TrimSpace(fields[2]), 64)
+		used, err := strconv.ParseFloat(strings.TrimSpace(fields[2]), 64)
 		if err != nil {
-			return 0, 0, 0, fmt.Errorf("parse memory.total from %q: %w", line, err)
+			return nil, fmt.Errorf("parse memory.used from %q: %w", line, err)
 		}
-		utilSum += util
-		usedSum += used
-		totalSum += total
+		total, err := strconv.ParseFloat(strings.TrimSpace(fields[3]), 64)
+		if err != nil {
+			return nil, fmt.Errorf("parse memory.total from %q: %w", line, err)
+		}
+		gpus = append(gpus, GPUReading{Index: index, UtilizationPct: util, MemoryUsedMB: used, MemoryTotalMB: total})
 	}
 
-	return utilSum / float64(len(lines)), usedSum, totalSum, nil
+	return gpus, nil
 }
 
 // readCPU parses /proc/stat's aggregate "cpu " line and computes

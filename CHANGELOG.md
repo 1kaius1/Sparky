@@ -1023,6 +1023,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   save time - a bad pin fails clearly at launch time instead, matching
   `required_memory_gb`'s own precedent. See PLANNING.md's per-profile
   engine version pinning Decisions Log entry for the full design.
+- The Metrics page now shows true per-GPU telemetry - GPU utilization and GPU
+  memory are tracked one row per (node, GPU index) instead of a single
+  aggregated reading per node, in a new `gpu_metrics` table (migration
+  `000023_split_gpu_metrics`). CPU and system memory stay node-level. Four
+  chart panels (GPU utilization, GPU memory, system memory, CPU utilization)
+  replace the single GPU-utilization-only chart; each line now shows a
+  hover tooltip with the precise value at that point. The per-node summary
+  table gained `GPU #`, `Running model`, and `Port` columns. New
+  `GET /metrics/chart-data` JSON endpoint backs the page's live updates. See
+  PLANNING.md's Decisions Log for the full design, including the honest gap
+  that this has never run against a real multi-GPU node.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
@@ -1097,6 +1108,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   write-ups describing the old schema as it was actually built at the
   time are deliberately left unedited, matching this project's existing
   never-rewrite-history discipline.
+- The Metrics page's chart no longer visibly redraws on every ~5s telemetry
+  tick. `web/static/js/metrics.js`'s chart panels now update their data in
+  place (`Chart.js`'s own `.update("none")`) via a new
+  `sparkyMetricsLiveUpdate` fetch against `GET /metrics/chart-data`, instead
+  of every other page's "SSE event triggers a full htmx page refetch"
+  pattern (`web/static/js/sse.js`), which was tearing down and recreating
+  the chart's canvas element on every tick. Every other page's live-update
+  behavior (Dashboard, Nodes, Profiles, Transfers) is unchanged.
 
 ### Deprecated
 

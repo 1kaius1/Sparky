@@ -12,14 +12,14 @@ import (
 )
 
 // Metric mirrors one row of the metrics table - see SCHEMA.md Metrics. A
-// single point-in-time hardware reading from one node.
+// single point-in-time node-level hardware reading - CPU and system memory
+// only; GPU readings live in the separate gpu_metrics table/GPUMetric type
+// (SCHEMA.md GPU metrics), since a node has exactly one CPU/RAM pool
+// regardless of GPU count but genuinely per-device GPU readings.
 type Metric struct {
 	RecordedAt          time.Time
 	NodeID              string
 	RunningInstanceID   *string
-	GPUUtilizationPct   float64
-	GPUMemoryUsedMB     float64
-	GPUMemoryTotalMB    float64
 	CPUUtilizationPct   float64
 	SystemMemoryUsedMB  float64
 	SystemMemoryTotalMB float64
@@ -45,35 +45,31 @@ func NewMetricsRepository(pool *pgxpool.Pool) *MetricsRepository {
 	return &MetricsRepository{pool: pool}
 }
 
-// Create inserts one telemetry reading. recordedAt is the agent's own
-// timestamp (agentproto.Telemetry.RecordedAt), not a database-assigned
-// one - see that field's doc comment for why. runningInstanceID is nil
-// when the node currently has nothing loaded.
+// Create inserts one node-level telemetry reading. recordedAt is the
+// agent's own timestamp (agentproto.Telemetry.RecordedAt), not a
+// database-assigned one - see that field's doc comment for why.
+// runningInstanceID is nil when the node currently has nothing loaded.
 func (r *MetricsRepository) Create(ctx context.Context, recordedAt time.Time, nodeID string, runningInstanceID *string,
-	gpuUtilizationPct, gpuMemoryUsedMB, gpuMemoryTotalMB, cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB float64) (*Metric, error) {
+	cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB float64) (*Metric, error) {
 	_, err := r.pool.Exec(ctx,
-		`INSERT INTO metrics (recorded_at, node_id, running_instance_id, gpu_utilization_pct, gpu_memory_used_mb,
-			gpu_memory_total_mb, cpu_utilization_pct, system_memory_used_mb, system_memory_total_mb)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-		recordedAt, nodeID, runningInstanceID, gpuUtilizationPct, gpuMemoryUsedMB, gpuMemoryTotalMB,
-		cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB)
+		`INSERT INTO metrics (recorded_at, node_id, running_instance_id, cpu_utilization_pct, system_memory_used_mb, system_memory_total_mb)
+		 VALUES ($1, $2, $3, $4, $5, $6)`,
+		recordedAt, nodeID, runningInstanceID, cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB)
 	if err != nil {
 		return nil, fmt.Errorf("create metric for node %s: %w", nodeID, err)
 	}
 
 	return &Metric{
 		RecordedAt: recordedAt, NodeID: nodeID, RunningInstanceID: runningInstanceID,
-		GPUUtilizationPct: gpuUtilizationPct, GPUMemoryUsedMB: gpuMemoryUsedMB, GPUMemoryTotalMB: gpuMemoryTotalMB,
 		CPUUtilizationPct: cpuUtilizationPct, SystemMemoryUsedMB: systemMemoryUsedMB, SystemMemoryTotalMB: systemMemoryTotalMB,
 	}, nil
 }
 
-const metricColumns = `recorded_at, node_id, running_instance_id, gpu_utilization_pct, gpu_memory_used_mb, gpu_memory_total_mb, cpu_utilization_pct, system_memory_used_mb, system_memory_total_mb`
+const metricColumns = `recorded_at, node_id, running_instance_id, cpu_utilization_pct, system_memory_used_mb, system_memory_total_mb`
 
 func scanMetric(row pgx.Row) (*Metric, error) {
 	var m Metric
-	err := row.Scan(&m.RecordedAt, &m.NodeID, &m.RunningInstanceID, &m.GPUUtilizationPct, &m.GPUMemoryUsedMB,
-		&m.GPUMemoryTotalMB, &m.CPUUtilizationPct, &m.SystemMemoryUsedMB, &m.SystemMemoryTotalMB)
+	err := row.Scan(&m.RecordedAt, &m.NodeID, &m.RunningInstanceID, &m.CPUUtilizationPct, &m.SystemMemoryUsedMB, &m.SystemMemoryTotalMB)
 	if err != nil {
 		return nil, fmt.Errorf("scan metric: %w", err)
 	}

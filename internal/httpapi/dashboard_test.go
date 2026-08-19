@@ -4,6 +4,7 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"log"
@@ -262,6 +263,11 @@ type fakeMetricsLister struct {
 	latestByNodeErr error
 	recent          []*db.Metric
 	recentErr       error
+
+	latestGPUByNode    []*db.GPUMetric
+	latestGPUByNodeErr error
+	recentGPU          []*db.GPUMetric
+	recentGPUErr       error
 }
 
 func (f *fakeMetricsLister) ListLatestByNode(context.Context) ([]*db.Metric, error) {
@@ -276,6 +282,20 @@ func (f *fakeMetricsLister) ListRecent(context.Context) ([]*db.Metric, error) {
 		return nil, f.recentErr
 	}
 	return f.recent, nil
+}
+
+func (f *fakeMetricsLister) ListLatestGPUByNode(context.Context) ([]*db.GPUMetric, error) {
+	if f.latestGPUByNodeErr != nil {
+		return nil, f.latestGPUByNodeErr
+	}
+	return f.latestGPUByNode, nil
+}
+
+func (f *fakeMetricsLister) ListRecentGPU(context.Context) ([]*db.GPUMetric, error) {
+	if f.recentGPUErr != nil {
+		return nil, f.recentGPUErr
+	}
+	return f.recentGPU, nil
 }
 
 // newAuthenticatedRequest builds a GET request carrying a valid session
@@ -1193,16 +1213,26 @@ func TestHandleSettings_HXRequest_ReturnsPartialOnly(t *testing.T) {
 
 func TestHandleMetrics_FullPage_ShowsNodeSummaryAndChartData(t *testing.T) {
 	nodes := &fakeNodeLister{nodes: []*db.Node{{ID: "node-1", Name: "spark-1"}}}
+	profiles := &fakeProfileLister{profiles: []*db.Profile{{ID: "profile-1", Name: "llama-70b"}}}
+	port := 8000
+	instances := &fakeInstanceLister{instances: []*db.RunningInstance{{
+		ID: "instance-1", ProfileID: "profile-1", PrimaryNodeID: "node-1",
+		Status: db.RunningInstanceStatusRunning, ActualPort: &port,
+	}}}
 	recordedAt := time.Date(2026, 8, 12, 10, 30, 0, 0, time.UTC)
 	metricsSvc := &fakeMetricsLister{
 		latestByNode: []*db.Metric{{
 			NodeID: "node-1", RecordedAt: recordedAt,
-			GPUUtilizationPct: 42.5, GPUMemoryUsedMB: 8192, GPUMemoryTotalMB: 24576,
 			CPUUtilizationPct: 10, SystemMemoryUsedMB: 4096, SystemMemoryTotalMB: 16384,
 		}},
-		recent: []*db.Metric{{NodeID: "node-1", RecordedAt: recordedAt, GPUUtilizationPct: 42.5}},
+		recent: []*db.Metric{{NodeID: "node-1", RecordedAt: recordedAt, CPUUtilizationPct: 10}},
+		latestGPUByNode: []*db.GPUMetric{{
+			NodeID: "node-1", GPUIndex: 0, RecordedAt: recordedAt,
+			UtilizationPct: 42.5, MemoryUsedMB: 8192, MemoryTotalMB: 24576,
+		}},
+		recentGPU: []*db.GPUMetric{{NodeID: "node-1", GPUIndex: 0, RecordedAt: recordedAt, UtilizationPct: 42.5}},
 	}
-	api := newTestDashboardAPIWithMetrics(t, nodes, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+	api := newTestDashboardAPIWithMetrics(t, nodes, profiles, instances, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
 
 	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
 	rec := httptest.NewRecorder()
@@ -1218,8 +1248,11 @@ func TestHandleMetrics_FullPage_ShowsNodeSummaryAndChartData(t *testing.T) {
 	if !strings.Contains(body, "42.5%") {
 		t.Errorf("response does not show the GPU utilization percentage: %s", body)
 	}
-	if !strings.Contains(body, `"nodeName":"spark-1"`) {
-		t.Errorf("response does not embed the chart series JSON with the resolved node name: %s", body)
+	if !strings.Contains(body, "llama-70b") || !strings.Contains(body, "8000") {
+		t.Errorf("response does not show the running model name and port: %s", body)
+	}
+	if !strings.Contains(body, `"label":"spark-1 GPU 0"`) {
+		t.Errorf("response does not embed the GPU chart series JSON with the resolved node/GPU label: %s", body)
 	}
 }
 
@@ -1264,6 +1297,75 @@ func TestHandleMetrics_ListRecentFails(t *testing.T) {
 	}
 }
 
+func TestHandleMetrics_ListLatestGPUByNodeFails(t *testing.T) {
+	metricsSvc := &fakeMetricsLister{latestGPUByNodeErr: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleMetrics_ListRecentGPUFails(t *testing.T) {
+	metricsSvc := &fakeMetricsLister{recentGPUErr: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleMetricsChartData_ReturnsJSON(t *testing.T) {
+	nodes := &fakeNodeLister{nodes: []*db.Node{{ID: "node-1", Name: "spark-1"}}}
+	recordedAt := time.Now()
+	metricsSvc := &fakeMetricsLister{
+		recent:    []*db.Metric{{NodeID: "node-1", RecordedAt: recordedAt, CPUUtilizationPct: 10}},
+		recentGPU: []*db.GPUMetric{{NodeID: "node-1", GPUIndex: 0, RecordedAt: recordedAt, UtilizationPct: 42.5}},
+	}
+	api := newTestDashboardAPIWithMetrics(t, nodes, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics/chart-data", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want %q", ct, "application/json")
+	}
+	var got map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+	for _, key := range []string{"gpuUtilization", "gpuMemory", "cpu", "systemMemory"} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("response missing key %q: %s", key, rec.Body.String())
+		}
+	}
+}
+
+func TestHandleMetricsChartData_ListRecentFails(t *testing.T) {
+	metricsSvc := &fakeMetricsLister{recentErr: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/metrics/chart-data", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
 func TestHandleMetrics_Unauthenticated(t *testing.T) {
 	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
 
@@ -1282,7 +1384,8 @@ func TestHandleMetrics_Unauthenticated(t *testing.T) {
 func TestHandleMetrics_HXRequest_ReturnsPartialOnly(t *testing.T) {
 	nodes := &fakeNodeLister{nodes: []*db.Node{{ID: "node-1", Name: "spark-1"}}}
 	metricsSvc := &fakeMetricsLister{
-		latestByNode: []*db.Metric{{NodeID: "node-1", RecordedAt: time.Now()}},
+		latestByNode:    []*db.Metric{{NodeID: "node-1", RecordedAt: time.Now()}},
+		latestGPUByNode: []*db.GPUMetric{{NodeID: "node-1", GPUIndex: 0, RecordedAt: time.Now()}},
 	}
 	api := newTestDashboardAPIWithMetrics(t, nodes, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
 

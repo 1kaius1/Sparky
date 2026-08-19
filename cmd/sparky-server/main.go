@@ -143,7 +143,7 @@ func main() {
 	// Dashboard UI Phase 11 (via the onMessage dispatch below),
 	// HandleTelemetry - the first time this Service actually ingests a
 	// real telemetry reading end to end, not just serves the page.
-	metricsService := metrics.NewService(db.NewMetricsRepository(pool), instanceRepo, logger)
+	metricsService := metrics.NewService(db.NewMetricsRepository(pool), db.NewGPUMetricsRepository(pool), instanceRepo, logger)
 
 	// eventsBroker fans out a live signal to every open GET /events (SSE)
 	// connection - see internal/events' own doc comment. Fed by the

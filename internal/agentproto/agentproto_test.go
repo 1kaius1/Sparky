@@ -359,7 +359,7 @@ func TestEnvelope_RoundTrip_InstanceResult_Failed(t *testing.T) {
 func TestEnvelope_RoundTrip_Telemetry(t *testing.T) {
 	want := Telemetry{
 		RecordedAt:        time.Date(2026, 8, 12, 12, 0, 0, 0, time.UTC),
-		GPUUtilizationPct: 45, GPUMemoryUsedMB: 8192, GPUMemoryTotalMB: 24576,
+		GPUs:              []GPUTelemetry{{Index: 0, UtilizationPct: 45, MemoryUsedMB: 8192, MemoryTotalMB: 24576}},
 		CPUUtilizationPct: 12.5, SystemMemoryUsedMB: 4096, SystemMemoryTotalMB: 16384,
 	}
 
@@ -376,7 +376,7 @@ func TestEnvelope_RoundTrip_Telemetry(t *testing.T) {
 		t.Errorf("RecordedAt = %v, want %v", got.RecordedAt, want.RecordedAt)
 	}
 	got.RecordedAt, want.RecordedAt = time.Time{}, time.Time{}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Errorf("Telemetry (excl. RecordedAt) = %+v, want %+v", got, want)
 	}
 }
