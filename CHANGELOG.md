@@ -1065,6 +1065,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Written for setting up a second workstation to run `sparky-server`
   alongside a DGX Spark agent node that can't share a LAN with the
   primary dev machine.
+- vLLM profiles' `engine_params` now recognize seven more launch
+  parameters - `served_model_name`, `kv_cache_dtype`,
+  `max_num_batched_tokens`, `max_num_seqs`, `enable_chunked_prefill`,
+  `enable_auto_tool_choice`, and `tool_call_parser` - confirmed against a
+  real production vLLM launch log on real DGX Spark hardware, the same
+  way `max_model_len` was confirmed for the first time by this pass too.
+  Setting `tool_call_parser` without `enable_auto_tool_choice: true` now
+  fails at profile-save time rather than silently never reaching `vllm
+  serve` - vLLM itself rejects that combination. See PLANNING.md's
+  2026-08-19 Decisions Log entry for the full design, including which
+  vLLM params still have no real-launch evidence either way.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
