@@ -21,7 +21,7 @@
 # real pty non-interactively, since it refuses to read from a plain pipe).
 
 set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")"
+cd "$(dirname "${BASH_SOURCE[0]}")/.."
 
 CONTAINER_NAME="sparky-dev-server-postgres"
 DB_PORT="${DEV_DB_PORT:-5432}"
