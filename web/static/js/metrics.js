@@ -8,7 +8,16 @@
                     // sparkyMetricsLiveUpdate (in-place tick) can find them.
   var colors = ["#2f5fda", "#1a8a5f", "#b98900", "#c0342c", "#7a3fd1", "#0f8a9e"];
 
-  function baseOptions(yAxisLabel) {
+  // yMax fixes the y-axis ceiling at 100 for a percentage panel (GPU/CPU
+  // utilization); omitted (undefined) for an absolute-value panel (memory,
+  // in MB) so Chart.js auto-scales to whatever the data actually spans -
+  // a fixed 0-100 range would be meaningless once the unit isn't a
+  // percentage.
+  function baseOptions(yAxisLabel, yMax) {
+    var y = { type: "linear", min: 0, title: { display: true, text: yAxisLabel } };
+    if (typeof yMax === "number") {
+      y.max = yMax;
+    }
     return {
       // A shared crosshair-style tooltip across every line at the hovered
       // x position, not just the one line directly under the cursor -
@@ -18,7 +27,7 @@
       plugins: { tooltip: { enabled: true, mode: "index", intersect: false } },
       scales: {
         x: { type: "category", title: { display: true, text: "Time" } },
-        y: { type: "linear", min: 0, max: 100, title: { display: true, text: yAxisLabel } }
+        y: y
       }
     };
   }
@@ -37,7 +46,7 @@
     });
   }
 
-  // initMetricsChart(canvasId, series, yAxisLabel) - called from
+  // initMetricsChart(canvasId, series, yAxisLabel, yMax) - called from
   // metrics.html's inline <script> once per panel, on both a full page
   // load and an htmx partial swap into it (htmx executes <script> tags in
   // swapped content by default - allowScriptTags in the vendored
@@ -47,7 +56,7 @@
   // Chart object can never be validly updated in place here; that only
   // happens later, via sparkyMetricsLiveUpdate below, when the canvas is
   // known-still-alive.
-  window.initMetricsChart = function (canvasId, series, yAxisLabel) {
+  window.initMetricsChart = function (canvasId, series, yAxisLabel, yMax) {
     if (charts[canvasId]) {
       charts[canvasId].destroy();
     }
@@ -55,7 +64,7 @@
     if (!el) {
       return;
     }
-    charts[canvasId] = new Chart(el, { type: "line", data: { datasets: buildDatasets(series) }, options: baseOptions(yAxisLabel) });
+    charts[canvasId] = new Chart(el, { type: "line", data: { datasets: buildDatasets(series) }, options: baseOptions(yAxisLabel, yMax) });
   };
 
   function updatePanel(canvasId, series) {
