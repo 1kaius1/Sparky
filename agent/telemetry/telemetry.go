@@ -86,17 +86,17 @@ func NewCollector() *Collector {
 // counters since boot), so a first reading has no prior sample to compute
 // a delta against; every subsequent call reports a real value.
 func (c *Collector) Read(ctx context.Context) (Reading, error) {
-	gpus, err := c.readGPU(ctx)
+	memUsedMB, memTotalMB, err := c.readMemory()
+	if err != nil {
+		return Reading{}, fmt.Errorf("read memory telemetry: %w", err)
+	}
+	gpus, err := c.readGPU(ctx, memTotalMB)
 	if err != nil {
 		return Reading{}, fmt.Errorf("read GPU telemetry: %w", err)
 	}
 	cpuUtil, err := c.readCPU()
 	if err != nil {
 		return Reading{}, fmt.Errorf("read CPU telemetry: %w", err)
-	}
-	memUsedMB, memTotalMB, err := c.readMemory()
-	if err != nil {
-		return Reading{}, fmt.Errorf("read memory telemetry: %w", err)
 	}
 
 	return Reading{
@@ -121,7 +121,19 @@ func (c *Collector) Read(ctx context.Context) (Reading, error) {
 // Precision RTX 3080Ti) has exactly one GPU, so whether a real multi-GPU
 // nvidia-smi invocation emits one CSV line per GPU in the order assumed
 // here remains an honest, documented gap (PLANNING.md Known Issues).
-func (c *Collector) readGPU(ctx context.Context) ([]GPUReading, error) {
+//
+// memory.used/memory.total can each come back as nvidia-smi's own literal
+// "[N/A]" instead of a number - confirmed on a real DGX Spark's GB10,
+// whose nvidia-smi table view reports GPU memory as flatly "Not
+// Supported", almost certainly a consequence of Grace-Blackwell's unified
+// CPU/GPU memory architecture rather than a transient or query-syntax
+// issue (PLANNING.md's 2026-08-19 Decisions Log entry). systemMemTotalMB
+// (the caller's own already-read /proc/meminfo MemTotal) stands in for an
+// N/A memory.total - SCHEMA.md's Nodes documentation already establishes
+// that a Spark's GPU capacity *is* system memory capacity, not an
+// approximation. An N/A memory.used falls back to summing real
+// per-process usage instead - see sumComputeAppsMemory.
+func (c *Collector) readGPU(ctx context.Context, systemMemTotalMB float64) ([]GPUReading, error) {
 	out, err := c.runCommand(ctx, "nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits")
 	if err != nil {
 		return nil, fmt.Errorf("run nvidia-smi: %w", err)
@@ -133,6 +145,7 @@ func (c *Collector) readGPU(ctx context.Context) ([]GPUReading, error) {
 	}
 
 	gpus := make([]GPUReading, 0, len(lines))
+	var needsUsedFallback []int
 	for _, line := range lines {
 		fields := strings.Split(line, ",")
 		if len(fields) != 4 {
@@ -146,18 +159,78 @@ func (c *Collector) readGPU(ctx context.Context) ([]GPUReading, error) {
 		if err != nil {
 			return nil, fmt.Errorf("parse utilization.gpu from %q: %w", line, err)
 		}
-		used, err := strconv.ParseFloat(strings.TrimSpace(fields[2]), 64)
-		if err != nil {
+
+		var used float64
+		usedField := strings.TrimSpace(fields[2])
+		if usedField == naMarker {
+			needsUsedFallback = append(needsUsedFallback, len(gpus))
+		} else if used, err = strconv.ParseFloat(usedField, 64); err != nil {
 			return nil, fmt.Errorf("parse memory.used from %q: %w", line, err)
 		}
-		total, err := strconv.ParseFloat(strings.TrimSpace(fields[3]), 64)
-		if err != nil {
+
+		var total float64
+		totalField := strings.TrimSpace(fields[3])
+		if totalField == naMarker {
+			total = systemMemTotalMB
+		} else if total, err = strconv.ParseFloat(totalField, 64); err != nil {
 			return nil, fmt.Errorf("parse memory.total from %q: %w", line, err)
 		}
+
 		gpus = append(gpus, GPUReading{Index: index, UtilizationPct: util, MemoryUsedMB: used, MemoryTotalMB: total})
 	}
 
+	if len(needsUsedFallback) > 0 {
+		// Applied to every GPU that reported N/A: this query has no
+		// per-GPU attribution (no gpu_uuid correlation) to split the
+		// sum by when more than one GPU needs it - an honest gap left
+		// unresolved same as this function's other multi-GPU caveats,
+		// since every node available to this project, Spark included,
+		// has exactly one GPU to verify against.
+		usedSum := c.sumComputeAppsMemory(ctx)
+		for _, i := range needsUsedFallback {
+			gpus[i].MemoryUsedMB = usedSum
+		}
+	}
+
 	return gpus, nil
+}
+
+// naMarker is nvidia-smi's own literal string for a query field it can't
+// answer - see readGPU.
+const naMarker = "[N/A]"
+
+// sumComputeAppsMemory sums real per-process GPU memory usage, for use
+// only when the aggregate memory.used query itself is unsupported (see
+// readGPU) - confirmed queryable on the same DGX Spark whose aggregate
+// query is not, via nvidia-smi's own process table. A query failure or a
+// line nvidia-smi itself can't attribute (a used_memory of "[N/A]", seen
+// for some non-compute entries) is skipped rather than failing the whole
+// reading - this is already the degraded fallback path, so a partial sum
+// is strictly better than losing GPU memory telemetry entirely over a
+// secondary measurement's own failure.
+func (c *Collector) sumComputeAppsMemory(ctx context.Context) float64 {
+	out, err := c.runCommand(ctx, "nvidia-smi", "--query-compute-apps=pid,used_memory", "--format=csv,noheader,nounits")
+	if err != nil {
+		return 0
+	}
+
+	var sum float64
+	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
+		fields := strings.Split(line, ",")
+		if len(fields) != 2 {
+			continue
+		}
+		used := strings.TrimSpace(fields[1])
+		if used == naMarker {
+			continue
+		}
+		v, err := strconv.ParseFloat(used, 64)
+		if err != nil {
+			continue
+		}
+		sum += v
+	}
+	return sum
 }
 
 // readCPU parses /proc/stat's aggregate "cpu " line and computes
