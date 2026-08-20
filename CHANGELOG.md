@@ -1215,6 +1215,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/auth/ldap.go`) now point at `CLAUDE.md` instead.
 
 ### Fixed
+- CLAUDE.md's Current Focus section no longer states stale v0.1.0/v0.2.0
+  status: v0.1.0's remaining item was described as blocked on DGX Spark
+  hardware "not yet in hand" (that hardware has been in hand since
+  2026-08-19) and as a combined "Docker/Podman" CDI item (Spark validates
+  Docker's native GPU passthrough only - CDI/Podman moved to the Dell
+  Precision RTX 3080Ti, see PLANNING.md's 2026-08-19 Decisions Log entry);
+  v0.2.0's engine-binary provisioning was described as "not started" when
+  it (and per-profile engine version pinning) has been done since
+  2026-08-15. Brought in line with PLANNING.md, the authoritative source
+  for milestone status.
 - Commits and pull requests going forward no longer include AI-attribution
   text (a `Co-Authored-By` trailer, a "Generated with" footer) - this
   violated `.clauderules`' explicit prohibition throughout the session,
