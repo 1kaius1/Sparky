@@ -61,6 +61,21 @@ type Spec struct {
 	// CDIDevices are CDI-qualified device names (e.g. "nvidia.com/gpu=all")
 	// - only meaningful when GPUDeviceMechanism is GPUDeviceMechanismCDI.
 	CDIDevices []string
+
+	// ShmSize is the /dev/shm size, in bytes, to give the container -
+	// containers backend only, ignored by bare-metal (which already
+	// shares the host's own /dev/shm). Zero means "use the container
+	// runtime's own default". Threaded through from
+	// engines.LaunchSpec.ShmSizeBytes via agentproto.LoadInstance - see
+	// that field's own doc comment for why this exists (vLLM multi-GPU
+	// tensor-parallel NCCL communication).
+	ShmSize int64
+
+	// IPCMode is the container's IPC namespace mode (e.g. "host") -
+	// containers backend only, ignored by bare-metal. Empty means "use
+	// the container runtime's own default". Always set alongside ShmSize
+	// - see engines.LaunchSpec.IPCMode.
+	IPCMode string
 }
 
 // GPUDeviceMechanism selects which Docker Engine API mechanism

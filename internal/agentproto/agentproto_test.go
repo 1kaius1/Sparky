@@ -265,6 +265,31 @@ func TestEnvelope_RoundTrip_LoadInstance(t *testing.T) {
 	}
 }
 
+func TestEnvelope_RoundTrip_LoadInstance_ShmSizeAndIPCMode(t *testing.T) {
+	want := LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "meta-llama/Llama-3-8B",
+		Image:                    "vllm/vllm-openai:latest",
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+		ShmSize:                  16 * 1024 * 1024 * 1024,
+		IPCMode:                  "host",
+	}
+
+	env, err := NewEnvelope(TypeLoadInstance, "req-4", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got LoadInstance
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LoadInstance = %+v, want %+v", got, want)
+	}
+}
+
 func TestEnvelope_RoundTrip_LoadInstance_PinnedEngineVersion(t *testing.T) {
 	want := LoadInstance{
 		InstanceID:    "instance-1",

@@ -295,6 +295,55 @@ func TestStart_CDIMechanism_NoCDIDevices_NoDeviceRequest(t *testing.T) {
 	}
 }
 
+func TestStart_SetsShmSizeAndIPCMode(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	const shmSize = 16 * 1024 * 1024 * 1024
+	_, err := b.Start(context.Background(), runtime.Spec{
+		Image:   "example/engine:latest",
+		ShmSize: shmSize,
+		IPCMode: "host",
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if captured.HostConfig.ShmSize != shmSize {
+		t.Errorf("ShmSize = %d, want %d", captured.HostConfig.ShmSize, shmSize)
+	}
+	if captured.HostConfig.IpcMode != container.IPCModeHost {
+		t.Errorf("IpcMode = %q, want %q", captured.HostConfig.IpcMode, container.IPCModeHost)
+	}
+}
+
+func TestStart_NoShmSizeOrIPCMode_LeavesHostConfigDefaults(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if captured.HostConfig.ShmSize != 0 {
+		t.Errorf("ShmSize = %d, want 0", captured.HostConfig.ShmSize)
+	}
+	if captured.HostConfig.IpcMode != "" {
+		t.Errorf("IpcMode = %q, want empty", captured.HostConfig.IpcMode)
+	}
+}
+
 func TestStart_SetsArgsAsCmd(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
