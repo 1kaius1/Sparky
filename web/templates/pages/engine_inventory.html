@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>Engine inventory</h1>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Node</th>
+      <th>Engine type</th>
+      <th>Version</th>
+      <th>Status</th>
+      <th>Install path</th>
+      <th>Size</th>
+      <th>Placed at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Entries}}
+    <tr>
+      <td>{{.NodeName}}</td>
+      <td>{{.EngineType}}</td>
+      <td>{{.Version}}</td>
+      <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
+      <td>{{.InstallPath}}</td>
+      <td>{{.Size}}</td>
+      <td>{{.PlacedAt}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="7" class="empty">No engines installed yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

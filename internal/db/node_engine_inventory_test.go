@@ -133,6 +133,50 @@ func TestNodeEngineInventoryRepository_Get_NotFound(t *testing.T) {
 	}
 }
 
+func TestNodeEngineInventoryRepository_List(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewEngineTransferRepository(pool)
+	inventory := NewNodeEngineInventoryRepository(pool)
+	ctx := context.Background()
+
+	nodeA := createTestNode(t, nodes, fmt.Sprintf("node-a-%s", t.Name()))
+	nodeB := createTestNode(t, nodes, fmt.Sprintf("node-b-%s", t.Name()))
+	transferA := createTestEngineTransfer(t, transfers, nodeA.ID, nil)
+	transferB := createTestEngineTransfer(t, transfers, nodeB.ID, nil)
+
+	if _, err := inventory.Upsert(ctx, nodeA.ID, ProfileEngineLlamaCPP, "b4523", InventoryStatusPresent, "/path/b4523", 1024, transferA.ID); err != nil {
+		t.Fatalf("Upsert(nodeA) error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_engine_inventory WHERE node_id = $1 AND engine_type = $2 AND version = $3`, nodeA.ID, ProfileEngineLlamaCPP, "b4523")
+	})
+	if _, err := inventory.Upsert(ctx, nodeB.ID, ProfileEngineLlamaCPP, "b4610", InventoryStatusPresent, "/path/b4610", 2048, transferB.ID); err != nil {
+		t.Fatalf("Upsert(nodeB) error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_engine_inventory WHERE node_id = $1 AND engine_type = $2 AND version = $3`, nodeB.ID, ProfileEngineLlamaCPP, "b4610")
+	})
+
+	got, err := inventory.List(ctx)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	var foundA, foundB bool
+	for _, inv := range got {
+		if inv.NodeID == nodeA.ID && inv.Version == "b4523" {
+			foundA = true
+		}
+		if inv.NodeID == nodeB.ID && inv.Version == "b4610" {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("List() = %d entries, missing one or both of the two just created (across different nodes)", len(got))
+	}
+}
+
 func TestNodeEngineInventoryRepository_ListByNode(t *testing.T) {
 	pool := newTestPool(t)
 	nodes := NewNodeRepository(pool)

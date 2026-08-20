@@ -1089,6 +1089,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   realistic through this path (SCHEMA.md Engine transfers). Live progress
   updates reuse the existing SSE `engine_transfer_progress` event, which was
   already being published but had no page listening for it.
+- New "Engine inventory" page (`GET /engine-inventory`) - a Read-only list of
+  `node_engine_inventory`, which engine binary versions are actually
+  installed on each node right now, distinct from Engine transfers'
+  provisioning history. `internal/db.NodeEngineInventoryRepository` gained a
+  cross-node `List`; `engineprovision.Service` gained
+  `ListNodeEngineInventory`, unguarded by RBAC like the page's Engine
+  transfers/Model transfers counterparts.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
@@ -1183,6 +1190,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Model transfers" - now that the new Engine transfers page sits directly
   below it, "Transfers" alone was ambiguous about which kind. No route,
   behavior, or `ActiveSection` value changed - label text only.
+- Sidebar restructured into a two-level tree: a "Models" group (Profiles,
+  Transfers) and an "Engines" group (Inventory, Transfers), using native
+  `<details>/<summary>` - no JS, both groups default open. The parent group
+  now supplies the context the previous "Model transfers"/"Engine transfers"
+  labels spelled out, so the sublinks read as short "Profiles"/"Transfers"/
+  "Inventory"/"Transfers" - each page's own `<h1>`/title stays fully
+  descriptive for anyone arriving via a direct link. URLs for the existing
+  pages are unchanged; only the new Engine inventory page adds a route.
 
 ### Deprecated
 

@@ -24,17 +24,35 @@
           <a href="/nodes" hx-get="/nodes" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "nodes"}}active{{end}}">Nodes</a>
         </li>
-        <li>
-          <a href="/profiles" hx-get="/profiles" hx-target="#main-content" hx-push-url="true"
-             class="{{if eq .ActiveSection "profiles"}}active{{end}}">Model profiles</a>
+        <li class="sidebar-group">
+          <details open>
+            <summary>Models</summary>
+            <ul class="sidebar-subnav">
+              <li>
+                <a href="/profiles" hx-get="/profiles" hx-target="#main-content" hx-push-url="true"
+                   class="{{if eq .ActiveSection "profiles"}}active{{end}}">Profiles</a>
+              </li>
+              <li>
+                <a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true"
+                   class="{{if eq .ActiveSection "transfers"}}active{{end}}">Transfers</a>
+              </li>
+            </ul>
+          </details>
         </li>
-        <li>
-          <a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true"
-             class="{{if eq .ActiveSection "transfers"}}active{{end}}">Model transfers</a>
-        </li>
-        <li>
-          <a href="/engine-transfers" hx-get="/engine-transfers" hx-target="#main-content" hx-push-url="true"
-             class="{{if eq .ActiveSection "engine_transfers"}}active{{end}}">Engine transfers</a>
+        <li class="sidebar-group">
+          <details open>
+            <summary>Engines</summary>
+            <ul class="sidebar-subnav">
+              <li>
+                <a href="/engine-inventory" hx-get="/engine-inventory" hx-target="#main-content" hx-push-url="true"
+                   class="{{if eq .ActiveSection "engine_inventory"}}active{{end}}">Inventory</a>
+              </li>
+              <li>
+                <a href="/engine-transfers" hx-get="/engine-transfers" hx-target="#main-content" hx-push-url="true"
+                   class="{{if eq .ActiveSection "engine_transfers"}}active{{end}}">Transfers</a>
+              </li>
+            </ul>
+          </details>
         </li>
         <li>
           <a href="/metrics" hx-get="/metrics" hx-target="#main-content" hx-push-url="true"

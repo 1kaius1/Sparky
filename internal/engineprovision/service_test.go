@@ -87,8 +87,10 @@ func (f *fakeEngineTransferStore) List(_ context.Context) ([]*db.EngineTransfer,
 
 // fakeEngineInventoryStore implements engineInventoryStore for tests.
 type fakeEngineInventoryStore struct {
-	upsertErr error
-	calls     []upsertCall
+	upsertErr  error
+	calls      []upsertCall
+	listResult []*db.NodeEngineInventory
+	listErr    error
 }
 
 type upsertCall struct {
@@ -107,6 +109,13 @@ func (f *fakeEngineInventoryStore) Upsert(_ context.Context, nodeID string, engi
 	}
 	f.calls = append(f.calls, upsertCall{nodeID, engineType, version, status, installPath, sizeBytes, placedVia})
 	return &db.NodeEngineInventory{NodeID: nodeID, EngineType: engineType, Version: version, Status: status, InstallPath: installPath, SizeBytes: sizeBytes, PlacedVia: placedVia}, nil
+}
+
+func (f *fakeEngineInventoryStore) List(context.Context) ([]*db.NodeEngineInventory, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return f.listResult, nil
 }
 
 // fakeDispatcher implements dispatcher for tests without a real
@@ -485,5 +494,31 @@ func TestService_ListEngineTransfers_StoreError(t *testing.T) {
 
 	if _, err := svc.ListEngineTransfers(context.Background()); err == nil {
 		t.Fatal("ListEngineTransfers() succeeded despite a store error")
+	}
+}
+
+func TestService_ListNodeEngineInventory(t *testing.T) {
+	want := []*db.NodeEngineInventory{
+		{NodeID: "node-1", EngineType: db.ProfileEngineLlamaCPP, Version: "b4523"},
+		{NodeID: "node-2", EngineType: db.ProfileEngineLlamaCPP, Version: "b4610"},
+	}
+	inventory := &fakeEngineInventoryStore{listResult: want}
+	svc := NewService(&fakeEngineTransferStore{}, inventory, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	got, err := svc.ListNodeEngineInventory(context.Background())
+	if err != nil {
+		t.Fatalf("ListNodeEngineInventory() error: %v", err)
+	}
+	if len(got) != 2 || got[0].Version != "b4523" || got[1].Version != "b4610" {
+		t.Errorf("ListNodeEngineInventory() = %+v, want %+v", got, want)
+	}
+}
+
+func TestService_ListNodeEngineInventory_StoreError(t *testing.T) {
+	inventory := &fakeEngineInventoryStore{listErr: errors.New("database unreachable")}
+	svc := NewService(&fakeEngineTransferStore{}, inventory, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	if _, err := svc.ListNodeEngineInventory(context.Background()); err == nil {
+		t.Fatal("ListNodeEngineInventory() succeeded despite a store error")
 	}
 }

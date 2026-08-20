@@ -181,6 +181,19 @@ func (f *fakeEngineTransferLister) ListEngineTransfers(context.Context) ([]*db.E
 	return f.transfers, nil
 }
 
+// fakeEngineInventoryLister implements engineInventoryLister for tests.
+type fakeEngineInventoryLister struct {
+	entries []*db.NodeEngineInventory
+	err     error
+}
+
+func (f *fakeEngineInventoryLister) ListNodeEngineInventory(context.Context) ([]*db.NodeEngineInventory, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.entries, nil
+}
+
 // fakeEngineProvisioner implements engineProvisioner for tests, recording
 // every call.
 type fakeEngineProvisioner struct {
@@ -446,20 +459,25 @@ func newTestDashboardAPIWithLauncher(t *testing.T, nodeList *fakeNodeLister, reg
 // handleEvents need to Publish against.
 func newTestDashboardAPIWithEvents(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker) *API {
 	t.Helper()
-	return newTestDashboardAPIWithEngineTransfers(t, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, &fakeEngineProvisioner{}, &fakeEngineTransferLister{})
+	return newTestDashboardAPIWithEngineTransfers(t, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{})
 }
 
 // newTestDashboardAPIWithEngineTransfers is the true innermost test
-// constructor, adding control over engineProvisioner/engineTransferLister
-// (the Engine transfers page) on top of newTestDashboardAPIWithEvents'
+// constructor, adding control over engineProvisioner/engineTransferLister/
+// engineInventoryLister (the Engines side: the Engine transfers page and the
+// Engine inventory page) on top of newTestDashboardAPIWithEvents'
 // parameters - kept separate rather than widening that function's own
 // signature, same "existing call sites don't need updating" reasoning as
-// newTestDashboardAPIWithRoster's own doc comment.
-func newTestDashboardAPIWithEngineTransfers(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker, engineProvisionerFake *fakeEngineProvisioner, engineTransfersFake *fakeEngineTransferLister) *API {
+// newTestDashboardAPIWithRoster's own doc comment. engineInventoryLister is
+// folded into this same function rather than given its own further-nested
+// constructor - both it and engineTransferLister are the Engines side of the
+// same conceptual sidebar group, and nothing currently needs them
+// independently controllable.
+func newTestDashboardAPIWithEngineTransfers(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker, engineProvisionerFake *fakeEngineProvisioner, engineTransfersFake *fakeEngineTransferLister, engineInventoryFake *fakeEngineInventoryLister) *API {
 	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -492,6 +510,36 @@ func TestHandleDashboard_FullPage(t *testing.T) {
 	}
 	if !strings.Contains(body, ">2<") {
 		t.Errorf("response does not show a node count of 2: %s", body)
+	}
+}
+
+func TestHandleDashboard_SidebarShowsGroupedNav(t *testing.T) {
+	api := newTestDashboardAPI(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/dashboard", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"<summary>Models</summary>",
+		"<summary>Engines</summary>",
+		`href="/profiles"`,
+		`href="/transfers"`,
+		`href="/engine-inventory"`,
+		`href="/engine-transfers"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("response does not contain %q: %s", want, body)
+		}
+	}
+	// The sublinks read "Profiles"/"Transfers"/"Inventory"/"Transfers" - the
+	// parent group supplies the context, not the link text.
+	if strings.Contains(body, ">Model profiles<") || strings.Contains(body, ">Model transfers<") {
+		t.Error("sidebar sublinks should read the short form (Profiles/Transfers), not the old standalone labels")
 	}
 }
 

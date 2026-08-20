@@ -453,12 +453,16 @@ web/static/
 - Sidebar navigation stays static HTML in the base layout; clicking a section swaps
   only the main pane via `hx-get`/`hx-target` - the sidebar and any open SSE
   connection never reload. Never restructure this into a full-page reload pattern.
-  See `ARCHITECTURE.md` Component Breakdown
+  Related sections nest one level deep as a native `<details>/<summary>` group
+  (e.g. Models, Engines below) - zero JS, no framework, defaults to `open`
+  unconditionally rather than being computed from the active section. See
+  `ARCHITECTURE.md` Component Breakdown
 - Sidebar sections and their minimum visible tier (fill in as built): Dashboard
-  (Read-only), Nodes (Read-only view / Admin edit), Model profiles (Read-only view /
-  Developer launch / PowerDev create), Model transfers (Read-only view / Admin+grant
-  initiate), Engine transfers (Read-only view / Admin+ provision), Metrics
-  (Read-only), Users & permissions (Admin), Audit log (Admin), Settings (Admin)
+  (Read-only), Nodes (Read-only view / Admin edit), Models group - Profiles
+  (Read-only view / Developer launch / PowerDev create) and Transfers (Read-only
+  view / Admin+grant initiate), Engines group - Inventory (Read-only) and
+  Transfers (Read-only view / Admin+ provision), Metrics (Read-only), Users &
+  permissions (Admin), Audit log (Admin), Settings (Admin)
 - No inline styles - CSS classes only
 - No API client module to centralize calls through - handlers render templates or
   template partials directly; there is no separate frontend build or JS-side data
