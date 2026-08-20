@@ -442,6 +442,20 @@ explicitly confirmed by the releasing operator before a version is tagged.
       targets
 - [ ] Reduced-capacity launch and relaunch-at-full-capacity flow verified on real
       hardware
+- [ ] A freshly built/published engine-release bundle
+      (`scripts/build_engine_release.sh` + `scripts/publish_engine_release.sh`)
+      actually boots and serves real inference on real target hardware -
+      required for the first bundle of a given engine type, and again
+      whenever the CUDA toolkit version or `CMAKE_CUDA_ARCHITECTURES` values
+      change. A clean build proves the artifact shape is right; it does not
+      prove the binary runs (wrong compute-capability target, glibc/ABI
+      mismatch, missing runtime library are all real risks a successful
+      compile doesn't rule out). Download the published tarball,
+      independently re-verify its SHA-256, extract it, launch the engine
+      against a real model, confirm it serves a real request, and confirm
+      via `nvidia-smi` that GPU utilization actually rises during inference -
+      on both real target architecture classes this tooling builds for, not
+      just one. See `PLANNING.md`'s 2026-08-20 Decisions Log entry
 
 ---
 

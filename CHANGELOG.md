@@ -1096,6 +1096,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-node `List`; `engineprovision.Service` gained
   `ListNodeEngineInventory`, unguarded by RBAC like the page's Engine
   transfers/Model transfers counterparts.
+- Producer-side tooling for compiled-engine release bundles -
+  `scripts/build_engine_release.sh` compiles a pinned upstream llama.cpp tag
+  and packages it into the exact `<engine>-<version>-<arch>.tar.xz` +
+  `.sha256` shape `agent/enginetransfer` already expects to download;
+  `scripts/publish_engine_release.sh` publishes an already-built bundle as a
+  GitHub Release on this repo, re-verifying checksums locally first and
+  refusing a partial (single-architecture) publish unless explicitly
+  overridden. Engine-specific build knowledge lives in a small per-engine
+  recipe file (`scripts/packaging/engine_recipes/llamacpp.sh` today), so
+  adding koboldcpp later is a config addition, not a rewrite of either
+  script. Both are manually-invoked maintainer tools for now - a scheduled
+  CI pipeline that reuses them unchanged is designed but not yet built, see
+  PLANNING.md's Decisions Log and Future Ideas. Closes the producer half of
+  a gap `agent/enginetransfer` has had since it was built: nothing in this
+  repo could actually create the release assets it downloads.
+- A new manual-checklist item (ARCHITECTURE.md Testing Strategy) covering
+  verification that a freshly built/published engine-release bundle actually
+  boots and serves real inference on real target hardware - a clean build
+  proves the artifact shape is right, not that the binary runs.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
