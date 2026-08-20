@@ -457,8 +457,8 @@ web/static/
 - Sidebar sections and their minimum visible tier (fill in as built): Dashboard
   (Read-only), Nodes (Read-only view / Admin edit), Model profiles (Read-only view /
   Developer launch / PowerDev create), Transfers (Read-only view / Admin+grant
-  initiate), Metrics (Read-only), Users & permissions (Admin), Audit log (Admin),
-  Settings (Admin)
+  initiate), Engine transfers (Read-only view / Admin+ provision), Metrics
+  (Read-only), Users & permissions (Admin), Audit log (Admin), Settings (Admin)
 - No inline styles - CSS classes only
 - No API client module to centralize calls through - handlers render templates or
   template partials directly; there is no separate frontend build or JS-side data

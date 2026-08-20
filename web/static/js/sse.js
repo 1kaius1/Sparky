@@ -58,6 +58,7 @@
   document.addEventListener("DOMContentLoaded", function () {
     var source = new EventSource("/events");
     source.addEventListener("transfer_progress", scheduleRefresh);
+    source.addEventListener("engine_transfer_progress", scheduleRefresh);
     source.addEventListener("instance_result", scheduleRefresh);
     // The Metrics page's own live-update path (web/static/js/metrics.js)
     // replaces just its chart data in place instead of the full-page

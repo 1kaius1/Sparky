@@ -1076,6 +1076,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   serve` - vLLM itself rejects that combination. See PLANNING.md's
   2026-08-19 Decisions Log entry for the full design, including which
   vLLM params still have no real-launch evidence either way.
+- Engine binary provisioning now has an HTTP handler and UI form -
+  `internal/engineprovision.Service` (build/tested since 2026-08-15) had no
+  caller until now. New "Engine transfers" sidebar page: a Read-only list of
+  every engine transfer (destination node, engine type, version, status,
+  progress, error), and an Admin/SuperAdmin-only "Provision engine" form
+  (`GET`/`POST /engine-transfers/new`) that dispatches a real
+  `start_engine_transfer` to the target node via
+  `engineprovision.Service.ProvisionEngine`, gated by the same
+  `rbac.CanManageNodes` rule node registration uses. The form's engine type
+  is fixed to `llamacpp`, not a free choice - `vllm`/`aphrodite` are not
+  realistic through this path (SCHEMA.md Engine transfers). Live progress
+  updates reuse the existing SSE `engine_transfer_progress` event, which was
+  already being published but had no page listening for it.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,

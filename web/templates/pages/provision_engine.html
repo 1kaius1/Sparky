@@ -1,0 +1,27 @@
+{{define "content"}}
+<h1>Provision engine</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<form method="post" action="/engine-transfers/new">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="dest_node_id">Destination node</label><br>
+    <select id="dest_node_id" name="dest_node_id" required>
+      {{range .Data.Nodes}}
+      <option value="{{.ID}}" {{if eq $.Data.Form.DestNodeID .ID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </p>
+  <p>
+    <label for="version">Version</label><br>
+    <input type="text" id="version" name="version" value="{{.Data.Form.Version}}" placeholder="b4610" required>
+    <br><small>The release tag to install, e.g. b4610 - always pinned, never
+    "latest". Only llama.cpp is provisioned through this path today; other
+    engine types are unaffected - see SCHEMA.md Engine transfers.</small>
+  </p>
+  <p><button type="submit">Provision</button></p>
+</form>
+{{end}}
