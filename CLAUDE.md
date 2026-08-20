@@ -456,7 +456,7 @@ web/static/
   See `ARCHITECTURE.md` Component Breakdown
 - Sidebar sections and their minimum visible tier (fill in as built): Dashboard
   (Read-only), Nodes (Read-only view / Admin edit), Model profiles (Read-only view /
-  Developer launch / PowerDev create), Transfers (Read-only view / Admin+grant
+  Developer launch / PowerDev create), Model transfers (Read-only view / Admin+grant
   initiate), Engine transfers (Read-only view / Admin+ provision), Metrics
   (Read-only), Users & permissions (Admin), Audit log (Admin), Settings (Admin)
 - No inline styles - CSS classes only
