@@ -1415,6 +1415,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `docker run` flags, not `vllm serve` arguments - so it reflects
   well-documented vLLM/NCCL guidance instead. See PLANNING.md's 2026-08-19
   Decisions Log entry for the full design.
+- ARCHITECTURE.md's manual test checklist no longer claims Docker's native
+  GPU passthrough request "has not itself been confirmed against real
+  hardware" - it has, as of 2026-08-20 (see PLANNING.md's Decisions Log
+  entry): a real container launched with Sparky's exact request contract,
+  GPU visible inside it, a real completion served, GPU utilization measured
+  rising during inference. The checklist item is updated to describe what's
+  actually confirmed (`DeviceRequests{Count:-1, Capabilities:[["gpu"]]}`,
+  `NVIDIA_VISIBLE_DEVICES=all`) versus the one narrower sub-question still
+  open (the literal `Driver: "nvidia"` string itself, as opposed to the
+  `Driver: ""` every real test so far has actually exercised via `docker
+  run --gpus all`'s own CLI translation).
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
