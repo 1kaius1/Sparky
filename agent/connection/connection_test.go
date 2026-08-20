@@ -1067,7 +1067,9 @@ func TestConn_Dispatch_LoadInstance_ThreadsShmSizeAndIPCModeIntoSpec(t *testing.
 }
 
 func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
-	got := buildEngineLaunchArgs("bare-metal", "vllm", "/models/test-org/test-model", 8000, []string{"--tensor-parallel-size", "1"})
+	// bare-metal ignores the image entirely - it has no container ENTRYPOINT
+	// at all, so this passes a non-default image to confirm that.
+	got := buildEngineLaunchArgs("bare-metal", "vllm", "nvcr.io/nvidia/vllm:26.06-py3", "/models/test-org/test-model", 8000, []string{"--tensor-parallel-size", "1"})
 	want := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildEngineLaunchArgs() = %v, want %v", got, want)
@@ -1075,7 +1077,7 @@ func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
 }
 
 func TestBuildEngineLaunchArgs_BareMetalLlamaCPP_NoServePrepended(t *testing.T) {
-	got := buildEngineLaunchArgs("bare-metal", "llamacpp", "/models/test-org/test-model.gguf", 8080, nil)
+	got := buildEngineLaunchArgs("bare-metal", "llamacpp", "ghcr.io/ggml-org/llama.cpp:server", "/models/test-org/test-model.gguf", 8080, nil)
 	want := []string{"--model", "/models/test-org/test-model.gguf", "--port", "8080", "--host", "0.0.0.0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildEngineLaunchArgs() = %v, want %v", got, want)
@@ -1136,13 +1138,31 @@ func TestGPUPassthrough_UnknownBackend_NoMechanism(t *testing.T) {
 	}
 }
 
-func TestBuildEngineLaunchArgs_ContainersVLLM_NoServePrepended(t *testing.T) {
-	// The vllm/vllm-openai image's own ENTRYPOINT already bakes in "serve"
-	// (confirmed via a real `podman inspect` - PLANNING.md Decisions Log) -
-	// prepending it again here would double it.
+func TestBuildEngineLaunchArgs_ContainersVLLM_DefaultImage_NoServePrepended(t *testing.T) {
+	// The default vllm/vllm-openai image's own ENTRYPOINT already bakes in
+	// "serve" (confirmed via a real `podman inspect` - PLANNING.md Decisions
+	// Log) - prepending it again here would double it.
 	for _, backend := range []string{"docker", "podman", ""} {
-		got := buildEngineLaunchArgs(backend, "vllm", "/models/test-org/test-model", 8000, nil)
+		got := buildEngineLaunchArgs(backend, "vllm", vllmDefaultImage, "/models/test-org/test-model", 8000, nil)
 		want := []string{"--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("buildEngineLaunchArgs(%q, ...) = %v, want %v", backend, got, want)
+		}
+	}
+}
+
+func TestBuildEngineLaunchArgs_ContainersVLLM_OverrideImage_PrependsVLLMServe(t *testing.T) {
+	// A per-profile image override - e.g. the real NGC vLLM build the Spark
+	// fleet actually runs - is not confirmed to bake "vllm serve" into its
+	// own ENTRYPOINT the way the default image is, and empirically does not:
+	// nvcr.io/nvidia/vllm:26.06-py3's ENTRYPOINT is a generic wrapper
+	// (/opt/nvidia/nvidia_entrypoint.sh) that execs CMD verbatim, so "serve"
+	// alone crashes with "exec: serve: not found" - confirmed against real
+	// DGX Spark hardware (PLANNING.md Decisions Log). Needs the full "vllm
+	// serve", two tokens, prepended instead.
+	for _, backend := range []string{"docker", "podman", ""} {
+		got := buildEngineLaunchArgs(backend, "vllm", "nvcr.io/nvidia/vllm:26.06-py3", "/models/test-org/test-model", 8000, nil)
+		want := []string{"vllm", "serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("buildEngineLaunchArgs(%q, ...) = %v, want %v", backend, got, want)
 		}
@@ -1203,6 +1223,73 @@ func TestConn_Dispatch_LoadInstance_BareMetalVLLM_PrependsServeSubcommand(t *tes
 		t.Fatalf("Start called %d times, want 1", len(runtime.startCalls))
 	}
 	wantArgs := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	if !reflect.DeepEqual(runtime.startCalls[0].Args, wantArgs) {
+		t.Errorf("Args = %v, want %v", runtime.startCalls[0].Args, wantArgs)
+	}
+}
+
+func TestConn_Dispatch_LoadInstance_DockerVLLM_OverrideImage_PrependsVLLMServe(t *testing.T) {
+	// Regression test for the real gap found validating Docker GPU
+	// passthrough against real DGX Spark hardware (PLANNING.md Decisions
+	// Log): a docker-backend vLLM load_instance using a per-profile image
+	// override (here, the real NGC image the Spark fleet actually runs)
+	// must get the full "vllm serve" prepended, not nothing - the container
+	// backend previously assumed every containers-backend image behaved
+	// like the default vllm/vllm-openai one.
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		EngineType:               "vllm",
+		Image:                    "nvcr.io/nvidia/vllm:26.06-py3",
+		Args:                     []string{"--tensor-parallel-size", "1"},
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	runtime := &fakeRuntimeBackend{startID: "instance-1"}
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models", RuntimeBackend: "docker"}
+	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(runtime.startCalls) != 1 {
+		t.Fatalf("Start called %d times, want 1", len(runtime.startCalls))
+	}
+	wantArgs := []string{"vllm", "serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
 	if !reflect.DeepEqual(runtime.startCalls[0].Args, wantArgs) {
 		t.Errorf("Args = %v, want %v", runtime.startCalls[0].Args, wantArgs)
 	}

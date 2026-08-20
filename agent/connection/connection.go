@@ -122,11 +122,9 @@ type Config struct {
 	// which runtime.Backend implementation to construct. Threaded through
 	// separately here because buildEngineLaunchArgs needs it too: a vLLM
 	// load_instance on bare-metal execs the raw vllm binary directly and
-	// must prepend its "serve" subcommand itself, while the containers
-	// backend's vllm/vllm-openai image already bakes "serve" into its own
-	// ENTRYPOINT (confirmed via a real `podman inspect` - PLANNING.md
-	// Decisions Log) - so this same launch-arg logic needs to answer
-	// differently per backend, not just per engine type.
+	// must prepend its "serve" subcommand itself. The containers backend's
+	// own decision is image-, not backend-, driven - see
+	// buildEngineLaunchArgs' own doc comment.
 	RuntimeBackend string
 
 	// TelemetryPollInterval is how often the telemetry goroutine takes
@@ -715,25 +713,57 @@ func (c *Conn) resolveEngineBinaryPath(engineType, version string) string {
 	return filepath.Join(c.cfg.EngineInstallPath, engineType, version, filepath.Base(configured))
 }
 
+// vllmDefaultImage mirrors internal/engines.vllmImage's own value - the one
+// container image confirmed, via a real `podman inspect` (PLANNING.md
+// Decisions Log), to bake ENTRYPOINT ["vllm","serve"] in already. Duplicated
+// here rather than imported: agent/connection intentionally has no
+// dependency on internal/engines (a server-side package), the same reason
+// runtime_backend's own string values ("docker"/"podman"/"bare-metal") are
+// already duplicated as plain strings across this same agent/internal
+// boundary rather than sharing a Go type - the wire protocol is JSON
+// strings, not a shared enum. Kept in sync by hand; if
+// internal/engines.vllmImage's value ever changes, this needs updating too.
+const vllmDefaultImage = "vllm/vllm-openai:latest"
+
 // buildEngineLaunchArgs assembles the argv Sparky passes to the engine. The
 // --model/--port/--host flag form is confirmed valid vllm serve syntax
 // (PLANNING.md Decisions Log: a real `vllm serve --help=ModelConfig`
 // documents --model as a real flag, not just the positional model_tag its
 // usage synopsis shows) - so this same flag shape already works for both
-// llama.cpp and vLLM. "serve" itself is only prepended for the bare-metal
-// backend running a vLLM profile: bare-metal execs the raw vllm binary
-// directly (agent/runtime/baremetal.Backend.Start), which has no entrypoint
-// to supply the subcommand, so `vllm --model ...` with no subcommand is
-// invalid syntax. The containers backend needs no such prepending - a real
-// `podman inspect` against docker.io/vllm/vllm-openai:latest (PLANNING.md
-// Decisions Log) confirmed its ENTRYPOINT already is ["vllm","serve"], and
-// Docker/Podman appends spec.Args after a container's ENTRYPOINT, so
-// prepending "serve" there would double it ("vllm serve serve ...",
-// invalid).
-func buildEngineLaunchArgs(runtimeBackend, engineType, modelPath string, port int, extra []string) []string {
+// llama.cpp and vLLM.
+//
+// Whether "vllm serve" needs prepending for a vLLM profile is a property of
+// how the engine actually gets exec'd, not of runtimeBackend alone:
+//
+//   - bare-metal execs the raw vllm binary directly
+//     (agent/runtime/baremetal.Backend.Start), which has no entrypoint to
+//     supply the subcommand, so `vllm --model ...` with no subcommand is
+//     invalid syntax - "serve" alone is prepended.
+//   - The containers backend's default image (vllmDefaultImage) needs no
+//     prepending at all: a real `podman inspect` against it (PLANNING.md
+//     Decisions Log) confirmed its ENTRYPOINT already is ["vllm","serve"],
+//     and Docker/Podman appends spec.Args after a container's ENTRYPOINT, so
+//     prepending "serve" there would double it ("vllm serve serve ...",
+//     invalid).
+//   - Any other containers-backend image - i.e. a per-profile image override
+//     (SCHEMA.md Model profiles' `image` column), such as the real NGC vLLM
+//     build the Spark fleet actually runs - is not confirmed to bake
+//     "vllm serve" into its own ENTRYPOINT the same way, and empirically
+//     does not: nvcr.io/nvidia/vllm:26.06-py3's ENTRYPOINT is a generic
+//     /opt/nvidia/nvidia_entrypoint.sh wrapper that execs CMD verbatim, so
+//     "serve" alone crashes ("exec: serve: not found" - it tries to exec a
+//     binary literally named "serve"). Confirmed against real DGX Spark
+//     hardware (PLANNING.md Decisions Log) - needs the full "vllm serve",
+//     two tokens, prepended instead.
+func buildEngineLaunchArgs(runtimeBackend, engineType, image, modelPath string, port int, extra []string) []string {
 	args := []string{"--model", modelPath, "--port", strconv.Itoa(port), "--host", "0.0.0.0"}
-	if engineType == "vllm" && runtimeBackend == "bare-metal" {
-		args = append([]string{"serve"}, args...)
+	if engineType == "vllm" {
+		switch {
+		case runtimeBackend == "bare-metal":
+			args = append([]string{"serve"}, args...)
+		case image != vllmDefaultImage:
+			args = append([]string{"vllm", "serve"}, args...)
+		}
 	}
 	return append(args, extra...)
 }
@@ -781,7 +811,7 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		return
 	}
 
-	args := buildEngineLaunchArgs(c.cfg.RuntimeBackend, load.EngineType, modelPath, load.Port, load.Args)
+	args := buildEngineLaunchArgs(c.cfg.RuntimeBackend, load.EngineType, load.Image, modelPath, load.Port, load.Args)
 	gpuMechanism, cdiDevices, gpuEnv := gpuPassthrough(c.cfg.RuntimeBackend)
 	spec := runtime.Spec{
 		InstanceID: load.InstanceID,

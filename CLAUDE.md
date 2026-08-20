@@ -585,13 +585,15 @@ See `PLANNING.md` for the full milestone breakdown and active goals.
 
 v0.1.0 (core foundation) is substantially complete, built and validated against
 non-Spark hardware first (a laptop with an RTX 4090 and a Dell Precision
-workstation with an RTX 3080Ti). Its one remaining item is validating the Docker
-runtime backend's native GPU passthrough against real DGX Spark hardware - that
-hardware is now in hand as of 2026-08-19, so this is active work, not a hardware
-blocker. As of that same date this is a Docker-only item: the fleet's Spark
-workstations ship with Docker and stay on it deliberately, matching NVIDIA's own
-Spark workflow assumptions, so CDI/Podman validation is not part of this item at
-all - see `PLANNING.md`'s 2026-08-19 Decisions Log entry.
+workstation with an RTX 3080Ti). The Docker runtime backend's native GPU
+passthrough is now confirmed against real DGX Spark hardware (2026-08-20) - a
+real container launched with Sparky's exact GPU request contract, a real model
+served, and GPU utilization measured rising during inference. Its one remaining
+item is Podman/CDI validation, moved off Spark entirely as of 2026-08-19 (the
+fleet's Spark workstations ship with Docker and stay on it deliberately, matching
+NVIDIA's own Spark workflow assumptions) and now waiting on the Dell Precision
+RTX 3080Ti coming online - see `PLANNING.md`'s 2026-08-19 and 2026-08-20 Decisions
+Log entries.
 
 v0.2.0's bare-metal runtime backend and its `sparky-agent setup` subcommand are
 also done, including real-hardware validation on that same RTX 4090 laptop - not
@@ -601,8 +603,6 @@ and fixed are on record in `PLANNING.md`'s Decisions Log (2026-08-14/2026-08-15)
 Engine-binary provisioning from GitHub Releases and per-profile engine version
 pinning are also both done (`agent/enginetransfer`, `internal/engineprovision`,
 `model_profiles.engine_version`) - see `PLANNING.md`'s 2026-08-15 Decisions Log
-entries. v0.2.0's only remaining item is the same Docker-on-Spark GPU passthrough
-validation v0.1.0 is waiting on above. CDI/Podman validation is tracked
-separately, waiting on the Dell Precision RTX 3080Ti coming online (not yet
-online, distinct from simply being in hand) - see `PLANNING.md` for the full
-milestone breakdown, decisions log, and what's next.
+entries. v0.2.0's only remaining item is the same Podman/CDI validation v0.1.0 is
+waiting on above, on the Dell Precision RTX 3080Ti - see `PLANNING.md` for the
+full milestone breakdown, decisions log, and what's next.
