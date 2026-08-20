@@ -46,11 +46,49 @@ type Spec struct {
 	// containers backend only.
 	Mounts []string
 
+	// GPUDeviceMechanism selects which Docker Engine API mechanism the
+	// containers backend uses to request GPU access - containers backend
+	// only, and only meaningful when non-empty (the zero value requests no
+	// GPU device at all, e.g. a profile with no GPU requirement, or the
+	// bare-metal backend, which has direct GPU access already with no
+	// passthrough boundary to cross). Docker and Podman need different
+	// mechanisms here, not because the Engine API differs between them
+	// (Podman's socket is Docker-Engine-API-compatible), but because only
+	// Podman resolves CDI-qualified device names through it - see
+	// GPUDeviceMechanismCDI's own doc comment for the empirical finding.
+	GPUDeviceMechanism GPUDeviceMechanism
+
 	// CDIDevices are CDI-qualified device names (e.g. "nvidia.com/gpu=all")
-	// - containers backend only. A bare-metal process has direct GPU access
-	// already, with no passthrough boundary to cross.
+	// - only meaningful when GPUDeviceMechanism is GPUDeviceMechanismCDI.
 	CDIDevices []string
 }
+
+// GPUDeviceMechanism selects which Docker Engine API mechanism
+// agent/runtime/containers.Backend.Start uses to request GPU access.
+type GPUDeviceMechanism string
+
+const (
+	// GPUDeviceMechanismNvidia requests GPU access via
+	// container.HostConfig.DeviceRequests{Driver: "nvidia"} - the same
+	// mechanism `docker run --gpus all` uses. Confirmed working against
+	// real production Docker/DGX Spark hardware (a real vLLM launch script
+	// - see PLANNING.md's 2026-08-17 Decisions Log entry); Spark's own
+	// fleet deliberately ships Docker rather than Podman (2026-08-19
+	// Decisions Log entry), so this is that fleet's actual mechanism, not
+	// a fallback.
+	GPUDeviceMechanismNvidia GPUDeviceMechanism = "nvidia"
+
+	// GPUDeviceMechanismCDI requests GPU access via
+	// container.HostConfig.DeviceRequests{Driver: "cdi"} - Podman's own
+	// canonical mechanism. Verified NOT to trigger CDI resolution against
+	// a real local Podman 4.9.3 daemon through this Docker-Engine-API-
+	// compatible socket, even though Podman's own CLI resolves the same
+	// CDI names correctly (PLANNING.md's 2026-08-10 Decisions Log entry) -
+	// kept as Podman's mechanism regardless, since it is the documented,
+	// correct API contract and the best available attempt pending
+	// verification against the actual target Podman version.
+	GPUDeviceMechanismCDI GPUDeviceMechanism = "cdi"
+)
 
 // Backend starts and stops engine instances - implemented by
 // agent/runtime/containers (Docker/Podman) and agent/runtime/baremetal

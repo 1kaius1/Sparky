@@ -1319,6 +1319,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   --query-compute-apps`. No behavior change on hardware where the
   aggregate query already works (RTX 4090, RTX 3080Ti). See
   PLANNING.md's 2026-08-19 Decisions Log entry for the full design.
+- A `load_instance` on the containers (Docker/Podman) runtime backend now
+  actually requests GPU access - `agent/runtime.Spec.CDIDevices` used to be
+  unpopulated scaffolding in every real code path. Docker and Podman use
+  genuinely different mechanisms through the same Engine API: Docker gets
+  `DeviceRequests{Driver: "nvidia", Count: -1, Capabilities: [["gpu"]]}`
+  (the same request `docker run --gpus all` makes, confirmed against real
+  production Docker/DGX Spark hardware) plus `NVIDIA_VISIBLE_DEVICES=all`
+  in the container env; Podman keeps its existing CDI mechanism
+  (`nvidia.com/gpu=all`), now actually populated for the first time
+  instead of always empty. Third of the four vLLM-script fixes approved
+  2026-08-17 - only `--shm-size`/`--ipc=host` support remains. See
+  PLANNING.md's 2026-08-19 Decisions Log entry for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

@@ -195,8 +195,9 @@ func TestStart_SetsCDIDeviceRequest(t *testing.T) {
 	b := &Backend{cli: fake}
 
 	_, err := b.Start(context.Background(), runtime.Spec{
-		Image:      "example/engine:latest",
-		CDIDevices: []string{"nvidia.com/gpu=all"},
+		Image:              "example/engine:latest",
+		GPUDeviceMechanism: runtime.GPUDeviceMechanismCDI,
+		CDIDevices:         []string{"nvidia.com/gpu=all"},
 	})
 	if err != nil {
 		t.Fatalf("Start() error: %v", err)
@@ -217,7 +218,43 @@ func TestStart_SetsCDIDeviceRequest(t *testing.T) {
 	}
 }
 
-func TestStart_NoCDIDevices_NoDeviceRequest(t *testing.T) {
+func TestStart_SetsNvidiaDeviceRequest(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.Start(context.Background(), runtime.Spec{
+		Image:              "example/engine:latest",
+		GPUDeviceMechanism: runtime.GPUDeviceMechanismNvidia,
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	if captured.HostConfig == nil {
+		t.Fatal("HostConfig is nil")
+	}
+	reqs := captured.HostConfig.DeviceRequests
+	if len(reqs) != 1 {
+		t.Fatalf("DeviceRequests = %v, want exactly 1 entry", reqs)
+	}
+	if reqs[0].Driver != nvidiaDriver {
+		t.Errorf("Driver = %q, want %q", reqs[0].Driver, nvidiaDriver)
+	}
+	if reqs[0].Count != -1 {
+		t.Errorf("Count = %d, want -1 (all)", reqs[0].Count)
+	}
+	if len(reqs[0].Capabilities) != 1 || len(reqs[0].Capabilities[0]) != 1 || reqs[0].Capabilities[0][0] != "gpu" {
+		t.Errorf("Capabilities = %v, want [[gpu]]", reqs[0].Capabilities)
+	}
+}
+
+func TestStart_NoMechanism_NoDeviceRequest(t *testing.T) {
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -232,7 +269,29 @@ func TestStart_NoCDIDevices_NoDeviceRequest(t *testing.T) {
 		t.Fatalf("Start() error: %v", err)
 	}
 	if len(captured.HostConfig.DeviceRequests) != 0 {
-		t.Errorf("DeviceRequests = %v, want empty when Spec.CDIDevices is empty", captured.HostConfig.DeviceRequests)
+		t.Errorf("DeviceRequests = %v, want empty when Spec.GPUDeviceMechanism is unset", captured.HostConfig.DeviceRequests)
+	}
+}
+
+func TestStart_CDIMechanism_NoCDIDevices_NoDeviceRequest(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.Start(context.Background(), runtime.Spec{
+		Image:              "example/image:latest",
+		GPUDeviceMechanism: runtime.GPUDeviceMechanismCDI,
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if len(captured.HostConfig.DeviceRequests) != 0 {
+		t.Errorf("DeviceRequests = %v, want empty when Spec.CDIDevices is empty even with the CDI mechanism selected", captured.HostConfig.DeviceRequests)
 	}
 }
 
