@@ -33,6 +33,10 @@
              class="{{if eq .ActiveSection "transfers"}}active{{end}}">Transfers</a>
         </li>
         <li>
+          <a href="/engine-transfers" hx-get="/engine-transfers" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "engine_transfers"}}active{{end}}">Engine transfers</a>
+        </li>
+        <li>
           <a href="/metrics" hx-get="/metrics" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "metrics"}}active{{end}}">Metrics</a>
         </li>

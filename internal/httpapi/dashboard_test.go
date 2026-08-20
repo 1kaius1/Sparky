@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/engineprovision"
 	"github.com/1kaius1/Sparky/internal/events"
 	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/nodes"
@@ -165,6 +166,44 @@ func (f *fakeTransferLister) ListTransfers(context.Context) ([]*db.ModelTransfer
 		return nil, f.err
 	}
 	return f.transfers, nil
+}
+
+// fakeEngineTransferLister implements engineTransferLister for tests.
+type fakeEngineTransferLister struct {
+	transfers []*db.EngineTransfer
+	err       error
+}
+
+func (f *fakeEngineTransferLister) ListEngineTransfers(context.Context) ([]*db.EngineTransfer, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.transfers, nil
+}
+
+// fakeEngineProvisioner implements engineProvisioner for tests, recording
+// every call.
+type fakeEngineProvisioner struct {
+	transfer *db.EngineTransfer
+	err      error
+	calls    []engineProvisionCall
+}
+
+type engineProvisionCall struct {
+	actor  rbac.Actor
+	params engineprovision.ProvisionEngineParams
+}
+
+func (f *fakeEngineProvisioner) ProvisionEngine(_ context.Context, actor rbac.Actor, params engineprovision.ProvisionEngineParams) (*db.EngineTransfer, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.calls = append(f.calls, engineProvisionCall{actor, params})
+	transfer := f.transfer
+	if transfer == nil {
+		transfer = &db.EngineTransfer{DestNodeID: params.DestNodeID, EngineType: params.EngineType, Version: params.Version}
+	}
+	return transfer, nil
 }
 
 // fakeUserLister implements userLister for tests.
@@ -407,9 +446,20 @@ func newTestDashboardAPIWithLauncher(t *testing.T, nodeList *fakeNodeLister, reg
 // handleEvents need to Publish against.
 func newTestDashboardAPIWithEvents(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker) *API {
 	t.Helper()
+	return newTestDashboardAPIWithEngineTransfers(t, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, &fakeEngineProvisioner{}, &fakeEngineTransferLister{})
+}
+
+// newTestDashboardAPIWithEngineTransfers is the true innermost test
+// constructor, adding control over engineProvisioner/engineTransferLister
+// (the Engine transfers page) on top of newTestDashboardAPIWithEvents'
+// parameters - kept separate rather than widening that function's own
+// signature, same "existing call sites don't need updating" reasoning as
+// newTestDashboardAPIWithRoster's own doc comment.
+func newTestDashboardAPIWithEngineTransfers(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker, engineProvisionerFake *fakeEngineProvisioner, engineTransfersFake *fakeEngineTransferLister) *API {
+	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, testLogger())
+	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

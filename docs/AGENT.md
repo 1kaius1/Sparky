@@ -261,8 +261,9 @@ come from Secrets, identically to the server.
 Self-service download/install of a maintainer-built compiled-engine release
 (`llamacpp` today - see PLANNING.md's 2026-08-15 Decisions Log entry for why Python-
 based engines like vLLM use a different v0.3.0 mechanism instead), triggered by an
-Admin/SuperAdmin from the central app (`internal/engineprovision`, not yet wired to
-an HTTP handler or UI form - logic and agent-side mechanics only so far) and executed
+Admin/SuperAdmin from the central app's "Engine transfers" UI page
+(`internal/engineprovision.Service.ProvisionEngine`, gated by `rbac.CanManageNodes` -
+see CLAUDE.md Frontend Conventions) and executed
 by `agent/enginetransfer` on the target node: download the release tarball and its
 sibling `.sha256` checksum file from Sparky's own GitHub Releases, verify the
 checksum, extract into a versioned install directory, and atomically repoint a

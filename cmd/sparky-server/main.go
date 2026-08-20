@@ -114,15 +114,16 @@ func main() {
 	// twice-passed-value reasoning as nodeService/profileService above.
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
 	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
-	// engineProvisionService has no HTTP caller yet - same "logic layer
-	// ahead of HTTP wiring" precedent as RBAC Phase B, the audit log, and
-	// the node registry originally shipped with (PLANNING.md), so it is
-	// not passed to httpapi.New below (unlike transferService, which
-	// already backs the Transfers page's read view). It is still
-	// constructed and wired into the onMessage dispatch below - the
-	// engine_transfer_progress handling direction is real infrastructure
-	// independent of whether anything can trigger a provisioning run via
-	// HTTP yet. See PLANNING.md's 2026-08-15 Decisions Log entry.
+	// engineProvisionService backs both the Engine transfers page's
+	// unguarded ListEngineTransfers read and its provisioning form's own
+	// write (ProvisionEngine) - the same value is passed twice below, once
+	// per narrow interface httpapi expects (engineTransferLister,
+	// engineProvisioner), same twice-passed-value reasoning as
+	// nodeService/profileService above. It is also wired into the
+	// onMessage dispatch below for the reverse direction - the
+	// engine_transfer_progress handling that has been real infrastructure
+	// since before this HTTP wiring existed (PLANNING.md's 2026-08-15
+	// Decisions Log entry).
 	engineProvisionService := engineprovision.NewService(engineTransferRepo, engineInventoryRepo, agentRegistry, auditRecorder, logger)
 
 	// rbacService backs both the Users & permissions page's RBAC-gated
@@ -183,7 +184,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, eventsBroker, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, eventsBroker, engineProvisionService, engineProvisionService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

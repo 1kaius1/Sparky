@@ -1,0 +1,36 @@
+{{define "content"}}
+<h1>Engine transfers</h1>
+
+{{if .Data.CanProvision}}
+<p><a href="/engine-transfers/new">Provision engine</a></p>
+{{end}}
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Destination node</th>
+      <th>Engine type</th>
+      <th>Version</th>
+      <th>Status</th>
+      <th>Progress</th>
+      <th>Requested at</th>
+      <th>Error</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Transfers}}
+    <tr>
+      <td>{{.DestNode}}</td>
+      <td>{{.EngineType}}</td>
+      <td>{{.Version}}</td>
+      <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
+      <td>{{.Progress}}</td>
+      <td>{{.RequestedAt}}</td>
+      <td>{{.ErrorMessage}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="7" class="empty">No engine transfers yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
