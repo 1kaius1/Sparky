@@ -1331,6 +1331,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of always empty. Third of the four vLLM-script fixes approved
   2026-08-17 - only `--shm-size`/`--ipc=host` support remains. See
   PLANNING.md's 2026-08-19 Decisions Log entry for the full design.
+- `internal/engines/vllm_test.go`'s map literal alignment - `gofmt` drifted
+  out of sync after a merge on another system; no behavior change.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
