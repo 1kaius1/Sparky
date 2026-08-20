@@ -1198,6 +1198,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Inventory"/"Transfers" - each page's own `<h1>`/title stays fully
   descriptive for anyone arriving via a direct link. URLs for the existing
   pages are unchanged; only the new Engine inventory page adds a route.
+- `CLAUDE.md`/`PLANNING.md` corrected: a Windows build of `cmd/sparky-agent` is
+  now a confirmed post-v1.0.0 goal (x64 first, ARM64 only if/when
+  Windows-on-ARM hardware with a real discrete NVIDIA GPU exists), reversing
+  the prior flat "Linux only, macOS/Windows not targeted" statement for the
+  agent specifically. `cmd/sparky-server` remains out of scope - it was never
+  in question. Docs-only change, no code touched; see `PLANNING.md`'s
+  2026-08-19 Decisions Log entry for the full viability discussion and why
+  post-1.0 is the right timing.
 
 ### Deprecated
 

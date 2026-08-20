@@ -15,9 +15,17 @@ This repo is a monorepo containing two binaries - `cmd/sparky-server` (this file
 primary subject) and `cmd/sparky-agent` (see @docs/AGENT.md for agent-specific
 conventions: systemd integration, signal handling, runtime backends - also imported
 automatically). Everything below applies to the server unless stated otherwise, and
-to both binaries where noted. Both binaries target Linux only (bare metal, Podman,
-Kubernetes) - this project does not target macOS or Windows as a deployment
-platform.
+to both binaries where noted. Both binaries target Linux only today (bare metal,
+Podman, Kubernetes) - macOS is not a target and isn't planned. A `cmd/sparky-agent`
+Windows build (x64 first, ARM later if/when Windows-on-ARM hardware with a real
+NVIDIA GPU exists) is a confirmed post-v1.0.0 goal, scoped narrowly to the
+bare-metal runtime backend with llama.cpp only - not full parity with the Linux
+agent's containers backend, provisioning, or systemd-equivalent lifecycle. See
+`PLANNING.md`'s Decisions Log for the full scoping discussion and why post-1.0
+is the right timing. `cmd/sparky-server` itself has no OS-specific coupling and
+was never in question here - only the agent, which needs a service account, a
+process lifecycle, and a container/GPU-passthrough story, none of which are
+portable to Windows for free.
 
 A handful of choices below were not explicitly settled during design and are marked
 **[default - confirm or override]**. Everything else reflects an actual decision made
