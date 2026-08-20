@@ -298,6 +298,17 @@ Checksum verification is mandatory here, unlike the Hugging Face Transfer Execut
 own model-weight downloads (`agent/transfer`), which perform none - see
 `SCHEMA.md` Engine transfers.
 
+**Producing these release bundles.** This section covers the consumer side -
+how `agent/enginetransfer` downloads and installs a bundle once one exists. The
+bundle itself is built and published with `scripts/build_engine_release.sh`
+(compiles the pinned upstream tag, packages the exact `<engine>-<version>-
+<arch>.tar.xz` + `.sha256` shape this consumer expects) and
+`scripts/publish_engine_release.sh` (publishes an already-built bundle as a
+GitHub Release on this repo, matching `agent/enginetransfer`'s hardcoded
+source). Both are maintainer-invoked today, not wired into CI - see
+`PLANNING.md`'s Decisions Log for the full design and the planned follow-up
+automation.
+
 **Per-profile pinned versions.** A Model profile may pin a specific installed
 version instead of leaving a `load_instance` to resolve through the `latest`
 symlink - see `SCHEMA.md` Model profiles' `engine_version` column. This changes
