@@ -1225,6 +1225,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it (and per-profile engine version pinning) has been done since
   2026-08-15. Brought in line with PLANNING.md, the authoritative source
   for milestone status.
+- A docker-runtime-backend vLLM `load_instance` using a per-profile `image`
+  override no longer produces an invalid container command. `agent/connection`'s
+  `buildEngineLaunchArgs` previously prepended the `vllm serve` subcommand
+  only for the bare-metal backend, assuming every containers-backend image
+  behaves like the hardcoded default (`vllm/vllm-openai:latest`, whose
+  `ENTRYPOINT` already bakes in `["vllm","serve"]`) - but a real per-profile
+  image override, such as the NGC vLLM build the Spark fleet actually runs,
+  is not guaranteed to. Confirmed empirically against real DGX Spark
+  hardware while validating Docker GPU passthrough (PLANNING.md Decisions
+  Log): `nvcr.io/nvidia/vllm:26.06-py3`'s `ENTRYPOINT` is a generic
+  `/opt/nvidia/nvidia_entrypoint.sh` wrapper that execs its command verbatim,
+  so the old logic's "prepend nothing" produced a container crash trying to
+  exec a flag as a binary name. `buildEngineLaunchArgs` now decides based on
+  the actual image in play, not just `runtime_backend`: the default image
+  still gets nothing prepended, and any other containers-backend image gets
+  the full `vllm serve`, two tokens, prepended - matching what a generic
+  wrapper entrypoint actually needs.
 - Commits and pull requests going forward no longer include AI-attribution
   text (a `Co-Authored-By` trailer, a "Generated with" footer) - this
   violated `.clauderules`' explicit prohibition throughout the session,
