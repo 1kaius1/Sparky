@@ -26,6 +26,12 @@ import (
 // Backend for a real gap found testing this against Podman.
 const cdiDriver = "cdi"
 
+// nvidiaDriver is the device driver name for Docker's native GPU
+// passthrough mechanism - the same one `docker run --gpus all` uses.
+// Confirmed against real production Docker/DGX Spark hardware, not
+// guessed - see runtime.GPUDeviceMechanismNvidia's own doc comment.
+const nvidiaDriver = "nvidia"
+
 // InstanceContainerName returns the deterministic container name Sparky
 // uses for a Running instance. Start and Stop (which the Docker Engine API
 // accepts a name for interchangeably with an ID) both key off this same
@@ -50,13 +56,24 @@ type dockerClient interface {
 
 // Backend manages containers via the Docker Engine API.
 //
-// CDI caveat, found by testing against a real local Podman 4.9.3 daemon,
-// not assumed: Podman's own CLI resolves CDI-qualified device names
-// correctly (confirmed via `podman run --device nvidia.com/gpu=all`,
-// which fails with a proper "unresolvable CDI devices" error - no CDI
-// spec exists on a GPU-less test host, which is the expected failure).
-// But going through the Docker-Engine-API-compatible socket this package
-// actually uses, neither of the two mechanisms Docker's own API supports -
+// GPU passthrough mechanism is chosen by Spec.GPUDeviceMechanism, not
+// hardcoded - Docker and Podman need different ones through this same
+// Engine API, confirmed empirically rather than assumed:
+//
+// Docker (GPUDeviceMechanismNvidia, DeviceRequests{Driver: "nvidia"}) -
+// confirmed working against real production Docker/DGX Spark hardware (a
+// real vLLM launch script - PLANNING.md's 2026-08-17 Decisions Log entry).
+// This is the fleet's actual mechanism for every Spark node: Spark ships
+// Docker deliberately, never Podman (2026-08-19 Decisions Log entry).
+//
+// Podman CDI caveat (GPUDeviceMechanismCDI, DeviceRequests{Driver: "cdi"}),
+// found by testing against a real local Podman 4.9.3 daemon, not assumed:
+// Podman's own CLI resolves CDI-qualified device names correctly
+// (confirmed via `podman run --device nvidia.com/gpu=all`, which fails
+// with a proper "unresolvable CDI devices" error - no CDI spec exists on a
+// GPU-less test host, which is the expected failure). But going through
+// the Docker-Engine-API-compatible socket this package actually uses,
+// neither of the two mechanisms Docker's own API supports -
 // HostConfig.DeviceRequests with Driver "cdi" (confirmed correct against
 // moby/moby's daemon source) nor HostConfig.Devices with a CDI name as
 // PathOnHost - triggered any CDI resolution: DeviceRequests was silently
@@ -64,13 +81,12 @@ type dockerClient interface {
 // `podman inspect`, which does not even have a DeviceRequests field to
 // report), and Devices was treated as a literal host path and failed a
 // plain stat(). This package implements the documented, correct Docker
-// API contract (DeviceRequests), which is right for a real Docker daemon
-// and the best available attempt for Podman's compat API - but CDI
-// passthrough through that API on Podman needs verification against the
-// actual target Podman version, per ARCHITECTURE.md's existing manual
-// test checklist item for this. Non-GPU container lifecycle (create,
-// pull-if-missing, start, inspect, stop, remove) is fully verified
-// against real Podman and unaffected by this gap.
+// API contract (DeviceRequests) regardless - the best available attempt
+// for Podman's compat API - but CDI passthrough through that API on
+// Podman needs verification against the actual target Podman version, per
+// ARCHITECTURE.md's existing manual test checklist item for this. Non-GPU
+// container lifecycle (create, pull-if-missing, start, inspect, stop,
+// remove) is fully verified against real Podman and unaffected by this gap.
 type Backend struct {
 	cli dockerClient
 }
@@ -100,12 +116,23 @@ func (b *Backend) Close() error {
 // without this package tracking any state of its own.
 func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) {
 	var hostConfig container.HostConfig
-	if len(spec.CDIDevices) > 0 {
+	switch spec.GPUDeviceMechanism {
+	case runtime.GPUDeviceMechanismNvidia:
 		hostConfig.DeviceRequests = []container.DeviceRequest{
 			{
-				Driver:    cdiDriver,
-				DeviceIDs: spec.CDIDevices,
+				Driver:       nvidiaDriver,
+				Count:        -1, // -1 = all - the same request docker run --gpus all makes
+				Capabilities: [][]string{{"gpu"}},
 			},
+		}
+	case runtime.GPUDeviceMechanismCDI:
+		if len(spec.CDIDevices) > 0 {
+			hostConfig.DeviceRequests = []container.DeviceRequest{
+				{
+					Driver:    cdiDriver,
+					DeviceIDs: spec.CDIDevices,
+				},
+			}
 		}
 	}
 	if len(spec.Mounts) > 0 {

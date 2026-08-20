@@ -214,9 +214,15 @@ any particular hardware class:
   Spark can use the Docker/Podman backend below just as well.
 - **Docker/Podman**: targets the standard Docker Engine API against either runtime's
   socket - Podman exposes a Docker-Engine-API-compatible socket, so one
-  implementation serves both. GPU passthrough is standardized on CDI
-  (`--device nvidia.com/gpu=all`) across both runtimes rather than Docker's classic
-  `--gpus`/`--runtime nvidia` flag, since CDI is now supported by both.
+  implementation serves both. GPU passthrough mechanism is chosen per
+  `runtime_backend`, not standardized on one mechanism across both: Docker
+  requests GPU access via `DeviceRequests{Driver: "nvidia"}` (the same mechanism
+  `docker run --gpus all` uses, confirmed working against real production
+  Docker/DGX Spark hardware), while Podman uses CDI
+  (`DeviceRequests{Driver: "cdi"}`, `nvidia.com/gpu=all`) - the two runtimes need
+  different mechanisms through this same Engine API, not just different flags for
+  the same one; see `agent/runtime/containers`' own doc comment for the empirical
+  findings behind each and `PLANNING.md`'s Decisions Log for the full history.
 
 #### Telemetry Collector
 Reads `nvidia-smi` and `/proc/stat`, `/proc/meminfo`, `/proc/diskstats` directly -
@@ -420,7 +426,11 @@ hardware.
 Not run in CI, and not implied by automated tests passing. Each item below must be
 explicitly confirmed by the releasing operator before a version is tagged.
 
-- [ ] CDI GPU passthrough verified on Docker, target distro(s)
+- [ ] Docker's native GPU passthrough (`DeviceRequests{Driver: "nvidia"}`, not CDI)
+      verified on Docker, target distro(s) - confirmed working via a real
+      production launch script on real DGX Spark hardware, but Sparky's own
+      Go-level request has not itself been confirmed against real hardware -
+      see `PLANNING.md` Known Issues
 - [ ] CDI GPU passthrough verified on Podman, target distro(s) - including the known
       read-only-filesystem hook behavior
 - [ ] Multi-node NCCL/MPI launch verified on physically linked Sparks (2+ nodes)

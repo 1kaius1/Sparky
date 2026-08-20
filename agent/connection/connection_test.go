@@ -927,6 +927,78 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 	}
 }
 
+// TestConn_Dispatch_LoadInstance_DockerBackend_SetsNvidiaGPUMechanism
+// confirms gpuPassthrough's result actually reaches the runtime.Backend.Start
+// call through the full load_instance dispatch path, not just in isolation -
+// same reasoning as the FullGPUResidency test above asserting on spec.Args.
+func TestConn_Dispatch_LoadInstance_DockerBackend_SetsNvidiaGPUMechanism(t *testing.T) {
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		Image:                    "vllm/vllm-openai:latest",
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	fakeBackend := &fakeRuntimeBackend{startID: "container-1"}
+	cfg := Config{
+		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+		ModelStoragePath: "/models", RuntimeBackend: "docker",
+	}
+	conn := New(cfg, fakeBackend, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(fakeBackend.startCalls) != 1 {
+		t.Fatalf("Start called %d times, want 1", len(fakeBackend.startCalls))
+	}
+	spec := fakeBackend.startCalls[0]
+	if spec.GPUDeviceMechanism != agentruntime.GPUDeviceMechanismNvidia {
+		t.Errorf("GPUDeviceMechanism = %q, want %q", spec.GPUDeviceMechanism, agentruntime.GPUDeviceMechanismNvidia)
+	}
+	if spec.CDIDevices != nil {
+		t.Errorf("CDIDevices = %v, want nil for the docker backend", spec.CDIDevices)
+	}
+	wantEnv := []string{"NVIDIA_VISIBLE_DEVICES=all"}
+	if !reflect.DeepEqual(spec.Env, wantEnv) {
+		t.Errorf("Env = %v, want %v", spec.Env, wantEnv)
+	}
+}
+
 func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
 	got := buildEngineLaunchArgs("bare-metal", "vllm", "/models/test-org/test-model", 8000, []string{"--tensor-parallel-size", "1"})
 	want := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
@@ -940,6 +1012,60 @@ func TestBuildEngineLaunchArgs_BareMetalLlamaCPP_NoServePrepended(t *testing.T) 
 	want := []string{"--model", "/models/test-org/test-model.gguf", "--port", "8080", "--host", "0.0.0.0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildEngineLaunchArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestGPUPassthrough_Docker_NvidiaMechanism(t *testing.T) {
+	mechanism, cdiDevices, env := gpuPassthrough("docker")
+	if mechanism != agentruntime.GPUDeviceMechanismNvidia {
+		t.Errorf("mechanism = %q, want %q", mechanism, agentruntime.GPUDeviceMechanismNvidia)
+	}
+	if cdiDevices != nil {
+		t.Errorf("cdiDevices = %v, want nil", cdiDevices)
+	}
+	wantEnv := []string{"NVIDIA_VISIBLE_DEVICES=all"}
+	if !reflect.DeepEqual(env, wantEnv) {
+		t.Errorf("env = %v, want %v", env, wantEnv)
+	}
+}
+
+func TestGPUPassthrough_Podman_CDIMechanism(t *testing.T) {
+	mechanism, cdiDevices, env := gpuPassthrough("podman")
+	if mechanism != agentruntime.GPUDeviceMechanismCDI {
+		t.Errorf("mechanism = %q, want %q", mechanism, agentruntime.GPUDeviceMechanismCDI)
+	}
+	wantCDIDevices := []string{"nvidia.com/gpu=all"}
+	if !reflect.DeepEqual(cdiDevices, wantCDIDevices) {
+		t.Errorf("cdiDevices = %v, want %v", cdiDevices, wantCDIDevices)
+	}
+	if env != nil {
+		t.Errorf("env = %v, want nil", env)
+	}
+}
+
+func TestGPUPassthrough_BareMetal_NoMechanism(t *testing.T) {
+	mechanism, cdiDevices, env := gpuPassthrough("bare-metal")
+	if mechanism != "" {
+		t.Errorf("mechanism = %q, want empty", mechanism)
+	}
+	if cdiDevices != nil {
+		t.Errorf("cdiDevices = %v, want nil", cdiDevices)
+	}
+	if env != nil {
+		t.Errorf("env = %v, want nil", env)
+	}
+}
+
+func TestGPUPassthrough_UnknownBackend_NoMechanism(t *testing.T) {
+	mechanism, cdiDevices, env := gpuPassthrough("")
+	if mechanism != "" {
+		t.Errorf("mechanism = %q, want empty", mechanism)
+	}
+	if cdiDevices != nil {
+		t.Errorf("cdiDevices = %v, want nil", cdiDevices)
+	}
+	if env != nil {
+		t.Errorf("env = %v, want nil", env)
 	}
 }
 

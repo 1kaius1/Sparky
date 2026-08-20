@@ -738,6 +738,35 @@ func buildEngineLaunchArgs(runtimeBackend, engineType, modelPath string, port in
 	return append(args, extra...)
 }
 
+// gpuPassthrough resolves which GPU device mechanism (if any) a load_instance
+// on this node's runtime_backend should request, and what CDIDevices/Env
+// additions go with it - a pure function, same testability reasoning as
+// buildEngineLaunchArgs. Docker and Podman need genuinely different
+// mechanisms through the same Engine API - see
+// runtime.GPUDeviceMechanismNvidia/GPUDeviceMechanismCDI's own doc
+// comments for the empirical findings behind each. Bare-metal (or any
+// other/unset backend) requests no GPU device at all: a bare-metal
+// process already has direct GPU access, with no passthrough boundary to
+// cross.
+//
+// NVIDIA_VISIBLE_DEVICES=all is set alongside the nvidia mechanism for
+// parity with the one piece of real evidence available (the real launch
+// script this mechanism is confirmed against sets it explicitly alongside
+// --gpus all) - whether it's still required alongside the modern
+// DeviceRequests API, or purely redundant, could not be confirmed in this
+// environment; see PLANNING.md Known Issues rather than silently resolving
+// it either way.
+func gpuPassthrough(runtimeBackend string) (mechanism runtime.GPUDeviceMechanism, cdiDevices []string, env []string) {
+	switch runtimeBackend {
+	case "docker":
+		return runtime.GPUDeviceMechanismNvidia, nil, []string{"NVIDIA_VISIBLE_DEVICES=all"}
+	case "podman":
+		return runtime.GPUDeviceMechanismCDI, []string{"nvidia.com/gpu=all"}, nil
+	default:
+		return "", nil, nil
+	}
+}
+
 // runLoad starts a Running instance - one goroutine per load/unload
 // command, same reasoning as runTransfer, so a slow image pull or process
 // start never blocks readLoop's command handling. The outcome is always
@@ -753,11 +782,13 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 	}
 
 	args := buildEngineLaunchArgs(c.cfg.RuntimeBackend, load.EngineType, modelPath, load.Port, load.Args)
+	gpuMechanism, cdiDevices, gpuEnv := gpuPassthrough(c.cfg.RuntimeBackend)
 	spec := runtime.Spec{
 		InstanceID: load.InstanceID,
 		EngineType: load.EngineType,
 		Image:      load.Image,
 		BinaryPath: c.resolveEngineBinaryPath(load.EngineType, load.EngineVersion),
+		Env:        gpuEnv,
 		Args:       args,
 		Port:       load.Port,
 		// Read-only: the agent already owns writing to this directory
@@ -767,7 +798,9 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		// above from this same host path) needs no translation to also
 		// resolve inside the container. Unused by the bare-metal backend,
 		// which already has direct filesystem access.
-		Mounts: []string{c.cfg.ModelStoragePath + ":" + c.cfg.ModelStoragePath + ":ro"},
+		Mounts:             []string{c.cfg.ModelStoragePath + ":" + c.cfg.ModelStoragePath + ":ro"},
+		GPUDeviceMechanism: gpuMechanism,
+		CDIDevices:         cdiDevices,
 	}
 
 	if _, err := c.runtime.Start(ctx, spec); err != nil {
