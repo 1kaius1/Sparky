@@ -1179,6 +1179,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passthrough validation is unaffected by Spark hardware access at all and
   now waits on a separate machine, a Dell Precision RTX 3080Ti, coming
   online. See `PLANNING.md`'s 2026-08-19 Decisions Log entry.
+- Sidebar link and page title for the existing Transfers page relabeled
+  "Model transfers" - now that the new Engine transfers page sits directly
+  below it, "Transfers" alone was ambiguous about which kind. No route,
+  behavior, or `ActiveSection` value changed - label text only.
 
 ### Deprecated
 

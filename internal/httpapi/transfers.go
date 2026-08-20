@@ -15,10 +15,12 @@ type transferLister interface {
 	ListTransfers(ctx context.Context) ([]*db.ModelTransfer, error)
 }
 
-// transfersPageData is the Transfers page's view model - CLAUDE.md Frontend
-// Conventions' Transfers sidebar tier ("Read-only view / Admin+grant
-// initiate"); the "Admin+grant initiate" half is a later phase - no
-// initiate form exists yet.
+// transfersPageData is the Model transfers page's view model - CLAUDE.md
+// Frontend Conventions' Model transfers sidebar tier ("Read-only view /
+// Admin+grant initiate"); the "Admin+grant initiate" half is a later
+// phase - no initiate form exists yet. Labeled "Model transfers" in the
+// sidebar/page title (not just "Transfers") since the Engine transfers
+// page sits right below it.
 type transfersPageData struct {
 	Transfers []transferRow
 }
@@ -78,5 +80,5 @@ func (a *API) handleTransfers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	a.render(w, r, "transfers", "Transfers", transfersPageData{Transfers: rows})
+	a.render(w, r, "transfers", "Model transfers", transfersPageData{Transfers: rows})
 }
