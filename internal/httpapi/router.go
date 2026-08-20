@@ -47,6 +47,7 @@ type API struct {
 	events            eventSource
 	engineProvisioner engineProvisioner
 	engineTransfers   engineTransferLister
+	engineInventory   engineInventoryLister
 	templates         map[string]*template.Template
 	static            http.Handler
 	logger            *log.Logger
@@ -103,7 +104,11 @@ type API struct {
 // engineprovision.Service.ListEngineTransfers, back at the Read-only floor
 // like nodes/profiles/instances/transfers - a distinct interface from
 // engineProvisionerSvc, same "same value, multiple interfaces" pattern as
-// registrar/nodes; logger is used for
+// registrar/nodes; engineInventorySvc backs the Engine inventory page's
+// read-only list via engineprovision.Service.ListNodeEngineInventory, also
+// unguarded at the Read-only floor - answers "what's installed right now"
+// (SCHEMA.md Node engine inventory) rather than engineTransfersSvc's "what
+// provisioning runs have happened"; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
@@ -126,7 +131,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -167,6 +172,7 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		events:                 eventsSource,
 		engineProvisioner:      engineProvisionerSvc,
 		engineTransfers:        engineTransfersSvc,
+		engineInventory:        engineInventorySvc,
 		templates:              templates,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
@@ -274,6 +280,7 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/{id}/load", a.handleLoadInstance)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/instances/{id}/unload", a.handleUnloadInstance)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
+	r.With(a.RequireSession).Get("/engine-inventory", a.handleEngineInventory)
 	r.With(a.RequireSession).Get("/engine-transfers", a.handleEngineTransfers)
 	// The provisioning form's own RBAC gate (rbac.CanManageNodes) is
 	// checked directly in both handlers - GET to decide whether to show

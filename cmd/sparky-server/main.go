@@ -114,12 +114,13 @@ func main() {
 	// twice-passed-value reasoning as nodeService/profileService above.
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
 	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
-	// engineProvisionService backs both the Engine transfers page's
-	// unguarded ListEngineTransfers read and its provisioning form's own
-	// write (ProvisionEngine) - the same value is passed twice below, once
-	// per narrow interface httpapi expects (engineTransferLister,
-	// engineProvisioner), same twice-passed-value reasoning as
-	// nodeService/profileService above. It is also wired into the
+	// engineProvisionService backs the Engine transfers page's unguarded
+	// ListEngineTransfers read, its provisioning form's own write
+	// (ProvisionEngine), and the Engine inventory page's unguarded
+	// ListNodeEngineInventory read - the same value is passed three times
+	// below, once per narrow interface httpapi expects (engineTransferLister,
+	// engineProvisioner, engineInventoryLister), same multi-interface
+	// reasoning as nodeService/profileService above. It is also wired into the
 	// onMessage dispatch below for the reverse direction - the
 	// engine_transfer_progress handling that has been real infrastructure
 	// since before this HTTP wiring existed (PLANNING.md's 2026-08-15
@@ -184,7 +185,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, eventsBroker, engineProvisionService, engineProvisionService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

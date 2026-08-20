@@ -18,7 +18,7 @@ import (
 
 func newTestEngineTransfersAPI(t *testing.T, nodeList *fakeNodeLister, transfersFake *fakeEngineTransferLister, provisioner *fakeEngineProvisioner, viewer *fakeUserLister) *API {
 	t.Helper()
-	return newTestDashboardAPIWithEngineTransfers(t, nodeList, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), provisioner, transfersFake)
+	return newTestDashboardAPIWithEngineTransfers(t, nodeList, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), provisioner, transfersFake, &fakeEngineInventoryLister{})
 }
 
 func TestHandleEngineTransfers_ListsTransfers(t *testing.T) {

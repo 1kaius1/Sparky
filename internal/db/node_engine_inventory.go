@@ -94,6 +94,32 @@ func (r *NodeEngineInventoryRepository) Get(ctx context.Context, nodeID string, 
 	return scanNodeEngineInventory(row)
 }
 
+// List returns every engine inventory entry across every node - most
+// recently placed first. Backs the Engine inventory page
+// (internal/httpapi), which needs the full cross-node picture rather than
+// one node at a time.
+func (r *NodeEngineInventoryRepository) List(ctx context.Context) ([]*NodeEngineInventory, error) {
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+nodeEngineInventoryColumns+` FROM node_engine_inventory ORDER BY placed_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list node engine inventory: %w", err)
+	}
+	defer rows.Close()
+
+	var entries []*NodeEngineInventory
+	for rows.Next() {
+		inv, err := scanNodeEngineInventory(rows)
+		if err != nil {
+			return nil, fmt.Errorf("list node engine inventory: %w", err)
+		}
+		entries = append(entries, inv)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list node engine inventory: %w", err)
+	}
+	return entries, nil
+}
+
 // ListByNode returns every engine inventory entry for a node - every
 // installed version of every engine, most recently placed first.
 func (r *NodeEngineInventoryRepository) ListByNode(ctx context.Context, nodeID string) ([]*NodeEngineInventory, error) {

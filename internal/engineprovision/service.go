@@ -27,6 +27,7 @@ type engineTransferStore interface {
 // this package needs.
 type engineInventoryStore interface {
 	Upsert(ctx context.Context, nodeID string, engineType db.ProfileEngineType, version string, status db.InventoryStatus, installPath string, sizeBytes int64, placedVia string) (*db.NodeEngineInventory, error)
+	List(ctx context.Context) ([]*db.NodeEngineInventory, error)
 }
 
 // dispatcher is the subset of *agentconn.Registry this package needs to
@@ -134,6 +135,19 @@ func (s *Service) ListEngineTransfers(ctx context.Context) ([]*db.EngineTransfer
 		return nil, fmt.Errorf("list engine transfers: %w", err)
 	}
 	return transfers, nil
+}
+
+// ListNodeEngineInventory returns every node's installed engine inventory
+// across every node - unguarded by RBAC, same reasoning as
+// ListEngineTransfers. Distinct from that method: this answers "what's
+// actually installed right now" (SCHEMA.md Node engine inventory), not "what
+// provisioning runs have happened" (SCHEMA.md Engine transfers).
+func (s *Service) ListNodeEngineInventory(ctx context.Context) ([]*db.NodeEngineInventory, error) {
+	entries, err := s.inventory.List(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list node engine inventory: %w", err)
+	}
+	return entries, nil
 }
 
 // HandleEngineTransferProgress implements agentconn.OnMessageFunc for
