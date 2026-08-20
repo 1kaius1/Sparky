@@ -54,6 +54,21 @@ type LaunchSpec struct {
 	// --tensor-parallel-size. Does not include --model or --port/--host;
 	// see LaunchSpec's doc comment.
 	Args []string
+
+	// ShmSizeBytes, if nonzero, is the /dev/shm size to give the
+	// container - containers backend only, ignored by bare-metal (which
+	// already shares the host's own /dev/shm). Zero means "use the
+	// container runtime's own default" - today's unchanged behavior. Set
+	// by vLLM profiles' shm_size_gb (see vllmParams); llama.cpp never
+	// sets it.
+	ShmSizeBytes int64
+
+	// IPCMode, if non-empty, is the container's IPC namespace mode (e.g.
+	// "host") - containers backend only, ignored by bare-metal (which
+	// already shares the host's own IPC namespace). Empty means "use the
+	// container runtime's own default". Always set alongside
+	// ShmSizeBytes by vLLM profiles - see vllmAdapter.BuildLaunchSpec.
+	IPCMode string
 }
 
 // Adapter validates a profile's engine-specific launch parameters,

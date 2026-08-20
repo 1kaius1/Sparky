@@ -233,6 +233,12 @@ type LoadInstance struct {
 	Args                     []string `json:"args,omitempty"`
 	Port                     int      `json:"port"`
 	RequiresFullGPUResidency bool     `json:"requires_full_gpu_residency"`
+	// ShmSize and IPCMode carry engines.LaunchSpec's own container-runtime-
+	// level settings (see its doc comment) across the wire - containers
+	// backend only, zero/empty for bare-metal and for engine types that
+	// never set them.
+	ShmSize int64  `json:"shm_size,omitempty"`
+	IPCMode string `json:"ipc_mode,omitempty"`
 }
 
 // UnloadInstance is TypeUnloadInstance's payload. There is no

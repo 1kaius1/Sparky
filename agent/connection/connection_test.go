@@ -999,6 +999,73 @@ func TestConn_Dispatch_LoadInstance_DockerBackend_SetsNvidiaGPUMechanism(t *test
 	}
 }
 
+func TestConn_Dispatch_LoadInstance_ThreadsShmSizeAndIPCModeIntoSpec(t *testing.T) {
+	const shmSize = 16 * 1024 * 1024 * 1024
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		Image:                    "vllm/vllm-openai:latest",
+		Port:                     8000,
+		RequiresFullGPUResidency: true,
+		ShmSize:                  shmSize,
+		IPCMode:                  "host",
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	fakeBackend := &fakeRuntimeBackend{startID: "container-1"}
+	cfg := Config{
+		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+		ModelStoragePath: "/models", RuntimeBackend: "docker",
+	}
+	conn := New(cfg, fakeBackend, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(fakeBackend.startCalls) != 1 {
+		t.Fatalf("Start called %d times, want 1", len(fakeBackend.startCalls))
+	}
+	spec := fakeBackend.startCalls[0]
+	if spec.ShmSize != shmSize {
+		t.Errorf("ShmSize = %d, want %d", spec.ShmSize, shmSize)
+	}
+	if spec.IPCMode != "host" {
+		t.Errorf("IPCMode = %q, want %q", spec.IPCMode, "host")
+	}
+}
+
 func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
 	got := buildEngineLaunchArgs("bare-metal", "vllm", "/models/test-org/test-model", 8000, []string{"--tensor-parallel-size", "1"})
 	want := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}

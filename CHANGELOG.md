@@ -1333,6 +1333,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   PLANNING.md's 2026-08-19 Decisions Log entry for the full design.
 - `internal/engines/vllm_test.go`'s map literal alignment - `gofmt` drifted
   out of sync after a merge on another system; no behavior change.
+- A vLLM profile can now set `shm_size_gb` in `engine_params`, the last of
+  the four vLLM-script fixes approved 2026-08-17. Setting it always implies
+  container IPC host mode too - the two are never used independently, so
+  there is no separate `ipc_mode` key - addressing Docker's 64MB default
+  `/dev/shm` being too small for a multi-GPU tensor-parallel launch's NCCL
+  communication. Neither becomes a `vllm serve` flag; both are
+  container-runtime-level settings (`engines.LaunchSpec.ShmSizeBytes`/
+  `IPCMode`, threaded through `agentproto.LoadInstance` and
+  `runtime.Spec` to the containers backend's `HostConfig.ShmSize`/
+  `IpcMode`), so bare-metal and llama.cpp profiles are unaffected. Unlike
+  the other three script fixes, this one can never be confirmed against
+  vLLM's own startup log the way they were - `--shm-size`/`--ipc=host` are
+  `docker run` flags, not `vllm serve` arguments - so it reflects
+  well-documented vLLM/NCCL guidance instead. See PLANNING.md's 2026-08-19
+  Decisions Log entry for the full design.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

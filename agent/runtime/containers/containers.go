@@ -138,6 +138,12 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 	if len(spec.Mounts) > 0 {
 		hostConfig.Binds = spec.Mounts
 	}
+	if spec.ShmSize > 0 {
+		hostConfig.ShmSize = spec.ShmSize
+	}
+	if spec.IPCMode != "" {
+		hostConfig.IpcMode = container.IpcMode(spec.IPCMode)
+	}
 
 	config := &container.Config{
 		Image: spec.Image,

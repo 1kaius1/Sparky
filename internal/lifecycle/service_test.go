@@ -325,6 +325,55 @@ func TestService_LoadInstance_UnpinnedEngineVersion_EmptyStringOnEnvelope(t *tes
 	}
 }
 
+func TestService_LoadInstance_ShmSizeAndIPCMode_ReachEnvelope(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1"}
+	const shmSize = 16 * 1024 * 1024 * 1024
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{ShmSizeBytes: shmSize, IPCMode: "host"}}}
+	dispatch := &fakeDispatcher{connected: true}
+	audit := &fakeAuditRecorder{}
+	svc := newTestService(testProfile(), instances, adapters, dispatch, audit)
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	if _, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatalf("decode load_instance payload: %v", err)
+	}
+	if payload.ShmSize != shmSize {
+		t.Errorf("ShmSize = %d, want %d", payload.ShmSize, shmSize)
+	}
+	if payload.IPCMode != "host" {
+		t.Errorf("IPCMode = %q, want %q", payload.IPCMode, "host")
+	}
+}
+
+func TestService_LoadInstance_NoShmSizeOrIPCMode_EmptyOnEnvelope(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1"}
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{}}}
+	dispatch := &fakeDispatcher{connected: true}
+	audit := &fakeAuditRecorder{}
+	svc := newTestService(testProfile(), instances, adapters, dispatch, audit)
+	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
+
+	if _, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatalf("decode load_instance payload: %v", err)
+	}
+	if payload.ShmSize != 0 {
+		t.Errorf("ShmSize = %d, want 0", payload.ShmSize)
+	}
+	if payload.IPCMode != "" {
+		t.Errorf("IPCMode = %q, want empty", payload.IPCMode)
+	}
+}
+
 func TestService_LoadInstance_ImageOverride_ReachesEnvelope(t *testing.T) {
 	instances := &fakeInstanceStore{nextID: "instance-1"}
 	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{Image: "vllm/vllm-openai:latest"}}}

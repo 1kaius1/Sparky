@@ -18,6 +18,7 @@ func TestVLLMAdapter_ValidateParams_Valid(t *testing.T) {
 		"real production launch shape":           `{"max_model_len":32768,"served_model_name":"Qwen3.8-27B-FP8","kv_cache_dtype":"fp8","max_num_batched_tokens":32768,"max_num_seqs":16,"enable_chunked_prefill":true,"enable_auto_tool_choice":true,"tool_call_parser":"qwen3_coder"}`,
 		"tool_call_parser with auto tool choice": `{"enable_auto_tool_choice":true,"tool_call_parser":"qwen3_coder"}`,
 		"enable_chunked_prefill false":           `{"enable_chunked_prefill":false}`,
+		"shm_size_gb":                            `{"shm_size_gb":16}`,
 	}
 	a := vllmAdapter{}
 	for name, params := range tests {
@@ -45,6 +46,8 @@ func TestVLLMAdapter_ValidateParams_Invalid(t *testing.T) {
 		"max_num_seqs zero":                                   `{"max_num_seqs":0}`,
 		"tool_call_parser without enable_auto_tool_choice":    `{"tool_call_parser":"qwen3_coder"}`,
 		"tool_call_parser with enable_auto_tool_choice false": `{"enable_auto_tool_choice":false,"tool_call_parser":"qwen3_coder"}`,
+		"shm_size_gb zero":                                    `{"shm_size_gb":0}`,
+		"shm_size_gb negative":                                `{"shm_size_gb":-1}`,
 	}
 	a := vllmAdapter{}
 	for name, params := range tests {
@@ -107,6 +110,40 @@ func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
 				t.Errorf("Args = %v, want %v", spec.Args, tt.want)
 			}
 		})
+	}
+}
+
+func TestVLLMAdapter_BuildLaunchSpec_ShmSizeGB_SetsShmSizeAndIPCModeHost(t *testing.T) {
+	a := vllmAdapter{}
+	spec, err := a.BuildLaunchSpec(json.RawMessage(`{"shm_size_gb":16}`))
+	if err != nil {
+		t.Fatalf("BuildLaunchSpec() error: %v", err)
+	}
+	const wantBytes = 16 * 1024 * 1024 * 1024
+	if spec.ShmSizeBytes != wantBytes {
+		t.Errorf("ShmSizeBytes = %d, want %d", spec.ShmSizeBytes, wantBytes)
+	}
+	if spec.IPCMode != "host" {
+		t.Errorf("IPCMode = %q, want %q", spec.IPCMode, "host")
+	}
+	// shm_size_gb/IPC mode are container-runtime settings, not vllm serve
+	// flags - never appended to Args.
+	if len(spec.Args) != 0 {
+		t.Errorf("Args = %v, want none", spec.Args)
+	}
+}
+
+func TestVLLMAdapter_BuildLaunchSpec_NoShmSizeGB_LeavesShmSizeAndIPCModeUnset(t *testing.T) {
+	a := vllmAdapter{}
+	spec, err := a.BuildLaunchSpec(json.RawMessage(`{}`))
+	if err != nil {
+		t.Fatalf("BuildLaunchSpec() error: %v", err)
+	}
+	if spec.ShmSizeBytes != 0 {
+		t.Errorf("ShmSizeBytes = %d, want 0", spec.ShmSizeBytes)
+	}
+	if spec.IPCMode != "" {
+		t.Errorf("IPCMode = %q, want empty", spec.IPCMode)
 	}
 }
 

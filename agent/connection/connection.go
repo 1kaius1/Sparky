@@ -801,6 +801,8 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		Mounts:             []string{c.cfg.ModelStoragePath + ":" + c.cfg.ModelStoragePath + ":ro"},
 		GPUDeviceMechanism: gpuMechanism,
 		CDIDevices:         cdiDevices,
+		ShmSize:            load.ShmSize,
+		IPCMode:            load.IPCMode,
 	}
 
 	if _, err := c.runtime.Start(ctx, spec); err != nil {

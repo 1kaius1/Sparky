@@ -41,8 +41,15 @@ func (vllmAdapter) RequiresFullGPUResidency() bool { return true }
 // against two independent real production vLLM launches on real DGX
 // Spark hardware (PLANNING.md's 2026-08-17 and 2026-08-19 Decisions Log
 // entries) - each appeared verbatim as a non-default arg in vLLM's own
-// startup log. Any other key in engine_params is rejected as an error -
-// see Adapter.ValidateParams.
+// startup log. shm_size_gb is the last of that same real-launch-script
+// comparison's four findings, but unlike the others it can never be
+// confirmed the same way: --shm-size and --ipc=host are docker run
+// flags, not vllm serve arguments, so they never appear in vLLM's own
+// startup log regardless of whether the real script used them. It
+// reflects well-documented vLLM/NCCL guidance instead - a multi-GPU
+// tensor-parallel launch needs more than Docker's 64MB default /dev/shm
+// for inter-process NCCL communication. Any other key in engine_params is
+// rejected as an error - see Adapter.ValidateParams.
 type vllmParams struct {
 	TensorParallelSize   *int     `json:"tensor_parallel_size,omitempty"`
 	GPUMemoryUtilization *float64 `json:"gpu_memory_utilization,omitempty"`
@@ -56,6 +63,7 @@ type vllmParams struct {
 	EnableChunkedPrefill *bool    `json:"enable_chunked_prefill,omitempty"`
 	EnableAutoToolChoice *bool    `json:"enable_auto_tool_choice,omitempty"`
 	ToolCallParser       *string  `json:"tool_call_parser,omitempty"`
+	ShmSizeGB            *int     `json:"shm_size_gb,omitempty"`
 }
 
 // ValidateParams checks the known vLLM keys, when present, for sane
@@ -87,6 +95,9 @@ func (vllmAdapter) ValidateParams(params json.RawMessage) error {
 	if p.ToolCallParser != nil && (p.EnableAutoToolChoice == nil || !*p.EnableAutoToolChoice) {
 		return fmt.Errorf("%w: tool_call_parser requires enable_auto_tool_choice to be true", ErrInvalidParams)
 	}
+	if p.ShmSizeGB != nil && *p.ShmSizeGB < 1 {
+		return fmt.Errorf("%w: shm_size_gb must be positive, got %d", ErrInvalidParams, *p.ShmSizeGB)
+	}
 	return nil
 }
 
@@ -101,6 +112,13 @@ func (vllmAdapter) ValidateParams(params json.RawMessage) error {
 // enable_chunked_prefill/enable_auto_tool_choice set to false are
 // omitted the same as unset, since vLLM has no --no-enable-...
 // counterpart and omission already yields the same disabled behavior.
+// shm_size_gb is not a vllm serve flag at all - it becomes
+// LaunchSpec.ShmSizeBytes/IPCMode instead, container-runtime-level
+// settings the agent applies at container-create time (see
+// runtime.Spec.ShmSize/IPCMode), never appended to Args. Setting it
+// always implies IPC host mode - the two are never used independently in
+// the vLLM/NCCL guidance this is based on, so there is no separate
+// ipc_mode key to set on its own.
 func (vllmAdapter) BuildLaunchSpec(params json.RawMessage) (LaunchSpec, error) {
 	var p vllmParams
 	if err := unmarshalParamsObject(params, &p); err != nil {
@@ -144,5 +162,11 @@ func (vllmAdapter) BuildLaunchSpec(params json.RawMessage) (LaunchSpec, error) {
 	if p.ToolCallParser != nil {
 		args = append(args, "--tool-call-parser", *p.ToolCallParser)
 	}
-	return LaunchSpec{Image: vllmImage, Args: args}, nil
+
+	spec := LaunchSpec{Image: vllmImage, Args: args}
+	if p.ShmSizeGB != nil {
+		spec.ShmSizeBytes = int64(*p.ShmSizeGB) * 1024 * 1024 * 1024
+		spec.IPCMode = "host"
+	}
+	return spec, nil
 }
