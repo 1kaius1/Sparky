@@ -14,16 +14,22 @@ permissions and full audit visibility.
 **v0.1.0 (core foundation) is substantially complete**: AD/LDAP auth and RBAC
 tiers, the audit log, model profiles, model transfers, running-instance load/
 unload, live telemetry, and the full Dashboard UI are all built and merged. Its one
-remaining item - CDI GPU passthrough verification for the Docker/Podman runtime
-backend - is blocked on real DGX Spark hardware not yet in hand, not unfinished
-work.
+remaining item - GPU passthrough verification for the Docker runtime backend - is
+now unblocked: DGX Spark hardware is in hand, confirmed running on Docker (the
+fleet's deliberate choice there, matching NVIDIA's own Spark workflow assumptions
+- not Podman), with real telemetry and `.deb`-packaged agent install already
+verified end to end against it. CDI passthrough specifically is a Podman-only
+concern and out of scope for Spark entirely; that validation now waits on a
+second machine (a Dell Precision RTX 3080Ti) coming online instead.
 
 **v0.2.0's bare-metal runtime backend and its `sparky-agent setup` subcommand are
 also done**, validated end-to-end on real GPU hardware: a real inference engine
 has been loaded, served a request, and cleanly unloaded through it, not just
-exercised in simulation. Engine-binary provisioning from GitHub Releases and
-per-profile engine version pinning are also done. v0.2.0's only remaining item is
-the same Spark-hardware CDI validation v0.1.0 is waiting on.
+exercised in simulation - `sparky-agent setup`'s provisioning has also now been
+confirmed on a real DGX Spark via its packaged `.deb` install. Engine-binary
+provisioning from GitHub Releases and per-profile engine version pinning are also
+done. v0.2.0's only remaining item is the same Docker-backend GPU passthrough
+validation v0.1.0 is waiting on.
 
 See `PLANNING.md` for the full milestone breakdown, decisions log, and what's
 next.
