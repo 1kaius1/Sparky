@@ -1952,9 +1952,13 @@ duplicate checklist.
   2026-08-15 Decisions Log entries for the design and the concrete choices
   settled while building it), with real `go test` coverage throughout
   (including integration tests for the two new repositories against a real
-  local Postgres instance) but no HTTP handler or dashboard form yet, and
-  not yet exercised against a real published release tarball on real
-  hardware - both explicitly out of scope for that pass. Per-profile
+  local Postgres instance). Its HTTP handler and dashboard form landed later
+  (the "Engine transfers" sidebar page, 2026-08-19), followed by a dedicated
+  "Engine inventory" read-only page for `node_engine_inventory` itself (same
+  date) - see those two items' own Decisions Log entries. Still not yet
+  exercised against a real published release tarball on real hardware -
+  explicitly out of scope for all of that work so far, tracked as its own
+  Known Issues row. Per-profile
   engine version pinning - the follow-up deliberately scoped out of that
   provisioning work - is also done (`model_profiles.engine_version`,
   `agent/connection.resolveEngineBinaryPath` - see that item's own entry

@@ -1426,6 +1426,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   open (the literal `Driver: "nvidia"` string itself, as opposed to the
   `Driver: ""` every real test so far has actually exercised via `docker
   run --gpus all`'s own CLI translation).
+- `PLANNING.md`/`ARCHITECTURE.md` corrected: both still said engine-binary
+  provisioning (`internal/engineprovision`) had "no HTTP handler or
+  dashboard form yet" - stale since PRs #92/#94 shipped the Engine
+  transfers and Engine inventory sidebar pages. Docs only, no code touched.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
