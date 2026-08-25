@@ -123,9 +123,21 @@ generator_flag=""
 if command -v ninja >/dev/null 2>&1; then
     generator_flag="-G Ninja"
 fi
+# CMAKE_BUILD_WITH_INSTALL_RPATH + CMAKE_INSTALL_RPATH='$ORIGIN' (a literal
+# linker token, not a shell variable - single-quoted so this shell never
+# expands it) make the built binaries look for their shared libraries next
+# to themselves at runtime, wherever that ends up being, instead of CMake's
+# own default build-tree RPATH (which points at this literal build
+# directory - fine for running tests in place, but broken the moment these
+# binaries are copied out of here, which is exactly what the packaging step
+# below does; this script never runs `cmake --install`, so nothing else
+# would ever relocate the RPATH). Applies uniformly to every recipe, not a
+# per-engine flag, since relocatability is this script's own packaging
+# contract, not an engine-source-code concern.
 # shellcheck disable=SC2086
 cmake -S "$WORK_DIR/src" -B "$WORK_DIR/build" $generator_flag $recipe_cmake_flags \
-    -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES"
+    -DCMAKE_CUDA_ARCHITECTURES="$CUDA_ARCHITECTURES" \
+    -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'
 
 echo "==> building (jobs=$BUILD_JOBS)"
 cmake --build "$WORK_DIR/build" -j "$BUILD_JOBS" --config Release
@@ -145,8 +157,16 @@ chmod +x "$stage/$recipe_primary_binary"
 
 # Shared libraries are packaged best-effort - a matching recipe glob with no
 # hits is not a failure (e.g. a future statically-linked recipe variant).
-find "$WORK_DIR/build" -type f -name "$recipe_lib_glob" 2>/dev/null | while read -r lib; do
-    cp "$lib" "$stage/$(basename "$lib")"
+# Matches both real files and symlinks (-type f -o -type l): CMake's
+# versioned shared libraries always come with a libfoo.so -> libfoo.so.N ->
+# libfoo.so.N.N.N SONAME symlink chain, and the binaries actually link
+# against the symlinked SONAME (e.g. libllama-common.so.0), not the fully-
+# versioned real filename - dropping the symlinks (as a plain -type f would)
+# packages a tarball that fails to load its own libraries at runtime. cp -P
+# preserves each symlink as a lightweight symlink rather than dereferencing
+# it into another full copy of the same file.
+find "$WORK_DIR/build" \( -type f -o -type l \) -name "$recipe_lib_glob" 2>/dev/null | while read -r lib; do
+    cp -P "$lib" "$stage/$(basename "$lib")"
 done
 
 asset_name="${ENGINE_TYPE}-${ENGINE_VERSION}-${TARGET_ARCH}.tar.xz"
