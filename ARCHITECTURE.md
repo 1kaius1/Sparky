@@ -180,8 +180,10 @@ Dispatches a compiled-engine binary provisioning run to a node's Engine Transfer
 Executor, writing to Engine transfers and updating Node engine inventory on
 completion - the same shape as the Model Transfer Orchestrator above, but
 Admin/SuperAdmin-gated (node-level infrastructure provisioning, not a PowerDev-
-grantable capability like model store management) and with no HTTP handler or
-dashboard form yet - logic and agent-side mechanics only so far, see `PLANNING.md`.
+grantable capability like model store management). Backs two sidebar pages: "Engine
+transfers" (the provisioning form and this history) and "Engine inventory" (a
+Read-only view of Node engine inventory itself) - see `PLANNING.md`'s 2026-08-19
+Decisions Log entries.
 
 #### Metrics Ingestion & Retention
 Polls agents for telemetry on an interval, writing one node-level row (Metrics - CPU,
