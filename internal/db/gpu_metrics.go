@@ -25,13 +25,12 @@ type GPUMetric struct {
 	MemoryTotalMB     float64
 }
 
-// recentGPUMetricsLimit caps how many of the most recent rows Recent
-// returns, across all nodes and GPUs combined - a documented headroom
-// assumption (4x metrics' own recentMetricsLimit), not a measured value:
-// every node available to this project has exactly one GPU, so actual row
-// volume today matches metrics' own window exactly; this only matters once
-// a real multi-GPU node exists.
-const recentGPUMetricsLimit = 800
+// recentGPUMetricsSafetyCap is a defensive ceiling on how many rows Recent
+// can return, across all nodes and GPUs combined, even within its own time
+// window - a generous, unmeasured guard, not a tuned figure - same
+// reasoning as metrics' own recentMetricsSafetyCap. The real bound on what
+// "recent" means is the caller-supplied since cutoff.
+const recentGPUMetricsSafetyCap = 5000
 
 // GPUMetricsRepository is the only component that queries the gpu_metrics
 // table directly - see CLAUDE.md: the repository layer is the only place
@@ -108,15 +107,15 @@ func (r *GPUMetricsRepository) LatestByNodeAndGPU(ctx context.Context) ([]*GPUMe
 	return metrics, nil
 }
 
-// Recent returns the most recent readings across every node/GPU combined,
-// up to recentGPUMetricsLimit, most recently recorded first - the GPU
-// utilization/memory chart panels' data source. Deliberately a recent
-// window, not full historical retention - same reasoning as metrics'
-// Recent.
-func (r *GPUMetricsRepository) Recent(ctx context.Context) ([]*GPUMetric, error) {
+// Recent returns every GPU reading recorded at or after since, across
+// every node/GPU combined, chronologically (oldest first) - the GPU
+// utilization/memory chart panels' data source. since is the caller's
+// definition of "recent" (see internal/metrics.Service.ListRecentGPU) -
+// same reasoning as metrics' own Recent.
+func (r *GPUMetricsRepository) Recent(ctx context.Context, since time.Time) ([]*GPUMetric, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+gpuMetricColumns+`
-		 FROM gpu_metrics ORDER BY recorded_at DESC LIMIT $1`, recentGPUMetricsLimit)
+		 FROM gpu_metrics WHERE recorded_at >= $1 ORDER BY recorded_at ASC LIMIT $2`, since, recentGPUMetricsSafetyCap)
 	if err != nil {
 		return nil, fmt.Errorf("list recent gpu metrics: %w", err)
 	}

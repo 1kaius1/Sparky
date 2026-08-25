@@ -26,7 +26,7 @@ type metricsStore interface {
 	Create(ctx context.Context, recordedAt time.Time, nodeID string, runningInstanceID *string,
 		cpuUtilizationPct, systemMemoryUsedMB, systemMemoryTotalMB float64) (*db.Metric, error)
 	LatestByNode(ctx context.Context) ([]*db.Metric, error)
-	Recent(ctx context.Context) ([]*db.Metric, error)
+	Recent(ctx context.Context, since time.Time) ([]*db.Metric, error)
 }
 
 // gpuMetricsStore is the subset of *db.GPUMetricsRepository this package
@@ -38,7 +38,7 @@ type gpuMetricsStore interface {
 	Create(ctx context.Context, recordedAt time.Time, nodeID string, gpuIndex int, runningInstanceID *string,
 		utilizationPct, usedMB, totalMB float64) (*db.GPUMetric, error)
 	LatestByNodeAndGPU(ctx context.Context) ([]*db.GPUMetric, error)
-	Recent(ctx context.Context) ([]*db.GPUMetric, error)
+	Recent(ctx context.Context, since time.Time) ([]*db.GPUMetric, error)
 }
 
 // instanceLookup is the subset of *db.RunningInstanceRepository this
@@ -47,6 +47,15 @@ type gpuMetricsStore interface {
 type instanceLookup interface {
 	FindActiveByNode(ctx context.Context, nodeID string) (*db.RunningInstance, error)
 }
+
+// recentDisplayWindow is how far back ListRecent/ListRecentGPU look by
+// default for the Metrics page's chart - a reasonable default for a live
+// status view, not a measured or user-configurable value; a selectable
+// time range is a natural future extension, not built here. Owned here,
+// not in internal/db, since "what counts as recent" is this package's own
+// business decision - the repository layer only knows how to filter by an
+// explicit cutoff time.
+const recentDisplayWindow = time.Hour
 
 // Service is Telemetry ingestion's orchestration layer - unlike
 // internal/transfers and internal/lifecycle, there is no RBAC check or
@@ -151,11 +160,12 @@ func (s *Service) ListLatestByNode(ctx context.Context) ([]*db.Metric, error) {
 	return metrics, nil
 }
 
-// ListRecent returns the most recent readings across every node, up to
-// db.MetricsRepository's own recent-window cap - the Metrics page's chart
-// data source.
+// ListRecent returns every reading from the last recentDisplayWindow across
+// every node - the Metrics page's chart data source. "Recent" is this
+// package's own business decision, not db.MetricsRepository's concern - see
+// recentDisplayWindow's own doc comment.
 func (s *Service) ListRecent(ctx context.Context) ([]*db.Metric, error) {
-	metrics, err := s.metrics.Recent(ctx)
+	metrics, err := s.metrics.Recent(ctx, time.Now().Add(-recentDisplayWindow))
 	if err != nil {
 		return nil, fmt.Errorf("list recent metrics: %w", err)
 	}
@@ -173,11 +183,12 @@ func (s *Service) ListLatestGPUByNode(ctx context.Context) ([]*db.GPUMetric, err
 	return metrics, nil
 }
 
-// ListRecentGPU returns the most recent GPU readings across every node/GPU,
-// up to db.GPUMetricsRepository's own recent-window cap - the Metrics
-// page's GPU utilization/memory chart panels' data source.
+// ListRecentGPU returns every GPU reading from the last recentDisplayWindow
+// across every node/GPU - the Metrics page's GPU utilization/memory chart
+// panels' data source. Same "recent is this package's own decision"
+// reasoning as ListRecent.
 func (s *Service) ListRecentGPU(ctx context.Context) ([]*db.GPUMetric, error) {
-	metrics, err := s.gpuMetrics.Recent(ctx)
+	metrics, err := s.gpuMetrics.Recent(ctx, time.Now().Add(-recentDisplayWindow))
 	if err != nil {
 		return nil, fmt.Errorf("list recent gpu metrics: %w", err)
 	}

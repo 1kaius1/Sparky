@@ -86,10 +86,10 @@ func formatMetricMB(used, total float64) string {
 }
 
 // buildMetricsChartData groups recent readings into the four chart panels.
-// recentNode/recentGPU come back most-recently-recorded first (db.MetricsRepository/
-// db.GPUMetricsRepository's own ordering) - reversed here so each series
-// renders chronologically left-to-right on the chart, same reasoning as
-// this function's pre-refactor inline predecessor.
+// recentNode/recentGPU come back chronologically (oldest first -
+// db.MetricsRepository/db.GPUMetricsRepository's own ordering), so each
+// series already renders left-to-right on the chart with no reversal
+// needed here.
 func buildMetricsChartData(recentNode []*db.Metric, recentGPU []*db.GPUMetric, nodeNames map[string]string) metricsChartData {
 	type gpuKey struct {
 		nodeID string
@@ -98,8 +98,7 @@ func buildMetricsChartData(recentNode []*db.Metric, recentGPU []*db.GPUMetric, n
 	utilByGPU := make(map[gpuKey][]chartPoint)
 	memByGPU := make(map[gpuKey][]chartPoint)
 	var gpuOrder []gpuKey
-	for i := len(recentGPU) - 1; i >= 0; i-- {
-		m := recentGPU[i]
+	for _, m := range recentGPU {
 		key := gpuKey{m.NodeID, m.GPUIndex}
 		if _, ok := utilByGPU[key]; !ok {
 			gpuOrder = append(gpuOrder, key)
@@ -121,8 +120,7 @@ func buildMetricsChartData(recentNode []*db.Metric, recentGPU []*db.GPUMetric, n
 	cpuByNode := make(map[string][]chartPoint)
 	memNodeByNode := make(map[string][]chartPoint)
 	var nodeOrder []string
-	for i := len(recentNode) - 1; i >= 0; i-- {
-		m := recentNode[i]
+	for _, m := range recentNode {
 		if _, ok := cpuByNode[m.NodeID]; !ok {
 			nodeOrder = append(nodeOrder, m.NodeID)
 		}

@@ -8,6 +8,93 @@
                     // sparkyMetricsLiveUpdate (in-place tick) can find them.
   var colors = ["#2f5fda", "#1a8a5f", "#b98900", "#c0342c", "#7a3fd1", "#0f8a9e"];
 
+  // padLabelPrefix marks a slot manufactured by fitSeriesToWidth to pad out
+  // a sparse series, not a real reading - each pad slot gets a distinct
+  // suffix (padLabelPrefix + its own index) so the category scale never
+  // collapses two pad slots into one shared tick, and the x-axis tick
+  // callback below blanks anything with this prefix so it renders as
+  // nothing rather than a stray raw label.
+  var padLabelPrefix = "__pad_";
+
+  // crosshairPlugin draws a single vertical line at the hovered x position
+  // across every panel - Chart.js's own interaction/tooltip "index" mode
+  // (see baseOptions below) already synchronizes the tooltip box across
+  // series at that position, but draws no line of its own. Registered once,
+  // globally, so it applies to every Chart instance this file creates with
+  // no per-chart option needed.
+  var crosshairPlugin = {
+    id: "sparkyCrosshair",
+    afterDatasetsDraw: function (chart) {
+      var active = chart.tooltip && chart.tooltip._active;
+      if (!active || !active.length) {
+        return;
+      }
+      var x = active[0].element.x;
+      var area = chart.chartArea;
+      var ctx = chart.ctx;
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(x, area.top);
+      ctx.lineTo(x, area.bottom);
+      ctx.lineWidth = 1;
+      // Matches main.css's --color-text-muted - a CSS custom property
+      // isn't reachable from a bare canvas 2D context, so the value is
+      // duplicated here rather than read at runtime.
+      ctx.strokeStyle = "#667085";
+      ctx.stroke();
+      ctx.restore();
+    }
+  };
+  Chart.register(crosshairPlugin);
+
+  // minPxPerSlot/minSlots/maxSlots are reasonable defaults for "readable
+  // spacing," not measured values - same honesty precedent as this
+  // project's other unmeasured-headroom constants (e.g.
+  // internal/db.recentMetricsSafetyCap).
+  var minPxPerSlot = 6;
+  var minSlots = 20;
+  var maxSlots = 180;
+
+  // targetSlotCount computes how many points a panel's canvas can show
+  // with reasonable spacing, from its own actual rendered width.
+  function targetSlotCount(canvasEl) {
+    var width = canvasEl.clientWidth || 0;
+    var slots = Math.floor(width / minPxPerSlot);
+    return Math.max(minSlots, Math.min(maxSlots, slots || minSlots));
+  }
+
+  // fitSeriesToWidth transforms one series' already-hour-bounded, already-
+  // chronological points to exactly targetCount slots. seriesIndex scopes
+  // this series' own pad labels (see padLabelPrefix) so two series in the
+  // same panel padding by different amounts never collide on an identical
+  // placeholder string - each series is still fit independently, so
+  // multiple series sharing one panel aren't guaranteed perfect tick-for-
+  // tick alignment when their real data coverage differs, an accepted
+  // trade-off for the common case of one or a few series per panel.
+  // - fewer real points than slots: right-justify them - pad only the left
+  //   with blank slots, so real data always lands flush against the
+  //   newest/right edge (matching how the chart already reads once it's
+  //   full, since the newest reading is always the rightmost point).
+  // - more real points than slots: stride-decimate down to targetCount by
+  //   evenly-spaced index - simple and deterministic, not LTTB/min-max
+  //   bucketing; readable spacing is the goal here, not peak fidelity.
+  function fitSeriesToWidth(points, targetCount, seriesIndex) {
+    if (points.length <= targetCount) {
+      var padCount = targetCount - points.length;
+      var result = [];
+      for (var i = 0; i < padCount; i++) {
+        result.push({ x: padLabelPrefix + seriesIndex + "_" + i, y: null });
+      }
+      return result.concat(points);
+    }
+    var step = points.length / targetCount;
+    var decimated = [];
+    for (var j = 0; j < targetCount; j++) {
+      decimated.push(points[Math.floor(j * step)]);
+    }
+    return decimated;
+  }
+
   // yMax fixes the y-axis ceiling at 100 for a percentage panel (GPU/CPU
   // utilization); omitted (undefined) for an absolute-value panel (memory,
   // in MB) so Chart.js auto-scales to whatever the data actually spans -
@@ -21,22 +108,33 @@
     return {
       // A shared crosshair-style tooltip across every line at the hovered
       // x position, not just the one line directly under the cursor -
-      // the "dynamic overlay showing precise value" the Metrics page asks
-      // for.
+      // paired with crosshairPlugin above for the actual vertical line.
       interaction: { mode: "index", intersect: false },
       plugins: { tooltip: { enabled: true, mode: "index", intersect: false } },
       scales: {
-        x: { type: "category", title: { display: true, text: "Time" } },
+        x: {
+          type: "category",
+          title: { display: true, text: "Time" },
+          ticks: {
+            // Blank a manufactured pad slot's label instead of showing its
+            // raw placeholder text - real timestamp labels pass through
+            // unchanged.
+            callback: function (value, index) {
+              var label = this.getLabelForValue(value);
+              return typeof label === "string" && label.indexOf(padLabelPrefix) === 0 ? "" : label;
+            }
+          }
+        },
         y: y
       }
     };
   }
 
-  function buildDatasets(series) {
+  function buildDatasets(series, targetCount) {
     return series.map(function (s, i) {
       return {
         label: s.label,
-        data: s.points,
+        data: fitSeriesToWidth(s.points, targetCount, i),
         borderColor: colors[i % colors.length],
         backgroundColor: colors[i % colors.length],
         fill: false,
@@ -64,15 +162,17 @@
     if (!el) {
       return;
     }
-    charts[canvasId] = new Chart(el, { type: "line", data: { datasets: buildDatasets(series) }, options: baseOptions(yAxisLabel, yMax) });
+    var targetCount = targetSlotCount(el);
+    charts[canvasId] = new Chart(el, { type: "line", data: { datasets: buildDatasets(series, targetCount) }, options: baseOptions(yAxisLabel, yMax) });
   };
 
   function updatePanel(canvasId, series) {
     var chart = charts[canvasId];
-    if (!chart || !document.getElementById(canvasId)) {
+    var el = document.getElementById(canvasId);
+    if (!chart || !el) {
       return;
     }
-    chart.data.datasets = buildDatasets(series);
+    chart.data.datasets = buildDatasets(series, targetSlotCount(el));
     chart.update("none"); // "none" mode = no animation, no visible redraw
   }
 
