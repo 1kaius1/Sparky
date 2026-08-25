@@ -1466,6 +1466,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   provisioning (`internal/engineprovision`) had "no HTTP handler or
   dashboard form yet" - stale since PRs #92/#94 shipped the Engine
   transfers and Engine inventory sidebar pages. Docs only, no code touched.
+- `scripts/build_engine_release.sh` produced a tarball that failed to run
+  once actually relocated off the build machine - found via a real build
+  against a real CUDA toolchain, not theorized. Two compounding bugs: the
+  packaged `llama-server` carried CMake's default build-tree `RUNPATH`
+  (the literal build directory's absolute path, meaningless anywhere else),
+  and the packaging step's `find -type f` silently dropped every SONAME
+  symlink (`libfoo.so` -> `libfoo.so.N` -> `libfoo.so.N.N.N`) the dynamic
+  linker actually needs, copying only the fully-versioned real file. Fixed:
+  `-DCMAKE_BUILD_WITH_INSTALL_RPATH=ON -DCMAKE_INSTALL_RPATH='$ORIGIN'` makes
+  the build produce a relocatable RUNPATH from the start (no `patchelf` or
+  new tool dependency needed); the lib-copying `find` now matches symlinks
+  too (`-type f -o -type l`) and uses `cp -P` to preserve them as symlinks
+  rather than dereferencing them into duplicate full copies.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
