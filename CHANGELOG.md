@@ -1118,6 +1118,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   verification that a freshly built/published engine-release bundle actually
   boots and serves real inference on real target hardware - a clean build
   proves the artifact shape is right, not that the binary runs.
+- `PLANNING.md` Future Ideas gains a feature note for local-only accounts,
+  created by the SuperAdmin, participating in the existing RBAC tier system -
+  a real, confirmed future need (this project's own primary deployment
+  environment has no AD/LDAP infrastructure and isn't getting one just to run
+  Sparky), recorded now with no design decisions made yet. Docs only, no code
+  touched.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
