@@ -179,14 +179,14 @@ func TestGPUMetricsRepository_LatestByNodeAndGPU(t *testing.T) {
 	}
 }
 
-func TestGPUMetricsRepository_Recent_OrderedMostRecentFirst(t *testing.T) {
+func TestGPUMetricsRepository_Recent_OrderedChronologically(t *testing.T) {
 	pool := newTestPool(t)
 	nodes := NewNodeRepository(pool)
 	gpuMetricsRepo := NewGPUMetricsRepository(pool)
 	ctx := context.Background()
 
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
-	older := time.Now().UTC().Add(-time.Hour).Truncate(time.Microsecond)
+	older := time.Now().UTC().Add(-time.Minute).Truncate(time.Microsecond)
 	newer := time.Now().UTC().Truncate(time.Microsecond)
 
 	if _, err := gpuMetricsRepo.Create(ctx, older, node.ID, 0, nil, 10, 1024, 24576); err != nil {
@@ -199,7 +199,7 @@ func TestGPUMetricsRepository_Recent_OrderedMostRecentFirst(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM gpu_metrics WHERE node_id = $1`, node.ID)
 	})
 
-	got, err := gpuMetricsRepo.Recent(ctx)
+	got, err := gpuMetricsRepo.Recent(ctx, older.Add(-time.Minute))
 	if err != nil {
 		t.Fatalf("Recent() error: %v", err)
 	}
@@ -221,7 +221,38 @@ func TestGPUMetricsRepository_Recent_OrderedMostRecentFirst(t *testing.T) {
 	if newerIdx == -1 || olderIdx == -1 {
 		t.Fatalf("Recent() did not include both of this test's readings for node %s", node.ID)
 	}
-	if newerIdx > olderIdx {
-		t.Errorf("newer reading at index %d, older at index %d - want most-recently-recorded first", newerIdx, olderIdx)
+	if olderIdx > newerIdx {
+		t.Errorf("older reading at index %d, newer at index %d - want chronological (oldest first)", olderIdx, newerIdx)
+	}
+}
+
+func TestGPUMetricsRepository_Recent_ExcludesReadingsBeforeSince(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	gpuMetricsRepo := NewGPUMetricsRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	tooOld := time.Now().UTC().Add(-2 * time.Hour).Truncate(time.Microsecond)
+	inWindow := time.Now().UTC().Truncate(time.Microsecond)
+
+	if _, err := gpuMetricsRepo.Create(ctx, tooOld, node.ID, 0, nil, 10, 1024, 24576); err != nil {
+		t.Fatalf("Create() tooOld error: %v", err)
+	}
+	if _, err := gpuMetricsRepo.Create(ctx, inWindow, node.ID, 0, nil, 90, 20480, 24576); err != nil {
+		t.Fatalf("Create() inWindow error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM gpu_metrics WHERE node_id = $1`, node.ID)
+	})
+
+	got, err := gpuMetricsRepo.Recent(ctx, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatalf("Recent() error: %v", err)
+	}
+	for _, m := range got {
+		if m.NodeID == node.ID && m.RecordedAt.Equal(tooOld) {
+			t.Error("Recent() included a reading recorded before the since cutoff")
+		}
 	}
 }

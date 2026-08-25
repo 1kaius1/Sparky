@@ -52,7 +52,7 @@ func (f *fakeMetricsStore) LatestByNode(context.Context) ([]*db.Metric, error) {
 	return f.latestByNode, nil
 }
 
-func (f *fakeMetricsStore) Recent(context.Context) ([]*db.Metric, error) {
+func (f *fakeMetricsStore) Recent(context.Context, time.Time) ([]*db.Metric, error) {
 	if f.recentErr != nil {
 		return nil, f.recentErr
 	}
@@ -98,7 +98,7 @@ func (f *fakeGPUMetricsStore) LatestByNodeAndGPU(context.Context) ([]*db.GPUMetr
 	return f.latestByNodeAndGPU, nil
 }
 
-func (f *fakeGPUMetricsStore) Recent(context.Context) ([]*db.GPUMetric, error) {
+func (f *fakeGPUMetricsStore) Recent(context.Context, time.Time) ([]*db.GPUMetric, error) {
 	if f.recentErr != nil {
 		return nil, f.recentErr
 	}
@@ -288,7 +288,7 @@ func (f *failNthGPUCreateStore) LatestByNodeAndGPU(context.Context) ([]*db.GPUMe
 	return nil, nil
 }
 
-func (f *failNthGPUCreateStore) Recent(context.Context) ([]*db.GPUMetric, error) {
+func (f *failNthGPUCreateStore) Recent(context.Context, time.Time) ([]*db.GPUMetric, error) {
 	return nil, nil
 }
 

@@ -1096,6 +1096,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cross-node `List`; `engineprovision.Service` gained
   `ListNodeEngineInventory`, unguarded by RBAC like the page's Engine
   transfers/Model transfers counterparts.
+- Metrics page charts gain a vertical crosshair line on hover, tracking the
+  cursor across every series in a panel - paired with the existing
+  synchronized tooltip, which showed values but drew no line of its own.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
@@ -1206,6 +1209,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in question. Docs-only change, no code touched; see `PLANNING.md`'s
   2026-08-19 Decisions Log entry for the full viability discussion and why
   post-1.0 is the right timing.
+- Metrics page charts no longer grow without bound. `MetricsRepository.Recent`/
+  `GPUMetricsRepository.Recent` changed from "the most recent N rows across
+  the whole fleet" (`recentMetricsLimit`/`recentGPUMetricsLimit`, decoupled
+  from real elapsed time) to "every row since a caller-supplied cutoff,"
+  with `internal/metrics.Service` defaulting that cutoff to the last hour -
+  the actual bound a chart should show, not an arbitrary row count. Nothing
+  is deleted; the full history a node has ever reported remains queryable,
+  this only changes what the chart's default view fetches. On top of that,
+  `metrics.js` now fits each panel's points to its own canvas width with
+  reasonable spacing (roughly one point per 6px, clamped to a 20-180 point
+  range) - decimating evenly when there's more data than fits, and
+  right-justifying (padding only the left with blank slots) when there's
+  less, so a freshly-connected node's still-sparse line sits flush against
+  the newest/right edge instead of stretched thin across the full panel.
 
 ### Deprecated
 

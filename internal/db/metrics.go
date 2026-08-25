@@ -25,12 +25,14 @@ type Metric struct {
 	SystemMemoryTotalMB float64
 }
 
-// recentMetricsLimit caps how many of the most recent rows Recent
-// returns, across all nodes combined - a recent-window view for the
-// Metrics page's chart, not full historical retention (that remains the
-// separate v0.4.0 Historical metrics milestone - see this package's own
-// doc comment).
-const recentMetricsLimit = 200
+// recentMetricsSafetyCap is a defensive ceiling on how many rows Recent
+// can return, across all nodes combined, even within its own time window -
+// a generous, unmeasured guard against a pathological input (a misconfigured
+// fleet-wide poll interval far tighter than intended), not a tuned figure.
+// The real bound on what "recent" means is the caller-supplied since cutoff
+// (internal/metrics.Service defaults it to the last hour) - full historical
+// retention remains the separate v0.4.0 Historical metrics milestone.
+const recentMetricsSafetyCap = 5000
 
 // MetricsRepository is the only component that queries the metrics table
 // directly - see CLAUDE.md: the repository layer is the only place that
@@ -105,14 +107,16 @@ func (r *MetricsRepository) LatestByNode(ctx context.Context) ([]*Metric, error)
 	return metrics, nil
 }
 
-// Recent returns the most recent readings across every node combined, up
-// to recentMetricsLimit, most recently recorded first - the Metrics
-// page's chart data source. Deliberately a recent window, not full
-// historical retention - see that constant's own doc comment.
-func (r *MetricsRepository) Recent(ctx context.Context) ([]*Metric, error) {
+// Recent returns every reading recorded at or after since, across every
+// node combined, chronologically (oldest first) - the Metrics page's chart
+// data source. since is the caller's definition of "recent" (see
+// internal/metrics.Service.ListRecent); this method only bounds the result
+// by time, plus recentMetricsSafetyCap as a defensive ceiling - see that
+// constant's own doc comment.
+func (r *MetricsRepository) Recent(ctx context.Context, since time.Time) ([]*Metric, error) {
 	rows, err := r.pool.Query(ctx,
 		`SELECT `+metricColumns+`
-		 FROM metrics ORDER BY recorded_at DESC LIMIT $1`, recentMetricsLimit)
+		 FROM metrics WHERE recorded_at >= $1 ORDER BY recorded_at ASC LIMIT $2`, since, recentMetricsSafetyCap)
 	if err != nil {
 		return nil, fmt.Errorf("list recent metrics: %w", err)
 	}
