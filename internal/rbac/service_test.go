@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/db"
 )
 
@@ -45,11 +46,17 @@ func (f *fakeAuditRecorder) Record(_ context.Context, actorID *string, isSuperAd
 // fakeUserStore implements userStore for tests without a real Postgres -
 // same pattern as internal/httpapi's fakeUserStore.
 type fakeUserStore struct {
-	byID map[string]*db.User
+	byID            map[string]*db.User
+	localHashByID   map[string]string
+	byLocalUsername map[string]*db.User
 
 	findErr       error
 	updateTierErr error
 	listErr       error
+
+	createLocalErr         error
+	updateDisplayNameErr   error
+	updateLocalPasswordErr error
 
 	// updateTierFailAfter delays updateTierErr until this many UpdateTier
 	// calls have already succeeded - lets a test simulate the forward tier
@@ -69,10 +76,14 @@ type updateTierCall struct {
 
 func newFakeUserStore(users ...*db.User) *fakeUserStore {
 	byID := make(map[string]*db.User)
+	byLocalUsername := make(map[string]*db.User)
 	for _, u := range users {
 		byID[u.ID] = u
+		if u.LocalUsername != nil {
+			byLocalUsername[*u.LocalUsername] = u
+		}
 	}
-	return &fakeUserStore{byID: byID}
+	return &fakeUserStore{byID: byID, byLocalUsername: byLocalUsername, localHashByID: make(map[string]string)}
 }
 
 func (f *fakeUserStore) FindByID(_ context.Context, id string) (*db.User, error) {
@@ -110,6 +121,51 @@ func (f *fakeUserStore) List(_ context.Context) ([]*db.User, error) {
 		users = append(users, u)
 	}
 	return users, nil
+}
+
+func (f *fakeUserStore) CreateLocal(_ context.Context, username, passwordHash, displayName string, tier db.Tier) (*db.User, error) {
+	if f.createLocalErr != nil {
+		return nil, f.createLocalErr
+	}
+	if _, taken := f.byLocalUsername[username]; taken {
+		return nil, db.ErrLocalUsernameTaken
+	}
+	u := &db.User{ID: "new-" + username, LocalUsername: &username, DisplayName: displayName, Tier: tier}
+	f.byID[u.ID] = u
+	f.byLocalUsername[username] = u
+	f.localHashByID[u.ID] = passwordHash
+	return u, nil
+}
+
+func (f *fakeUserStore) FindByLocalUsername(_ context.Context, username string) (*db.User, string, error) {
+	u, ok := f.byLocalUsername[username]
+	if !ok {
+		return nil, "", db.ErrUserNotFound
+	}
+	return u, f.localHashByID[u.ID], nil
+}
+
+func (f *fakeUserStore) UpdateDisplayName(_ context.Context, id, displayName string) error {
+	if f.updateDisplayNameErr != nil {
+		return f.updateDisplayNameErr
+	}
+	u, ok := f.byID[id]
+	if !ok {
+		return db.ErrUserNotFound
+	}
+	u.DisplayName = displayName
+	return nil
+}
+
+func (f *fakeUserStore) UpdateLocalPassword(_ context.Context, id, passwordHash string) error {
+	if f.updateLocalPasswordErr != nil {
+		return f.updateLocalPasswordErr
+	}
+	if _, ok := f.byID[id]; !ok {
+		return db.ErrUserNotFound
+	}
+	f.localHashByID[id] = passwordHash
+	return nil
 }
 
 func TestService_ElevateTier_PermittedByAdmin(t *testing.T) {
@@ -344,5 +400,181 @@ func TestService_ListUsers_StoreFailurePropagates(t *testing.T) {
 	}
 	if errors.Is(err, ErrNotPermitted) {
 		t.Error("ListUsers() returned ErrNotPermitted for an infrastructure failure")
+	}
+}
+
+func TestService_CreateLocalAccount_PermittedForAdmin(t *testing.T) {
+	store := newFakeUserStore()
+	audit := &fakeAuditRecorder{}
+	svc := NewService(store, audit, testLogger())
+	actor := Actor{Tier: db.TierAdmin, UserID: "admin-1"}
+
+	user, err := svc.CreateLocalAccount(context.Background(), actor, "jsmith", "hunter2", "Jane Smith", db.TierDeveloper)
+	if err != nil {
+		t.Fatalf("CreateLocalAccount() error: %v", err)
+	}
+	if user.LocalUsername == nil || *user.LocalUsername != "jsmith" {
+		t.Errorf("LocalUsername = %v, want %q", user.LocalUsername, "jsmith")
+	}
+	if user.Tier != db.TierDeveloper {
+		t.Errorf("Tier = %q, want %q", user.Tier, db.TierDeveloper)
+	}
+
+	if len(audit.calls) != 1 {
+		t.Fatalf("audit.Record called %d times, want 1", len(audit.calls))
+	}
+	if audit.calls[0].action != "created_local_account" {
+		t.Errorf("audit action = %q, want %q", audit.calls[0].action, "created_local_account")
+	}
+}
+
+func TestService_CreateLocalAccount_NotPermittedBelowAdmin(t *testing.T) {
+	store := newFakeUserStore()
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{Tier: db.TierPowerDev, UserID: "user-1"}
+
+	_, err := svc.CreateLocalAccount(context.Background(), actor, "jsmith", "hunter2", "Jane Smith", db.TierDeveloper)
+	if !errors.Is(err, ErrNotPermitted) {
+		t.Errorf("CreateLocalAccount() error = %v, want ErrNotPermitted", err)
+	}
+}
+
+func TestService_CreateLocalAccount_DuplicateUsername(t *testing.T) {
+	username := "jsmith"
+	existing := &db.User{ID: "existing-1", LocalUsername: &username, Tier: db.TierDeveloper}
+	store := newFakeUserStore(existing)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{IsSuperAdmin: true}
+
+	_, err := svc.CreateLocalAccount(context.Background(), actor, "jsmith", "hunter2", "Jane Smith", db.TierDeveloper)
+	if !errors.Is(err, db.ErrLocalUsernameTaken) {
+		t.Errorf("CreateLocalAccount() error = %v, want db.ErrLocalUsernameTaken", err)
+	}
+}
+
+func TestService_ResetLocalAccountPassword_PermittedForAdmin(t *testing.T) {
+	username := "jsmith"
+	target := &db.User{ID: "target-1", LocalUsername: &username, Tier: db.TierDeveloper}
+	store := newFakeUserStore(target)
+	audit := &fakeAuditRecorder{}
+	svc := NewService(store, audit, testLogger())
+	actor := Actor{Tier: db.TierAdmin, UserID: "admin-1"}
+
+	err := svc.ResetLocalAccountPassword(context.Background(), actor, "target-1", "new-password")
+	if err != nil {
+		t.Fatalf("ResetLocalAccountPassword() error: %v", err)
+	}
+	if store.localHashByID["target-1"] == "" {
+		t.Error("password hash not stored after ResetLocalAccountPassword()")
+	}
+	if len(audit.calls) != 1 || audit.calls[0].action != "reset_local_account_password" {
+		t.Errorf("audit calls = %+v, want one reset_local_account_password call", audit.calls)
+	}
+}
+
+func TestService_ResetLocalAccountPassword_NotPermittedBelowAdmin(t *testing.T) {
+	username := "jsmith"
+	target := &db.User{ID: "target-1", LocalUsername: &username, Tier: db.TierDeveloper}
+	store := newFakeUserStore(target)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{Tier: db.TierPowerDev, UserID: "user-1"}
+
+	err := svc.ResetLocalAccountPassword(context.Background(), actor, "target-1", "new-password")
+	if !errors.Is(err, ErrNotPermitted) {
+		t.Errorf("ResetLocalAccountPassword() error = %v, want ErrNotPermitted", err)
+	}
+}
+
+func TestService_ResetLocalAccountPassword_TargetNotLocalAccount(t *testing.T) {
+	adSID := "S-1-5-21-1"
+	target := &db.User{ID: "target-1", ADSID: &adSID, Tier: db.TierDeveloper}
+	store := newFakeUserStore(target)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{IsSuperAdmin: true}
+
+	err := svc.ResetLocalAccountPassword(context.Background(), actor, "target-1", "new-password")
+	if !errors.Is(err, ErrNotLocalAccount) {
+		t.Errorf("ResetLocalAccountPassword() error = %v, want ErrNotLocalAccount", err)
+	}
+}
+
+func TestService_UpdateDisplayName_Self(t *testing.T) {
+	username := "jsmith"
+	target := &db.User{ID: "user-1", LocalUsername: &username, DisplayName: "Old Name"}
+	store := newFakeUserStore(target)
+	audit := &fakeAuditRecorder{}
+	svc := NewService(store, audit, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	err := svc.UpdateDisplayName(context.Background(), actor, "New Name")
+	if err != nil {
+		t.Fatalf("UpdateDisplayName() error: %v", err)
+	}
+	if target.DisplayName != "New Name" {
+		t.Errorf("DisplayName = %q, want %q", target.DisplayName, "New Name")
+	}
+	if len(audit.calls) != 1 || audit.calls[0].action != "updated_display_name" {
+		t.Errorf("audit calls = %+v, want one updated_display_name call", audit.calls)
+	}
+}
+
+func TestService_UpdateDisplayName_NotLocalAccount(t *testing.T) {
+	adSID := "S-1-5-21-1"
+	target := &db.User{ID: "user-1", ADSID: &adSID, DisplayName: "Old Name"}
+	store := newFakeUserStore(target)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	err := svc.UpdateDisplayName(context.Background(), actor, "New Name")
+	if !errors.Is(err, ErrNotLocalAccount) {
+		t.Errorf("UpdateDisplayName() error = %v, want ErrNotLocalAccount", err)
+	}
+}
+
+func TestService_ChangeOwnPassword_Success(t *testing.T) {
+	username := "jsmith"
+	target := &db.User{ID: "user-1", LocalUsername: &username}
+	store := newFakeUserStore(target)
+	currentHash, err := auth.HashPassword("old-password")
+	if err != nil {
+		t.Fatalf("auth.HashPassword() error: %v", err)
+	}
+	store.localHashByID["user-1"] = currentHash
+	audit := &fakeAuditRecorder{}
+	svc := NewService(store, audit, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	err = svc.ChangeOwnPassword(context.Background(), actor, "old-password", "new-password")
+	if err != nil {
+		t.Fatalf("ChangeOwnPassword() error: %v", err)
+	}
+
+	ok, err := auth.VerifyPassword("new-password", store.localHashByID["user-1"])
+	if err != nil {
+		t.Fatalf("auth.VerifyPassword() error: %v", err)
+	}
+	if !ok {
+		t.Error("stored hash does not verify against the new password")
+	}
+	if len(audit.calls) != 1 || audit.calls[0].action != "changed_own_password" {
+		t.Errorf("audit calls = %+v, want one changed_own_password call", audit.calls)
+	}
+}
+
+func TestService_ChangeOwnPassword_WrongCurrentPassword(t *testing.T) {
+	username := "jsmith"
+	target := &db.User{ID: "user-1", LocalUsername: &username}
+	store := newFakeUserStore(target)
+	currentHash, err := auth.HashPassword("old-password")
+	if err != nil {
+		t.Fatalf("auth.HashPassword() error: %v", err)
+	}
+	store.localHashByID["user-1"] = currentHash
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	err = svc.ChangeOwnPassword(context.Background(), actor, "wrong-password", "new-password")
+	if !errors.Is(err, ErrWrongPassword) {
+		t.Errorf("ChangeOwnPassword() error = %v, want ErrWrongPassword", err)
 	}
 }

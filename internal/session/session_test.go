@@ -97,6 +97,36 @@ func TestSignVerify_SuperAdmin_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestSignVerify_Local_RoundTrip(t *testing.T) {
+	s := NewLocal("user-123", time.Hour)
+
+	cookieValue, err := Sign(testSecret, s)
+	if err != nil {
+		t.Fatalf("Sign() error: %v", err)
+	}
+
+	got, err := Verify(testSecret, cookieValue)
+	if err != nil {
+		t.Fatalf("Verify() error: %v", err)
+	}
+	if !got.IsLocalAccount {
+		t.Error("IsLocalAccount = false, want true")
+	}
+	if got.UserID != "user-123" {
+		t.Errorf("UserID = %q, want %q", got.UserID, "user-123")
+	}
+	if got.IsSuperAdmin {
+		t.Error("IsSuperAdmin = true, want false for a local-account session")
+	}
+}
+
+func TestNewLocal_LeavesLastVerifiedAtZero(t *testing.T) {
+	s := NewLocal("user-123", time.Hour)
+	if !s.LastVerifiedAt.IsZero() {
+		t.Errorf("LastVerifiedAt = %v, want the zero value - a local account has no AD membership to verify", s.LastVerifiedAt)
+	}
+}
+
 func TestVerify_Expired(t *testing.T) {
 	s := New("user-123", -time.Hour) // already expired
 

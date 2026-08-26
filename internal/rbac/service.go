@@ -9,12 +9,23 @@ import (
 	"log"
 	"time"
 
+	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/db"
 )
 
 // ErrNotPermitted is returned when an actor attempts an action CanElevate
 // or CanManageModelStore would refuse.
 var ErrNotPermitted = errors.New("not permitted")
+
+// ErrNotLocalAccount is returned by ResetLocalAccountPassword,
+// UpdateDisplayName, and ChangeOwnPassword when the target user row has no
+// local_username at all - an AD-backed account has no local password for
+// any of these operations to act on.
+var ErrNotLocalAccount = errors.New("not a local account")
+
+// ErrWrongPassword is returned by ChangeOwnPassword when currentPassword
+// does not match the account's stored hash.
+var ErrWrongPassword = errors.New("wrong current password")
 
 // userStore is the subset of *db.UserRepository this package needs,
 // narrow enough to fake in tests without a real Postgres instance - same
@@ -23,6 +34,10 @@ type userStore interface {
 	FindByID(ctx context.Context, id string) (*db.User, error)
 	UpdateTier(ctx context.Context, id string, tier db.Tier, elevatedBy *string, elevatedAt *time.Time) error
 	List(ctx context.Context) ([]*db.User, error)
+	CreateLocal(ctx context.Context, username, passwordHash, displayName string, tier db.Tier) (*db.User, error)
+	FindByLocalUsername(ctx context.Context, username string) (*db.User, string, error)
+	UpdateDisplayName(ctx context.Context, id, displayName string) error
+	UpdateLocalPassword(ctx context.Context, id, passwordHash string) error
 }
 
 // auditRecorder is the subset of *audit.Recorder this package needs,
@@ -133,4 +148,140 @@ func (s *Service) ListUsers(ctx context.Context, actor Actor) ([]*db.User, error
 		return nil, fmt.Errorf("list users: %w", err)
 	}
 	return users, nil
+}
+
+// CreateLocalAccount creates a new local-only account, if actor is
+// permitted to - see rbac.CanCreateLocalAccount. Returns
+// db.ErrLocalUsernameTaken unchanged (not wrapped) if username is already in
+// use, so a caller can distinguish it from any other failure and surface it
+// as a form validation error rather than a generic one.
+func (s *Service) CreateLocalAccount(ctx context.Context, actor Actor, username, password, displayName string, tier db.Tier) (*db.User, error) {
+	if !CanCreateLocalAccount(actor) {
+		return nil, ErrNotPermitted
+	}
+
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return nil, fmt.Errorf("hash password: %w", err)
+	}
+
+	user, err := s.users.CreateLocal(ctx, username, hash, displayName, tier)
+	if err != nil {
+		if errors.Is(err, db.ErrLocalUsernameTaken) {
+			return nil, db.ErrLocalUsernameTaken
+		}
+		return nil, fmt.Errorf("create local account: %w", err)
+	}
+
+	var actorID *string
+	if !actor.IsSuperAdmin {
+		actorID = &actor.UserID
+	}
+	detail := map[string]any{
+		"local_username": username,
+		"tier":           string(tier),
+	}
+	if err := s.audit.Record(ctx, actorID, actor.IsSuperAdmin, "created_local_account", "user", user.ID, detail); err != nil {
+		return nil, fmt.Errorf("record audit: %w", err)
+	}
+	return user, nil
+}
+
+// ResetLocalAccountPassword sets targetUserID's password to newPassword, if
+// actor is permitted to - see rbac.CanResetLocalAccountPassword. Returns
+// ErrNotLocalAccount if the target row has no local_username - an AD-backed
+// account has no local password here to reset.
+func (s *Service) ResetLocalAccountPassword(ctx context.Context, actor Actor, targetUserID, newPassword string) error {
+	if !CanResetLocalAccountPassword(actor) {
+		return ErrNotPermitted
+	}
+
+	target, err := s.users.FindByID(ctx, targetUserID)
+	if err != nil {
+		return fmt.Errorf("find target user: %w", err)
+	}
+	if target.LocalUsername == nil {
+		return ErrNotLocalAccount
+	}
+
+	hash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash password: %w", err)
+	}
+	if err := s.users.UpdateLocalPassword(ctx, targetUserID, hash); err != nil {
+		return fmt.Errorf("update local password: %w", err)
+	}
+
+	var actorID *string
+	if !actor.IsSuperAdmin {
+		actorID = &actor.UserID
+	}
+	if err := s.audit.Record(ctx, actorID, actor.IsSuperAdmin, "reset_local_account_password", "user", targetUserID, nil); err != nil {
+		return fmt.Errorf("record audit: %w", err)
+	}
+	return nil
+}
+
+// UpdateDisplayName changes actor's own display name - self-service, no
+// tier gate, but re-verifies actor's own user row actually has a
+// local_username before writing (the real enforcement boundary, not just
+// the HTTP layer's Identity.IsLocalAccount check) - an AD-backed account's
+// display name is refreshed from AD at every login instead, see SCHEMA.md
+// Users.
+func (s *Service) UpdateDisplayName(ctx context.Context, actor Actor, displayName string) error {
+	target, err := s.users.FindByID(ctx, actor.UserID)
+	if err != nil {
+		return fmt.Errorf("find actor user: %w", err)
+	}
+	if target.LocalUsername == nil {
+		return ErrNotLocalAccount
+	}
+
+	if err := s.users.UpdateDisplayName(ctx, actor.UserID, displayName); err != nil {
+		return fmt.Errorf("update display name: %w", err)
+	}
+
+	if err := s.audit.Record(ctx, &actor.UserID, false, "updated_display_name", "user", actor.UserID, nil); err != nil {
+		return fmt.Errorf("record audit: %w", err)
+	}
+	return nil
+}
+
+// ChangeOwnPassword changes actor's own password, after verifying
+// currentPassword against the stored hash - self-service, same
+// local-account-only enforcement boundary as UpdateDisplayName. Returns
+// ErrWrongPassword if currentPassword does not match.
+func (s *Service) ChangeOwnPassword(ctx context.Context, actor Actor, currentPassword, newPassword string) error {
+	target, err := s.users.FindByID(ctx, actor.UserID)
+	if err != nil {
+		return fmt.Errorf("find actor user: %w", err)
+	}
+	if target.LocalUsername == nil {
+		return ErrNotLocalAccount
+	}
+
+	_, hash, err := s.users.FindByLocalUsername(ctx, *target.LocalUsername)
+	if err != nil {
+		return fmt.Errorf("find actor local credentials: %w", err)
+	}
+	ok, err := auth.VerifyPassword(currentPassword, hash)
+	if err != nil {
+		return fmt.Errorf("verify current password: %w", err)
+	}
+	if !ok {
+		return ErrWrongPassword
+	}
+
+	newHash, err := auth.HashPassword(newPassword)
+	if err != nil {
+		return fmt.Errorf("hash new password: %w", err)
+	}
+	if err := s.users.UpdateLocalPassword(ctx, actor.UserID, newHash); err != nil {
+		return fmt.Errorf("update local password: %w", err)
+	}
+
+	if err := s.audit.Record(ctx, &actor.UserID, false, "changed_own_password", "user", actor.UserID, nil); err != nil {
+		return fmt.Errorf("record audit: %w", err)
+	}
+	return nil
 }
