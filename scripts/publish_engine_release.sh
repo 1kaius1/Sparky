@@ -1,15 +1,21 @@
 #!/bin/sh
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
-# Publishes an already-built engine-release bundle (produced by
-# scripts/build_engine_release.sh) as a GitHub Release on Sparky's own repo,
-# matching the exact contract agent/enginetransfer's Executor expects to
-# download - see docs/AGENT.md Engine binary provisioning and PLANNING.md's
-# Decisions Log for the full design. Deliberately kept separate from the
-# build script: build can run anywhere without repo-write credentials;
-# publish is the one step that touches Sparky's GitHub Releases and should
-# be a distinct, deliberate action. Maintainer-facing today; a future
-# scheduled pipeline is expected to invoke this same script unchanged.
+# Publishes an already-built engine-release bundle - produced by
+# scripts/build_engine_release.sh (compiled from source) or
+# scripts/repackage_koboldcpp_release.sh (an upstream-published binary
+# repackaged into the same shape) - as a GitHub Release on Sparky's own
+# repo, matching the exact contract agent/enginetransfer's Executor expects
+# to download - see docs/AGENT.md Engine binary provisioning and
+# PLANNING.md's Decisions Log for the full design. This script itself does
+# not care which of those two produced the bundle - it only looks for the
+# tarball+.sha256 shape, matching agent/enginetransfer's download contract,
+# not how that shape was produced. Deliberately kept separate from either
+# producer: building/repackaging can run anywhere without repo-write
+# credentials; publish is the one step that touches Sparky's GitHub
+# Releases and should be a distinct, deliberate action. Maintainer-facing
+# today; a future scheduled pipeline is expected to invoke this same script
+# unchanged.
 #
 # Required env vars:
 #   ENGINE_TYPE    - e.g. "llamacpp" - identifies which bundle files to look
@@ -126,7 +132,7 @@ else
     gh release create "$ENGINE_VERSION" $files_to_upload \
         --repo "$release_repo" \
         --title "$ENGINE_TYPE $ENGINE_VERSION" \
-        --notes "Compiled $ENGINE_TYPE release bundle(s) for Sparky's agent/enginetransfer - built via scripts/build_engine_release.sh. Architectures:$found_archs."
+        --notes "$ENGINE_TYPE release bundle(s) for Sparky's agent/enginetransfer. Architectures:$found_archs."
 fi
 
 echo "==> done"
