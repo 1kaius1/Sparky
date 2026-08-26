@@ -46,6 +46,20 @@ func cleanupUser(t *testing.T, repo *UserRepository, adSID string) {
 	})
 }
 
+// uniqueLocalUsername avoids collisions between test runs sharing one
+// database - the local-account equivalent of uniqueADSID.
+func uniqueLocalUsername(t *testing.T) string {
+	t.Helper()
+	return fmt.Sprintf("test-%s-%d", t.Name(), time.Now().UnixNano())
+}
+
+func cleanupLocalUser(t *testing.T, repo *UserRepository, username string) {
+	t.Helper()
+	t.Cleanup(func() {
+		_, _ = repo.pool.Exec(context.Background(), `DELETE FROM users WHERE local_username = $1`, username)
+	})
+}
+
 func TestUserRepository_CreateAndFindByADSID(t *testing.T) {
 	repo := newTestUserRepo(t)
 	ctx := context.Background()
@@ -91,8 +105,8 @@ func TestUserRepository_CreateAndFindByADSID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FindByID() error: %v", err)
 	}
-	if foundByID.ADSID != adSID {
-		t.Errorf("FindByID() ADSID = %q, want %q", foundByID.ADSID, adSID)
+	if foundByID.ADSID == nil || *foundByID.ADSID != adSID {
+		t.Errorf("FindByID() ADSID = %v, want %q", foundByID.ADSID, adSID)
 	}
 }
 
@@ -282,6 +296,129 @@ func TestUserRepository_UpdateTier_NotFound(t *testing.T) {
 	err := repo.UpdateTier(context.Background(), "00000000-0000-0000-0000-000000000000", TierAdmin, &elevatedBy, &now)
 	if err != ErrUserNotFound {
 		t.Errorf("UpdateTier() error = %v, want ErrUserNotFound", err)
+	}
+}
+
+func TestUserRepository_CreateLocalAndFindByLocalUsername(t *testing.T) {
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+	username := uniqueLocalUsername(t)
+	cleanupLocalUser(t, repo, username)
+
+	created, err := repo.CreateLocal(ctx, username, "argon2id$fake-hash", "Test Local User", TierDeveloper)
+	if err != nil {
+		t.Fatalf("CreateLocal() error: %v", err)
+	}
+	if created.ID == "" {
+		t.Error("CreateLocal() returned an empty ID")
+	}
+	if created.ADSID != nil {
+		t.Errorf("CreateLocal() ADSID = %v, want nil", *created.ADSID)
+	}
+	if created.LocalUsername == nil || *created.LocalUsername != username {
+		t.Errorf("CreateLocal() LocalUsername = %v, want %q", created.LocalUsername, username)
+	}
+
+	found, hash, err := repo.FindByLocalUsername(ctx, username)
+	if err != nil {
+		t.Fatalf("FindByLocalUsername() error: %v", err)
+	}
+	if found.ID != created.ID {
+		t.Errorf("FindByLocalUsername() ID = %q, want %q", found.ID, created.ID)
+	}
+	if hash != "argon2id$fake-hash" {
+		t.Errorf("FindByLocalUsername() hash = %q, want %q", hash, "argon2id$fake-hash")
+	}
+}
+
+func TestUserRepository_FindByLocalUsername_NotFound(t *testing.T) {
+	repo := newTestUserRepo(t)
+
+	_, _, err := repo.FindByLocalUsername(context.Background(), "does-not-exist")
+	if err != ErrUserNotFound {
+		t.Errorf("FindByLocalUsername() error = %v, want ErrUserNotFound", err)
+	}
+}
+
+func TestUserRepository_CreateLocal_DuplicateUsername(t *testing.T) {
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+	username := uniqueLocalUsername(t)
+	cleanupLocalUser(t, repo, username)
+
+	if _, err := repo.CreateLocal(ctx, username, "hash-one", "First", TierReadOnly); err != nil {
+		t.Fatalf("CreateLocal() first call error: %v", err)
+	}
+
+	_, err := repo.CreateLocal(ctx, username, "hash-two", "Second", TierReadOnly)
+	if err != ErrLocalUsernameTaken {
+		t.Errorf("CreateLocal() error = %v, want ErrLocalUsernameTaken", err)
+	}
+}
+
+func TestUserRepository_UpdateDisplayName(t *testing.T) {
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+	username := uniqueLocalUsername(t)
+	cleanupLocalUser(t, repo, username)
+
+	created, err := repo.CreateLocal(ctx, username, "hash", "Old Name", TierReadOnly)
+	if err != nil {
+		t.Fatalf("CreateLocal() error: %v", err)
+	}
+
+	if err := repo.UpdateDisplayName(ctx, created.ID, "New Name"); err != nil {
+		t.Fatalf("UpdateDisplayName() error: %v", err)
+	}
+
+	found, _, err := repo.FindByLocalUsername(ctx, username)
+	if err != nil {
+		t.Fatalf("FindByLocalUsername() error: %v", err)
+	}
+	if found.DisplayName != "New Name" {
+		t.Errorf("DisplayName = %q, want %q", found.DisplayName, "New Name")
+	}
+}
+
+func TestUserRepository_UpdateDisplayName_NotFound(t *testing.T) {
+	repo := newTestUserRepo(t)
+
+	err := repo.UpdateDisplayName(context.Background(), "00000000-0000-0000-0000-000000000000", "New Name")
+	if err != ErrUserNotFound {
+		t.Errorf("UpdateDisplayName() error = %v, want ErrUserNotFound", err)
+	}
+}
+
+func TestUserRepository_UpdateLocalPassword(t *testing.T) {
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+	username := uniqueLocalUsername(t)
+	cleanupLocalUser(t, repo, username)
+
+	created, err := repo.CreateLocal(ctx, username, "old-hash", "Test Local User", TierReadOnly)
+	if err != nil {
+		t.Fatalf("CreateLocal() error: %v", err)
+	}
+
+	if err := repo.UpdateLocalPassword(ctx, created.ID, "new-hash"); err != nil {
+		t.Fatalf("UpdateLocalPassword() error: %v", err)
+	}
+
+	_, hash, err := repo.FindByLocalUsername(ctx, username)
+	if err != nil {
+		t.Fatalf("FindByLocalUsername() error: %v", err)
+	}
+	if hash != "new-hash" {
+		t.Errorf("hash = %q, want %q", hash, "new-hash")
+	}
+}
+
+func TestUserRepository_UpdateLocalPassword_NotFound(t *testing.T) {
+	repo := newTestUserRepo(t)
+
+	err := repo.UpdateLocalPassword(context.Background(), "00000000-0000-0000-0000-000000000000", "new-hash")
+	if err != ErrUserNotFound {
+		t.Errorf("UpdateLocalPassword() error = %v, want ErrUserNotFound", err)
 	}
 }
 

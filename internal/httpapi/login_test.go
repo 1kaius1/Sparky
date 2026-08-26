@@ -37,17 +37,39 @@ func (f *fakeIdentityProvider) IsInAccessGroup(_ context.Context, dn string) (bo
 	return f.isInAccessGroupResult, nil
 }
 
-// fakeUserStore implements userStore for tests without a real Postgres.
+// fakeUserStore implements userStore for tests without a real Postgres. It
+// also implements localUserStore (FindByLocalUsername below) so the same
+// fake can back both LoginService and LocalLoginService in tests that only
+// exercise one of the two login paths.
 type fakeUserStore struct {
 	byADSID map[string]*db.User
 
 	createErr          error
 	updateLastLoginErr error
 	findErr            error // returned for any ad_sid not in byADSID, in place of db.ErrUserNotFound
+
+	byLocalUsername        map[string]*db.User
+	localHashByUsername    map[string]string
+	findByLocalUsernameErr error
 }
 
 func newFakeUserStore() *fakeUserStore {
-	return &fakeUserStore{byADSID: make(map[string]*db.User)}
+	return &fakeUserStore{
+		byADSID:             make(map[string]*db.User),
+		byLocalUsername:     make(map[string]*db.User),
+		localHashByUsername: make(map[string]string),
+	}
+}
+
+func (f *fakeUserStore) FindByLocalUsername(_ context.Context, username string) (*db.User, string, error) {
+	if f.findByLocalUsernameErr != nil {
+		return nil, "", f.findByLocalUsernameErr
+	}
+	u, ok := f.byLocalUsername[username]
+	if !ok {
+		return nil, "", db.ErrUserNotFound
+	}
+	return u, f.localHashByUsername[username], nil
 }
 
 func (f *fakeUserStore) FindByADSID(_ context.Context, adSID string) (*db.User, error) {
@@ -64,7 +86,7 @@ func (f *fakeUserStore) Create(_ context.Context, adSID, displayName, dn string,
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
-	u := &db.User{ID: "new-" + adSID, ADSID: adSID, DisplayName: displayName, Tier: tier, CreatedAt: time.Now().UTC(), LDAPDN: &dn}
+	u := &db.User{ID: "new-" + adSID, ADSID: &adSID, DisplayName: displayName, Tier: tier, CreatedAt: time.Now().UTC(), LDAPDN: &dn}
 	f.byADSID[adSID] = u
 	return u, nil
 }
@@ -119,7 +141,8 @@ func TestLoginService_Login_ExistingUser_UpdatesLastLogin(t *testing.T) {
 		InAccessGroup: true,
 	}}
 	store := newFakeUserStore()
-	existing := &db.User{ID: "existing-id", ADSID: "S-1-5-21-1", DisplayName: "Jane Smith", Tier: db.TierDeveloper}
+	existingADSID := "S-1-5-21-1"
+	existing := &db.User{ID: "existing-id", ADSID: &existingADSID, DisplayName: "Jane Smith", Tier: db.TierDeveloper}
 	store.byADSID["S-1-5-21-1"] = existing
 
 	svc := NewLoginService(idp, store, testSessionSecret)

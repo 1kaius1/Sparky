@@ -1,0 +1,33 @@
+{{define "content"}}
+<h1>Create local account</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<form method="post" action="/users/local/new">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="username">Username</label><br>
+    <input type="text" id="username" name="username" value="{{.Data.Form.Username}}" autocomplete="off" required>
+  </p>
+  <p>
+    <label for="display_name">Display name</label><br>
+    <input type="text" id="display_name" name="display_name" value="{{.Data.Form.DisplayName}}" required>
+  </p>
+  <p>
+    <label for="password">Password</label><br>
+    <input type="password" id="password" name="password" autocomplete="new-password" required>
+  </p>
+  <p>
+    <label for="tier">Tier</label><br>
+    <select id="tier" name="tier">
+      <option value="read_only" {{if eq .Data.Form.Tier "read_only"}}selected{{end}}>read_only</option>
+      <option value="developer" {{if eq .Data.Form.Tier "developer"}}selected{{end}}>developer</option>
+      <option value="power_dev" {{if eq .Data.Form.Tier "power_dev"}}selected{{end}}>power_dev</option>
+      <option value="admin" {{if eq .Data.Form.Tier "admin"}}selected{{end}}>admin</option>
+    </select>
+  </p>
+  <p><button type="submit">Create account</button></p>
+</form>
+{{end}}

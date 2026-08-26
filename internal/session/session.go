@@ -45,6 +45,16 @@ type Session struct {
 	// pre-existing session re-validates on its very next request after
 	// this ships, rather than riding out its remaining lifetime unchecked.
 	LastVerifiedAt time.Time `json:"lva,omitempty"`
+
+	// IsLocalAccount marks a session belonging to a local-only account (see
+	// SCHEMA.md Users' local_username/local_password_hash). Like
+	// IsSuperAdmin, this makes LastVerifiedAt meaningless: a local account
+	// has no AD group membership to ever go stale, so RequireSession skips
+	// the periodic recheck for it the same way it already does for
+	// IsSuperAdmin - without this, a local account's permanently-nil
+	// cached LDAP DN would otherwise be misread by that recheck as "no
+	// longer a member" and force a logout on every recheck interval.
+	IsLocalAccount bool `json:"loc,omitempty"`
 }
 
 // New creates a session for userID, valid for the given duration from now -
@@ -56,6 +66,18 @@ func New(userID string, duration time.Duration) Session {
 		UserID:         userID,
 		ExpiresAt:      now.Add(duration),
 		LastVerifiedAt: now,
+	}
+}
+
+// NewLocal creates a session for userID belonging to a local-only account,
+// valid for the given duration from now. LastVerifiedAt is deliberately left
+// at the zero value - see IsLocalAccount's own doc comment; there is no AD
+// group membership to have ever verified in the first place.
+func NewLocal(userID string, duration time.Duration) Session {
+	return Session{
+		UserID:         userID,
+		IsLocalAccount: true,
+		ExpiresAt:      time.Now().UTC().Add(duration),
 	}
 }
 

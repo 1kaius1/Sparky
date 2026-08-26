@@ -295,6 +295,85 @@ func (f *fakeUserElevator) ElevateTier(_ context.Context, actor rbac.Actor, targ
 	return nil
 }
 
+// fakeLocalAccountManager implements localAccountManager for tests.
+type fakeLocalAccountManager struct {
+	createErr error
+	resetErr  error
+	created   *db.User
+
+	createCalls []createLocalAccountCall
+	resetCalls  []resetLocalAccountPasswordCall
+}
+
+type createLocalAccountCall struct {
+	actor       rbac.Actor
+	username    string
+	password    string
+	displayName string
+	tier        db.Tier
+}
+
+type resetLocalAccountPasswordCall struct {
+	actor        rbac.Actor
+	targetUserID string
+	newPassword  string
+}
+
+func (f *fakeLocalAccountManager) CreateLocalAccount(_ context.Context, actor rbac.Actor, username, password, displayName string, tier db.Tier) (*db.User, error) {
+	if f.createErr != nil {
+		return nil, f.createErr
+	}
+	f.createCalls = append(f.createCalls, createLocalAccountCall{actor, username, password, displayName, tier})
+	if f.created != nil {
+		return f.created, nil
+	}
+	return &db.User{ID: "new-local-user", LocalUsername: &username, DisplayName: displayName, Tier: tier}, nil
+}
+
+func (f *fakeLocalAccountManager) ResetLocalAccountPassword(_ context.Context, actor rbac.Actor, targetUserID, newPassword string) error {
+	if f.resetErr != nil {
+		return f.resetErr
+	}
+	f.resetCalls = append(f.resetCalls, resetLocalAccountPasswordCall{actor, targetUserID, newPassword})
+	return nil
+}
+
+// fakeSelfAccountManager implements selfAccountManager for tests.
+type fakeSelfAccountManager struct {
+	updateDisplayNameErr error
+	changePasswordErr    error
+
+	updateDisplayNameCalls []updateDisplayNameCall
+	changePasswordCalls    []changePasswordCall
+}
+
+type updateDisplayNameCall struct {
+	actor       rbac.Actor
+	displayName string
+}
+
+type changePasswordCall struct {
+	actor           rbac.Actor
+	currentPassword string
+	newPassword     string
+}
+
+func (f *fakeSelfAccountManager) UpdateDisplayName(_ context.Context, actor rbac.Actor, displayName string) error {
+	if f.updateDisplayNameErr != nil {
+		return f.updateDisplayNameErr
+	}
+	f.updateDisplayNameCalls = append(f.updateDisplayNameCalls, updateDisplayNameCall{actor, displayName})
+	return nil
+}
+
+func (f *fakeSelfAccountManager) ChangeOwnPassword(_ context.Context, actor rbac.Actor, currentPassword, newPassword string) error {
+	if f.changePasswordErr != nil {
+		return f.changePasswordErr
+	}
+	f.changePasswordCalls = append(f.changePasswordCalls, changePasswordCall{actor, currentPassword, newPassword})
+	return nil
+}
+
 // fakeSettingsViewer implements settingsViewer for tests.
 type fakeSettingsViewer struct {
 	metricsExport *db.MetricsExportConfig
@@ -476,8 +555,9 @@ func newTestDashboardAPIWithEvents(t *testing.T, nodeList *fakeNodeLister, regis
 func newTestDashboardAPIWithEngineTransfers(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker, engineProvisionerFake *fakeEngineProvisioner, engineTransfersFake *fakeEngineTransferLister, engineInventoryFake *fakeEngineInventoryLister) *API {
 	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
+	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
+	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

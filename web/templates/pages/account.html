@@ -1,0 +1,50 @@
+{{define "content"}}
+<h1>My account</h1>
+
+{{if not .Data.IsLocalAccount}}
+<p>This session is signed in via Active Directory. Your display name is refreshed
+from AD at every login, and your password is managed there, not by Sparky - there
+is nothing to edit on this page.</p>
+{{else}}
+
+<h2>Display name</h2>
+{{if .Data.DisplayNameError}}
+<div class="form-error">{{.Data.DisplayNameError}}</div>
+{{end}}
+{{if .Data.DisplayNameSuccess}}
+<div class="form-success">Display name updated.</div>
+{{end}}
+<form method="post" action="/account/display-name">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="display_name">Display name</label><br>
+    <input type="text" id="display_name" name="display_name" value="{{.Data.DisplayName}}" required>
+  </p>
+  <p><button type="submit">Save</button></p>
+</form>
+
+<h2>Change password</h2>
+{{if .Data.PasswordError}}
+<div class="form-error">{{.Data.PasswordError}}</div>
+{{end}}
+{{if .Data.PasswordSuccess}}
+<div class="form-success">Password changed.</div>
+{{end}}
+<form method="post" action="/account/password">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="current_password">Current password</label><br>
+    <input type="password" id="current_password" name="current_password" autocomplete="current-password" required>
+  </p>
+  <p>
+    <label for="new_password">New password</label><br>
+    <input type="password" id="new_password" name="new_password" autocomplete="new-password" required>
+  </p>
+  <p>
+    <label for="confirm_password">Confirm new password</label><br>
+    <input type="password" id="confirm_password" name="confirm_password" autocomplete="new-password" required>
+  </p>
+  <p><button type="submit">Change password</button></p>
+</form>
+{{end}}
+{{end}}

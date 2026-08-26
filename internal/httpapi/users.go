@@ -76,6 +76,7 @@ type userRow struct {
 	ElevatedBy     string
 	ElevatedAt     string
 	ReachableTiers []string
+	IsLocalAccount bool
 }
 
 func (a *API) handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -141,6 +142,7 @@ func (a *API) handleUsers(w http.ResponseWriter, r *http.Request) {
 			ElevatedBy:     elevatedBy,
 			ElevatedAt:     elevatedAt,
 			ReachableTiers: reachableTiers(actor, u.Tier),
+			IsLocalAccount: u.LocalUsername != nil,
 		})
 	}
 

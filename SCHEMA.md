@@ -17,23 +17,49 @@ the schema.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | uuid, PK | Internal identity, stable across AD changes |
-| `ad_sid` | text, unique, indexed | AD SID - external identity reference for LDAP lookup |
+| `ad_sid` | text, nullable, unique | AD SID - external identity reference for LDAP lookup. Nullable since a local-only account (below) has no AD identity at all; the `UNIQUE` constraint already permits multiple `NULL`s in Postgres, so this needs no partial-index workaround |
 | `entra_object_id` | text, nullable | Reserved for the future Entra ID / OIDC migration |
-| `display_name` | text | Cached from AD at login - avoids an LDAP round-trip for every render |
+| `display_name` | text | Cached from AD at login for an AD-backed account; directly editable by the user themselves for a local-only account (below) - see Local-only accounts |
 | `tier` | enum | `read_only` / `developer` / `power_dev` / `admin` |
 | `created_at` | timestamptz | First login |
 | `last_login_at` | timestamptz | |
 | `elevated_by` | uuid, nullable, FK -> Users.id | Who last changed this user's tier |
 | `elevated_at` | timestamptz, nullable | |
-| `ldap_dn` | text, nullable | The user's LDAP distinguishedName, cached and refreshed at every login (same "cached from AD" reasoning as `display_name`) - lets a mid-session AD group-membership recheck (PLANNING.md Decisions Log) re-verify against LDAP without needing the user's password again. Nullable: a user who hasn't logged in since this column was added has no cached value yet - a recheck treats that the same as no longer being a member, which self-heals on the user's next real login |
+| `ldap_dn` | text, nullable | The user's LDAP distinguishedName, cached and refreshed at every login (same "cached from AD" reasoning as `display_name`) - lets a mid-session AD group-membership recheck (PLANNING.md Decisions Log) re-verify against LDAP without needing the user's password again. Nullable: a user who hasn't logged in since this column was added has no cached value yet - a recheck treats that the same as no longer being a member, which self-heals on the user's next real login. Always `NULL` for a local-only account - see Local-only accounts, which is never subject to this recheck at all |
+| `local_username` | text, nullable, unique | The login identifier for a local-only account - `NULL` for an AD-backed row. Kept distinct from `display_name` (which a local user can freely rename) for the same reason `ad_sid` and `display_name` are already two separate concerns for an AD-backed row - what you log in with, versus what you're called |
+| `local_password_hash` | text, nullable | Argon2id-encoded, same format and helper (`auth.HashPassword`) as the Break-glass credential below - `NULL` for an AD-backed row |
 
 `tier` is a plain enum column, not a normalized roles table - four fixed values with
 no per-tier metadata does not justify the extra join.
+
+A `CHECK` constraint enforces exactly one identity mechanism per row: either
+`ad_sid` is set and both `local_username`/`local_password_hash` are `NULL` (an
+AD-backed row), or `ad_sid` is `NULL` and both of the other two are set (a
+local-only row) - see migration `000024_add_local_accounts`.
 
 Elevation rules (enforced in the RBAC component, not the database): SuperAdmin can
 set any user to any tier. Admins can promote Read-only -> Developer and Developer ->
 PowerDev, and may demote within that same range. Only the SuperAdmin can promote to
 Admin. The SuperAdmin is not a row in this table - see Break-glass credential below.
+These rules apply identically to a local-only account - elevation has no concept of
+where an account's identity came from, only its current tier.
+
+### Local-only accounts
+
+For a deployment with no AD/LDAP infrastructure at all (`internal/config`'s
+`LDAP_*` variables are optional as a group - either all four are set, enabling AD
+login, or none are, leaving local-only accounts as the only path). Created by an
+Admin/SuperAdmin via the Users & permissions page (`internal/rbac.Service.
+CreateLocalAccount`), with one exception: `sparky-server setup` also creates a
+default `admin` local account (tier Admin) itself, idempotently, with a
+system-generated password revealed once in the setup wizard's own output -
+specifically so the Break-glass credential can stay what its name always implied,
+a rarely-touched recovery mechanism, rather than the account actually used day to
+day. A local user can update their own `display_name` and change their own
+password (current + new + confirmation) at `/account`; an Admin can reset a local
+account's password directly when a user forgets it. Real self-service "forgot
+password" (a token/email-based reset with no Admin involved) is a real future
+idea, not built yet - see `PLANNING.md`.
 
 ---
 

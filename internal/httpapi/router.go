@@ -21,10 +21,12 @@ import (
 // API holds the dependencies HTTP handlers need.
 type API struct {
 	loginService           *LoginService
+	localLoginService      *LocalLoginService
 	breakGlassLoginService *BreakGlassLoginService
 	breakGlassIPWhitelist  *breakGlassIPWhitelist
 	breakGlassLoginPath    string
 	loginRateLimiter       *loginRateLimiter
+	localLoginRateLimiter  *loginRateLimiter
 	breakGlassRateLimiter  *loginRateLimiter
 	authRecheckInterval    time.Duration
 	setupGate              *setupGate
@@ -42,6 +44,8 @@ type API struct {
 	audit             auditLister
 	userRoster        userRoster
 	elevator          userElevator
+	localAccounts     localAccountManager
+	selfAccount       selfAccountManager
 	settings          settingsViewer
 	metrics           metricsLister
 	events            eventSource
@@ -130,8 +134,8 @@ type API struct {
 // embedded templates (web.FS) fail to parse - a template syntax error is a
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
-func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
+func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -147,10 +151,12 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 
 	return &API{
 		loginService:           loginService,
+		localLoginService:      localLoginService,
 		breakGlassLoginService: breakGlassLoginService,
 		breakGlassIPWhitelist:  ipWhitelist,
 		breakGlassLoginPath:    breakGlassLoginPath,
 		loginRateLimiter:       newLoginRateLimiter(authRateLimitMaxAttempts, authRateLimitWindow),
+		localLoginRateLimiter:  newLoginRateLimiter(authRateLimitMaxAttempts, authRateLimitWindow),
 		breakGlassRateLimiter:  newLoginRateLimiter(authRateLimitMaxAttempts, authRateLimitWindow),
 		authRecheckInterval:    authRecheckInterval,
 		setupGate:              newSetupGate(breakGlassStore),
@@ -167,6 +173,8 @@ func New(loginService *LoginService, breakGlassLoginService *BreakGlassLoginServ
 		audit:                  auditLog,
 		userRoster:             roster,
 		elevator:               elevator,
+		localAccounts:          localAccountsSvc,
+		selfAccount:            selfAccountSvc,
 		settings:               settingsSvc,
 		metrics:                metricsSvc,
 		events:                 eventsSource,
@@ -207,6 +215,13 @@ func (a *API) Router() http.Handler {
 	// the POST (the actual credential check) is throttled; GET /login just
 	// renders the form, so there's nothing worth rate-limiting there.
 	r.With(a.loginRateLimiter.middleware, a.RequireCSRF).Post("/login", a.handleLogin)
+	// GET/POST /login/local - the local-account form's own stable,
+	// bookmarkable URL (SCHEMA.md Users' Local-only accounts subsection),
+	// mirroring /login's own construction: localLoginRateLimiter is a
+	// separate loginRateLimiter instance from the one guarding /login above,
+	// so a burst against one credential never exhausts the other's budget.
+	r.Get("/login/local", a.handleLocalLoginPage)
+	r.With(a.localLoginRateLimiter.middleware, a.RequireCSRF).Post("/login/local", a.handleLocalLogin)
 	// GET serves the break-glass sign-in form; POST serves both that
 	// form's own submission and the existing JSON API contract - same
 	// isFormRequest branch handleLogin already established. Both verbs are
@@ -307,6 +322,17 @@ func (a *API) Router() http.Handler {
 	// every other Admin-floor page above - RequireSession only confirms a
 	// session exists.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/users/{id}/tier", a.handleElevateUser)
+	// The create-local-account form's own RBAC gate (rbac.CanCreateLocalAccount)
+	// is checked directly in both handlers - GET to decide whether to show
+	// the form at all, POST (via rbac.Service.CreateLocalAccount) as the
+	// real enforcement boundary that never trusts what the GET rendered,
+	// same reasoning as node registration.
+	r.With(a.RequireSession).Get("/users/local/new", a.handleNewLocalAccountForm)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/users/local/new", a.handleCreateLocalAccount)
+	// The per-row password-reset action's own RBAC decision happens inside
+	// handleResetLocalAccountPassword via rbac.Service.ResetLocalAccountPassword,
+	// same reasoning as the tier-change form above.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/users/{id}/local/reset-password", a.handleResetLocalAccountPassword)
 	// /settings' floor is also Admin, same reasoning as /audit-log and
 	// /users - the tier check happens inside handleSettings via
 	// settings.Service.Get.
@@ -315,6 +341,14 @@ func (a *API) Router() http.Handler {
 	// like every Read-only-tier page above, no RBAC beyond that (see
 	// handleEvents' own doc comment).
 	r.With(a.RequireSession).Get("/events", a.handleEvents)
+	// /account is always mounted for any authenticated session, but only
+	// functional for a local-account one (Identity.IsLocalAccount) - a
+	// non-local session sees a minimal read-only notice instead of the
+	// edit forms, enforced inside handleUpdateDisplayName/
+	// handleChangeOwnPassword themselves, not by a second middleware.
+	r.With(a.RequireSession).Get("/account", a.handleAccountPage)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/account/display-name", a.handleUpdateDisplayName)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/account/password", a.handleChangeOwnPassword)
 
 	// Static assets (CSS, vendored htmx) - public, no session required,
 	// same reasoning a login page's own assets would need if one existed.
@@ -347,8 +381,9 @@ const identityContextKey contextKey = "sparky_identity"
 // is empty when IsSuperAdmin is true, mirroring internal/session.Session
 // and internal/rbac.Actor.
 type Identity struct {
-	UserID       string
-	IsSuperAdmin bool
+	UserID         string
+	IsSuperAdmin   bool
+	IsLocalAccount bool
 }
 
 // RequireSession verifies the session cookie and stores the authenticated
@@ -361,7 +396,11 @@ type Identity struct {
 // this also re-verifies the user's AD login-gate group membership before
 // letting the request through - see recheckAccessGroup and PLANNING.md's
 // mid-session AD group re-validation Decisions Log entry. A SuperAdmin
-// (break-glass) session is never rechecked - it isn't AD-backed at all.
+// (break-glass) session is never rechecked - it isn't AD-backed at all - and
+// neither is a local-only account's session: it has no AD group membership
+// to ever go stale, and its permanently-nil cached LDAP DN would otherwise
+// be misread by recheckAccessGroup's "no cached DN yet" branch as "no
+// longer a member," forcing a logout on every recheck interval.
 func (a *API) RequireSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cookie, err := r.Cookie(sessionCookieName)
@@ -376,7 +415,7 @@ func (a *API) RequireSession(next http.Handler) http.Handler {
 			return
 		}
 
-		if !sess.IsSuperAdmin && time.Since(sess.LastVerifiedAt) >= a.authRecheckInterval {
+		if !sess.IsSuperAdmin && !sess.IsLocalAccount && time.Since(sess.LastVerifiedAt) >= a.authRecheckInterval {
 			refreshed, ok := a.recheckAccessGroup(w, r, sess)
 			if !ok {
 				// The response has already been written (a forced logout) -
@@ -386,7 +425,7 @@ func (a *API) RequireSession(next http.Handler) http.Handler {
 			sess = refreshed
 		}
 
-		identity := Identity{UserID: sess.UserID, IsSuperAdmin: sess.IsSuperAdmin}
+		identity := Identity{UserID: sess.UserID, IsSuperAdmin: sess.IsSuperAdmin, IsLocalAccount: sess.IsLocalAccount}
 		ctx := context.WithValue(r.Context(), identityContextKey, identity)
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})

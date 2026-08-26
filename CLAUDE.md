@@ -291,8 +291,13 @@ go run ./cmd/sparky-server setup
 # password has been set (internal/httpapi's setupGate) - there is no separate
 # setup-state flag. Until it has, every route responds 503 SETUP_REQUIRED;
 # the running server picks up completion on the next request, no restart
-# needed. Currently this wizard only sets that password - see "SuperAdmin
-# Break-Glass Credential" below, whose prompt/hash/store logic it shares.
+# needed. This wizard does two things: sets that break-glass password - see
+# "SuperAdmin Break-Glass Credential" below, whose prompt/hash/store logic it
+# shares - and then, idempotently (skipped on a rerun if it already exists),
+# bootstraps a default local-only "admin" account (tier Admin, display name
+# "Admin") with a system-generated password printed once in plaintext. This
+# is what makes break-glass a true recovery-only mechanism day to day - see
+# SCHEMA.md Users' Local-only accounts subsection.
 ```
 
 ### SuperAdmin Break-Glass Credential
@@ -357,11 +362,11 @@ with `existingSecret` support, etc.). Agent-specific variables are documented in
 | Variable                | Required | Default     | Description                                    |
 |---------------------------|----------|-------------|--------------------------------------------------|
 | `DATABASE_URL`           | Yes      | -           | Postgres connection string                       |
-| `LDAP_SERVER_ADDR`       | Yes      | -           | On-prem AD server address                         |
-| `LDAP_BIND_DN`           | Yes      | -           | Service account DN used to search for users       |
-| `LDAP_BIND_PASSWORD`     | Yes      | -           | Service account password                          |
-| `LDAP_BASE_DN`           | Yes      | -           | Search base for user/group lookups                |
-| `LDAP_ACCESS_GROUP_DN`   | Yes      | -           | The dedicated AD group that gates login itself    |
+| `LDAP_SERVER_ADDR`       | Yes, as a group (see below) | - | On-prem AD server address                         |
+| `LDAP_BIND_DN`           | Yes, as a group (see below) | - | Service account DN used to search for users       |
+| `LDAP_BIND_PASSWORD`     | Yes, as a group (see below) | - | Service account password                          |
+| `LDAP_BASE_DN`           | Yes, as a group (see below) | - | Search base for user/group lookups                |
+| `LDAP_ACCESS_GROUP_DN`   | Yes, as a group (see below) | - | The dedicated AD group that gates login itself    |
 | `SESSION_SECRET`         | Yes      | -           | Signing key for session cookies                   |
 | `LISTEN_PORT`            | No       | `8080`      | Port to listen on                                 |
 | `LOG_LEVEL`              | No       | `info`      | Log verbosity                                     |
@@ -372,6 +377,14 @@ with `existingSecret` support, etc.). Agent-specific variables are documented in
 | `AUTH_RATE_LIMIT_MAX_ATTEMPTS` | No | `10`        | Per-source-IP attempt cap for `POST /login`/`POST /login/break-glass`, each throttled independently - see `.env.example` |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | No | `300`     | Window (seconds) the above cap applies over before resetting |
 | `AUTH_RECHECK_INTERVAL_SECONDS` | No | `3600`     | How long a session's AD login-gate group membership is trusted before it's re-verified against LDAP - see `PLANNING.md` Decisions Log |
+
+The five `LDAP_*` variables above are validated as a single all-or-nothing
+group, not individually required: either every one is set (AD login is
+available, alongside local-only accounts) or none are (AD login is
+unavailable - local-only accounts, created via the Users & permissions page
+and bootstrapped by `sparky-server setup`, are the only way to sign in). A
+partial set is a hard config error at startup - see `SCHEMA.md` Users' Local-
+only accounts subsection.
 
 Everything else that's user-configurable after first run (metrics export
 destination, audit retention, permission overrides) lives in the database, set

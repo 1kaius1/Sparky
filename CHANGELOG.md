@@ -1124,6 +1124,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   environment has no AD/LDAP infrastructure and isn't getting one just to run
   Sparky), recorded now with no design decisions made yet. Docs only, no code
   touched.
+- Local-only accounts, closing out the feature note above: a SuperAdmin/Admin
+  can create a username+password account (Users & permissions page's new
+  "Create local account" form) that participates in the exact same RBAC tier
+  system as an AD-backed account, and `LDAP_*` becomes optional as a group -
+  either all five variables are set or none are, a partial set stays a hard
+  config error. `sparky-server setup` now also bootstraps a default local
+  `admin` account (tier Admin, display name `Admin`) idempotently, with a
+  system-generated password printed once - this is what makes the SuperAdmin
+  break-glass credential a true recovery-only mechanism day to day rather
+  than the account anyone signs in with. The login page gains a method
+  picker (`<select>`, one deliberate exception to its otherwise-zero-JS
+  shape) driven by a `?method=` query param, posting to `/login` (AD) or the
+  new `/login/local`; a lone available method (the common no-LDAP case)
+  renders directly with no picker at all. Local users can update their own
+  display name and change their own password (current + new + confirmation)
+  via a new self-service `/account` page; an Admin can reset a local
+  account's password directly from an inline per-row form on the Users &
+  permissions page for a user who forgets theirs. A new `users_identity_
+  mechanism_check` CHECK constraint (migration `000024`) enforces exactly
+  one identity mechanism per `Users` row at the database level. Real
+  self-service "forgot password" (a token/email flow) is explicitly out of
+  scope - flagged as a Future Ideas item only, per PLANNING.md's Decisions
+  Log.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,

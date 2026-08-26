@@ -13,6 +13,15 @@
     {{if .Error}}
     <div class="login-error">{{.Error}}</div>
     {{end}}
+    {{if .ShowMethodPicker}}
+    <form method="get" action="/login" class="login-method-picker">
+      <select name="method" onchange="this.form.submit()">
+        <option value="ad" {{if eq .Method "ad"}}selected{{end}}>Active Directory</option>
+        <option value="local" {{if eq .Method "local"}}selected{{end}}>Local account</option>
+      </select>
+    </form>
+    {{end}}
+    {{if eq .Method "ad"}}
     <form method="post" action="/login" class="login-form">
       <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
       <label for="username">Username</label>
@@ -21,6 +30,16 @@
       <input type="password" id="password" name="password" autocomplete="current-password" required>
       <button type="submit">Sign in</button>
     </form>
+    {{else}}
+    <form method="post" action="/login/local" class="login-form">
+      <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+      <label for="username">Username</label>
+      <input type="text" id="username" name="username" autocomplete="username" autofocus required>
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" autocomplete="current-password" required>
+      <button type="submit">Sign in</button>
+    </form>
+    {{end}}
   </div>
 </body>
 </html>

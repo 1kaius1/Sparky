@@ -112,6 +112,30 @@ func CanViewSettings(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanCreateLocalAccount reports whether actor may create a new local-only
+// account - see SCHEMA.md Users' Local-only accounts subsection. Same
+// unconditional-by-tier shape as CanManageNodes: no permission-override
+// path, Admin/SuperAdmin only.
+func CanCreateLocalAccount(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
+// CanResetLocalAccountPassword reports whether actor may reset another
+// local-only account's password - see SCHEMA.md Users' Local-only accounts
+// subsection. Same unconditional-by-tier shape as CanCreateLocalAccount; a
+// distinct function even though the two share a tier floor today, matching
+// this file's existing precedent (CanViewSettings vs. CanViewAuditLog/
+// CanViewUsers) of not conflating capabilities that could diverge later.
+func CanResetLocalAccountPassword(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanManageModelStore reports whether actor has the manage_model_store
 // capability (download and delete models) - see SCHEMA.md Permission
 // overrides. Admin and SuperAdmin always have it implicitly. PowerDev has
