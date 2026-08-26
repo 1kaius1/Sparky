@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -23,10 +24,16 @@ const (
 	TierAdmin     Tier = "admin"
 )
 
-// User mirrors the users table - see SCHEMA.md Users.
+// User mirrors the users table - see SCHEMA.md Users. Exactly one of ADSID
+// (an AD-backed row) or LocalUsername (a local-only row) is ever non-nil -
+// enforced by the users_identity_mechanism_check CHECK constraint at the
+// database level, not just assumed here.
 type User struct {
-	ID            string
-	ADSID         string
+	ID string
+
+	// ADSID is nullable - a local-only account has no AD identity at all.
+	// See SCHEMA.md Users.
+	ADSID         *string
 	EntraObjectID *string
 	DisplayName   string
 	Tier          Tier
@@ -38,12 +45,37 @@ type User struct {
 	// LDAPDN is the user's LDAP distinguishedName, cached at every login -
 	// see SCHEMA.md Users and PLANNING.md's mid-session AD group
 	// re-validation Decisions Log entry. Nil for a user who hasn't logged
-	// in since this column was added.
+	// in since this column was added, and always nil for a local-only
+	// account (never AD-backed at all).
 	LDAPDN *string
+
+	// LocalUsername is the login identifier for a local-only account - nil
+	// for an AD-backed row. local_password_hash itself is intentionally
+	// not exposed on this type at all - nothing outside this file needs it
+	// (FindByLocalUsername below returns it separately, only to the one
+	// caller that actually verifies it).
+	LocalUsername *string
 }
 
 // ErrUserNotFound is returned when a lookup or update finds no matching row.
 var ErrUserNotFound = errors.New("user not found")
+
+// ErrLocalUsernameTaken is returned by CreateLocal when local_username's
+// unique constraint rejects the insert - a real, expected, user-facing
+// scenario for an Admin filling out the create-local-account form, unlike
+// most other unique-constraint conflicts in this codebase, which are rare
+// enough today to leave as a generic error.
+var ErrLocalUsernameTaken = errors.New("local username already taken")
+
+// uniqueViolationCode is Postgres's own SQLSTATE code for a unique
+// constraint violation - see
+// https://www.postgresql.org/docs/current/errcodes-appendix.html.
+const uniqueViolationCode = "23505"
+
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolationCode
+}
 
 // UserRepository is the only component that queries the users table
 // directly - see CLAUDE.md: the repository layer is the only place that
@@ -60,12 +92,12 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-const userColumns = `id, ad_sid, entra_object_id, display_name, tier, created_at, last_login_at, elevated_by, elevated_at, ldap_dn`
+const userColumns = `id, ad_sid, entra_object_id, display_name, tier, created_at, last_login_at, elevated_by, elevated_at, ldap_dn, local_username`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.ADSID, &u.EntraObjectID, &u.DisplayName, &u.Tier,
-		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN)
+		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN, &u.LocalUsername)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -80,6 +112,26 @@ func scanUser(row pgx.Row) (*User, error) {
 func (r *UserRepository) FindByADSID(ctx context.Context, adSID string) (*User, error) {
 	row := r.pool.QueryRow(ctx, `SELECT `+userColumns+` FROM users WHERE ad_sid = $1`, adSID)
 	return scanUser(row)
+}
+
+// FindByLocalUsername looks up a local-only user by their login identifier -
+// the local-account equivalent of FindByADSID. Returns ErrUserNotFound if no
+// row matches; passwordHash is returned separately (not on User itself) as
+// the one exception to "never expose local_password_hash outside this
+// file" - only LocalLoginService's own verification step needs it.
+func (r *UserRepository) FindByLocalUsername(ctx context.Context, username string) (user *User, passwordHash string, err error) {
+	row := r.pool.QueryRow(ctx, `SELECT `+userColumns+`, local_password_hash FROM users WHERE local_username = $1`, username)
+
+	var u User
+	scanErr := row.Scan(&u.ID, &u.ADSID, &u.EntraObjectID, &u.DisplayName, &u.Tier,
+		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN, &u.LocalUsername, &passwordHash)
+	if errors.Is(scanErr, pgx.ErrNoRows) {
+		return nil, "", ErrUserNotFound
+	}
+	if scanErr != nil {
+		return nil, "", fmt.Errorf("scan user: %w", scanErr)
+	}
+	return &u, passwordHash, nil
 }
 
 // FindByID looks up a user by their internal ID - used by internal/rbac to
@@ -104,6 +156,54 @@ func (r *UserRepository) Create(ctx context.Context, adSID, displayName, dn stri
 		return nil, fmt.Errorf("create user: %w", err)
 	}
 	return u, nil
+}
+
+// CreateLocal inserts a new local-only account - no AD identity behind it at
+// all (ad_sid stays NULL, matching the CHECK constraint). Returns
+// ErrLocalUsernameTaken instead of a generic wrapped error when username
+// collides with an existing account.
+func (r *UserRepository) CreateLocal(ctx context.Context, username, passwordHash, displayName string, tier Tier) (*User, error) {
+	row := r.pool.QueryRow(ctx,
+		`INSERT INTO users (local_username, local_password_hash, display_name, tier) VALUES ($1, $2, $3, $4) RETURNING `+userColumns,
+		username, passwordHash, displayName, tier)
+
+	u, err := scanUser(row)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrLocalUsernameTaken
+		}
+		return nil, fmt.Errorf("create local user: %w", err)
+	}
+	return u, nil
+}
+
+// UpdateDisplayName changes a local account's own display name - the
+// local-account equivalent of the display_name refresh UpdateLastLogin
+// performs for an AD-backed account on every login.
+func (r *UserRepository) UpdateDisplayName(ctx context.Context, id, displayName string) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE users SET display_name = $1 WHERE id = $2`, displayName, id)
+	if err != nil {
+		return fmt.Errorf("update display name: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// UpdateLocalPassword sets a local account's password hash - used by both a
+// self-service password change and an Admin-driven reset, which differ only
+// in who calls this and how the new hash was authorized, not in the write
+// itself.
+func (r *UserRepository) UpdateLocalPassword(ctx context.Context, id, passwordHash string) error {
+	tag, err := r.pool.Exec(ctx, `UPDATE users SET local_password_hash = $1 WHERE id = $2`, passwordHash, id)
+	if err != nil {
+		return fmt.Errorf("update local password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
 }
 
 // UpdateLastLogin records the current login timestamp and refreshes the
