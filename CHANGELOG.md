@@ -1147,6 +1147,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   self-service "forgot password" (a token/email flow) is explicitly out of
   scope - flagged as a Future Ideas item only, per PLANNING.md's Decisions
   Log.
+- `scripts/repackage_koboldcpp_release.sh` - maintainer tooling that
+  repackages koboldcpp's own official pre-built `koboldcpp-linux-x64`
+  release binary into the same checksummed tarball shape
+  `agent/enginetransfer`'s Executor already knows how to download, rather
+  than building koboldcpp from source: koboldcpp's real build pipeline
+  bootstraps its own conda/micromamba Python environment, builds several
+  `.so` variants via a hand-written Makefile, then bundles a Python
+  interpreter plus those `.so` files into one PyInstaller executable - a
+  fundamentally different, much heavier process than llama.cpp's plain
+  CMake build (`scripts/build_engine_release.sh`), and not something this
+  repo re-implements. Integrity is verified against the SHA-256 digest
+  GitHub's own Release API already records for the asset at upload time,
+  not just a bare download over TLS. amd64 only - koboldcpp has no official
+  Linux ARM64 build (their only ARM64 CI job is explicitly labeled
+  unofficial, CPU-only, and cross-compiled). Verified for real: downloaded
+  and repackaged the actual `v1.119` release, confirmed the resulting
+  tarball's checksum, and confirmed the extracted binary runs standalone
+  from a location with no trace of the original download. Publishing this
+  bundle still goes through the existing, unchanged
+  `scripts/publish_engine_release.sh` (its own `ALLOW_PARTIAL=1` escape
+  hatch, built for exactly this kind of single-architecture gap, confirmed
+  against the real bundle with a stubbed `gh`) - this and its own doc
+  comment now describe both a compiled bundle and a repackaged one, not
+  assuming every bundle came from `build_engine_release.sh`. No schema, no
+  Go code, no `internal/engines` adapter - this is producer-side tooling
+  only, deliberately scoped narrower than the still-deferred koboldcpp
+  `engine_type`/adapter work (PLANNING.md Future Ideas).
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
