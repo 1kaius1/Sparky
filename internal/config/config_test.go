@@ -7,14 +7,20 @@ import (
 	"testing"
 )
 
+// requiredVars are the always-required variables - unrelated to whether
+// LDAP is configured. See ldapVars below for the separate all-or-nothing
+// group.
 var requiredVars = []string{
 	"DATABASE_URL",
+	"SESSION_SECRET",
+}
+
+var ldapVars = []string{
 	"LDAP_SERVER_ADDR",
 	"LDAP_BIND_DN",
 	"LDAP_BIND_PASSWORD",
 	"LDAP_BASE_DN",
 	"LDAP_ACCESS_GROUP_DN",
-	"SESSION_SECRET",
 }
 
 func setAllRequired(t *testing.T) {
@@ -26,6 +32,18 @@ func setAllRequired(t *testing.T) {
 	t.Setenv("LDAP_BASE_DN", "dc=example")
 	t.Setenv("LDAP_ACCESS_GROUP_DN", "cn=sparky-access,dc=example")
 	t.Setenv("SESSION_SECRET", "sekrit")
+}
+
+// setRequiredNoLDAP sets only the always-required variables, leaving every
+// LDAP_* variable unset - the "local-only accounts are the only way to
+// sign in" configuration.
+func setRequiredNoLDAP(t *testing.T) {
+	t.Helper()
+	t.Setenv("DATABASE_URL", "postgres://x")
+	t.Setenv("SESSION_SECRET", "sekrit")
+	for _, v := range ldapVars {
+		t.Setenv(v, "")
+	}
 }
 
 func TestLoad_AllRequiredPresent_Succeeds(t *testing.T) {
@@ -41,6 +59,38 @@ func TestLoad_AllRequiredPresent_Succeeds(t *testing.T) {
 	}
 	if cfg.SessionSecret != "sekrit" {
 		t.Errorf("SessionSecret = %q, want %q", cfg.SessionSecret, "sekrit")
+	}
+	if !cfg.LDAPConfigured {
+		t.Error("LDAPConfigured = false, want true when every LDAP_* variable is set")
+	}
+}
+
+func TestLoad_NoLDAP_Succeeds(t *testing.T) {
+	setRequiredNoLDAP(t)
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() returned unexpected error: %v", err)
+	}
+	if cfg.LDAPConfigured {
+		t.Error("LDAPConfigured = true, want false when no LDAP_* variable is set")
+	}
+}
+
+func TestLoad_PartialLDAP_ReturnsError(t *testing.T) {
+	for _, missing := range ldapVars {
+		t.Run(missing, func(t *testing.T) {
+			setAllRequired(t)
+			t.Setenv(missing, "")
+
+			_, err := Load()
+			if err == nil {
+				t.Fatalf("Load() succeeded with a partial LDAP configuration (missing %s), want an error", missing)
+			}
+			if !strings.Contains(err.Error(), missing) {
+				t.Errorf("Load() error = %q, want it to mention %s", err.Error(), missing)
+			}
+		})
 	}
 }
 

@@ -75,9 +75,22 @@ func main() {
 	defer pool.Close()
 	logger.Println("database connection pool established")
 
-	identityProvider := auth.NewLDAPProvider(cfg.LDAPServerAddr, cfg.LDAPBindDN, cfg.LDAPBindPassword, cfg.LDAPBaseDN, cfg.LDAPAccessGroupDN)
 	users := db.NewUserRepository(pool)
-	loginService := httpapi.NewLoginService(identityProvider, users, cfg.SessionSecret)
+
+	// loginService stays nil when LDAP is unconfigured (cfg.LDAPConfigured
+	// false) - a concrete *httpapi.LoginService pointer end to end, so a
+	// plain nil check at the call site works with no typed-nil gotcha. AD
+	// login is simply unavailable in that case; local-only accounts
+	// (localLoginService below, always constructed) are the only way to
+	// sign in - see SCHEMA.md Users' Local-only accounts subsection.
+	var loginService *httpapi.LoginService
+	if cfg.LDAPConfigured {
+		identityProvider := auth.NewLDAPProvider(cfg.LDAPServerAddr, cfg.LDAPBindDN, cfg.LDAPBindPassword, cfg.LDAPBaseDN, cfg.LDAPAccessGroupDN)
+		loginService = httpapi.NewLoginService(identityProvider, users, cfg.SessionSecret)
+	} else {
+		logger.Println("LDAP not configured - AD login is unavailable, local-only accounts are the only way to sign in")
+	}
+	localLoginService := httpapi.NewLocalLoginService(users, cfg.SessionSecret)
 
 	breakGlass := db.NewBreakGlassRepository(pool)
 	breakGlassLoginService := httpapi.NewBreakGlassLoginService(breakGlass, cfg.SessionSecret)
@@ -184,8 +197,8 @@ func main() {
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
-	api, err := httpapi.New(loginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, settingsService, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, logger)
+	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

@@ -17,6 +17,12 @@ import (
 type Config struct {
 	DatabaseURL string
 
+	// LDAPConfigured is true only when every LDAP_* variable below is set -
+	// see Load's own doc comment. When false, AD login is unavailable and
+	// local-only accounts (SCHEMA.md Users' Local-only accounts subsection)
+	// are the only way to sign in.
+	LDAPConfigured bool
+
 	LDAPServerAddr    string
 	LDAPBindDN        string
 	LDAPBindPassword  string
@@ -43,9 +49,28 @@ type required struct {
 	dest   *string
 }
 
+// ldapEnvVars are the five LDAP_* variables treated as a single all-or-
+// nothing group - see Load's own doc comment.
+var ldapEnvVars = []string{
+	"LDAP_SERVER_ADDR",
+	"LDAP_BIND_DN",
+	"LDAP_BIND_PASSWORD",
+	"LDAP_BASE_DN",
+	"LDAP_ACCESS_GROUP_DN",
+}
+
 // Load reads and validates configuration from the environment, failing fast
 // if anything required is missing - see ARCHITECTURE.md Application
 // Lifecycle, Config / Env Validation.
+//
+// The LDAP_* variables are validated as a single all-or-nothing group, not
+// individually required: either every one of them is set (AD login is
+// available, alongside local-only accounts) or none of them are (AD login
+// is unavailable - local-only accounts are the only way to sign in, see
+// SCHEMA.md Users' Local-only accounts subsection). A partial set stays a
+// hard error - that's almost certainly a real misconfiguration, not a
+// deliberate choice, same posture Load already takes toward any other
+// missing required variable.
 func Load() (*Config, error) {
 	authRateLimitMaxAttempts, err := getEnvDefaultInt("AUTH_RATE_LIMIT_MAX_ATTEMPTS", 10)
 	if err != nil {
@@ -78,11 +103,6 @@ func Load() (*Config, error) {
 
 	fields := []required{
 		{"DATABASE_URL", &cfg.DatabaseURL},
-		{"LDAP_SERVER_ADDR", &cfg.LDAPServerAddr},
-		{"LDAP_BIND_DN", &cfg.LDAPBindDN},
-		{"LDAP_BIND_PASSWORD", &cfg.LDAPBindPassword},
-		{"LDAP_BASE_DN", &cfg.LDAPBaseDN},
-		{"LDAP_ACCESS_GROUP_DN", &cfg.LDAPAccessGroupDN},
 		{"SESSION_SECRET", &cfg.SessionSecret},
 	}
 
@@ -94,6 +114,32 @@ func Load() (*Config, error) {
 			continue
 		}
 		*f.dest = v
+	}
+
+	ldapFields := []required{
+		{"LDAP_SERVER_ADDR", &cfg.LDAPServerAddr},
+		{"LDAP_BIND_DN", &cfg.LDAPBindDN},
+		{"LDAP_BIND_PASSWORD", &cfg.LDAPBindPassword},
+		{"LDAP_BASE_DN", &cfg.LDAPBaseDN},
+		{"LDAP_ACCESS_GROUP_DN", &cfg.LDAPAccessGroupDN},
+	}
+	var ldapSet, ldapUnset []string
+	for _, f := range ldapFields {
+		v := os.Getenv(f.envVar)
+		if v == "" {
+			ldapUnset = append(ldapUnset, f.envVar)
+			continue
+		}
+		ldapSet = append(ldapSet, f.envVar)
+		*f.dest = v
+	}
+	switch {
+	case len(ldapUnset) == 0:
+		cfg.LDAPConfigured = true
+	case len(ldapSet) == 0:
+		cfg.LDAPConfigured = false
+	default:
+		return nil, fmt.Errorf("partial LDAP configuration: %v are set but %v are missing - set all five LDAP_* variables to enable AD login, or none to use local-only accounts only", ldapSet, ldapUnset)
 	}
 
 	if len(missing) > 0 {

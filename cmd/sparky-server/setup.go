@@ -8,8 +8,20 @@ import (
 	"fmt"
 	"log"
 
+	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/config"
 	"github.com/1kaius1/Sparky/internal/db"
+)
+
+// defaultAdminLocalUsername/defaultAdminDisplayName are the default local
+// account `setup` bootstraps - see SCHEMA.md Users' Local-only accounts
+// subsection. This is what makes the break-glass credential a true
+// recovery-only mechanism after this feature lands: a real, RBAC-tiered
+// Admin account exists from the very first `setup` run, so break-glass
+// never needs to be the account anyone signs in with day to day.
+const (
+	defaultAdminLocalUsername = "admin"
+	defaultAdminDisplayName   = "Admin"
 )
 
 // runSetup implements `sparky-server setup` - see ARCHITECTURE.md
@@ -51,8 +63,55 @@ func runSetup(ctx context.Context, cfg *config.Config, logger *log.Logger) {
 		logger.Fatalf("setup: %v", err)
 	}
 
+	users := db.NewUserRepository(pool)
+	if err := bootstrapDefaultAdminAccount(ctx, users, logger); err != nil {
+		logger.Fatalf("setup: %v", err)
+	}
+
 	fmt.Println()
-	fmt.Println("Setup complete. Start the server, then log in as SuperAdmin at")
-	fmt.Printf("POST %s to bootstrap the first Admin - see SCHEMA.md\n", cfg.BreakGlassLoginPath)
-	fmt.Println("Users, Elevation rules.")
+	fmt.Println("Setup complete. Start the server, then sign in with the local")
+	fmt.Println("account shown above (or as SuperAdmin via break-glass, POST")
+	fmt.Printf("%s) - see SCHEMA.md Users, Elevation rules.\n", cfg.BreakGlassLoginPath)
+}
+
+// bootstrapDefaultAdminAccount creates the default local "admin" account
+// (tier Admin, display name "Admin") if it doesn't already exist -
+// idempotent, matching sparky-agent setup's own "safe to re-run" precedent.
+// An already-existing admin account is left completely untouched, password
+// included: this must never reset a password an Admin has since changed,
+// unlike promptAndSetSuperAdminPassword's own always-overwrites behavior
+// for the break-glass credential (that command is explicitly a deliberate,
+// interactive reset; a repeated `setup` run is not). The generated password
+// is printed once in plaintext - the only time it is ever shown - mirroring
+// RegisterNode's own "shown here only once" precedent for a node's bearer
+// token.
+func bootstrapDefaultAdminAccount(ctx context.Context, users *db.UserRepository, logger *log.Logger) error {
+	_, _, err := users.FindByLocalUsername(ctx, defaultAdminLocalUsername)
+	switch {
+	case err == nil:
+		fmt.Println()
+		fmt.Println("Default local \"admin\" account already exists - leaving its password unchanged.")
+		return nil
+	case !errors.Is(err, db.ErrUserNotFound):
+		return fmt.Errorf("look up default admin account: %w", err)
+	}
+
+	password, err := auth.GenerateInitialPassword()
+	if err != nil {
+		return fmt.Errorf("generate initial password: %w", err)
+	}
+	hash, err := auth.HashPassword(password)
+	if err != nil {
+		return fmt.Errorf("hash initial password: %w", err)
+	}
+	if _, err := users.CreateLocal(ctx, defaultAdminLocalUsername, hash, defaultAdminDisplayName, db.TierAdmin); err != nil {
+		return fmt.Errorf("create default admin account: %w", err)
+	}
+
+	fmt.Println()
+	fmt.Println("Default local admin account created:")
+	fmt.Printf("  Username: %s\n", defaultAdminLocalUsername)
+	fmt.Printf("  Password: %s\n", password)
+	fmt.Println("This password is shown only now - sign in and change it (see /account).")
+	return nil
 }
