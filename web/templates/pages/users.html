@@ -1,6 +1,8 @@
 {{define "content"}}
 <h1>Users &amp; permissions</h1>
 
+<p><a href="/users/local/new">Create local account</a></p>
+
 <table class="data-table">
   <thead>
     <tr>
@@ -10,6 +12,7 @@
       <th>Elevated by</th>
       <th>Elevated at</th>
       <th>Change tier</th>
+      <th>Reset password</th>
     </tr>
   </thead>
   <tbody>
@@ -30,9 +33,17 @@
         </form>
         {{end}}
       </td>
+      <td>
+        {{if .IsLocalAccount}}
+        <form hx-post="/users/{{.ID}}/local/reset-password" hx-swap="none">
+          <input type="password" name="password" placeholder="new password" autocomplete="new-password" required>
+          <button type="submit">Reset</button>
+        </form>
+        {{end}}
+      </td>
     </tr>
     {{else}}
-    <tr><td colspan="6" class="empty">No users yet.</td></tr>
+    <tr><td colspan="7" class="empty">No users yet.</td></tr>
     {{end}}
   </tbody>
 </table>

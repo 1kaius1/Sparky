@@ -172,8 +172,9 @@ func newRateLimitTestAPI(t *testing.T, maxAttempts int, window time.Duration) *A
 	if err != nil {
 		t.Fatalf("HashPassword() error: %v", err)
 	}
+	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(&fakeBreakGlassStore{cred: &db.BreakGlassCredential{PasswordHash: hash}}, testSessionSecret)
-	api, err := New(loginSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, maxAttempts, window, testAuthRecheckInterval, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, testLogger())
+	api, err := New(loginSvc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, maxAttempts, window, testAuthRecheckInterval, testSessionSecret, nil, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

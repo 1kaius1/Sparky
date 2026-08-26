@@ -281,6 +281,27 @@ table.data-table:not(.panel .data-table) {
   margin-bottom: 16px;
 }
 
+.form-success {
+  background: #e6f4ed;
+  color: var(--color-status-online);
+  border-radius: var(--radius);
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 16px;
+}
+
+.login-method-picker {
+  margin-bottom: 16px;
+}
+
+.login-method-picker select {
+  width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 8px 10px;
+  font-size: 14px;
+}
+
 .login-form {
   display: flex;
   flex-direction: column;

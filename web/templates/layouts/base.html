@@ -74,6 +74,8 @@
         {{end}}
       </ul>
       <div class="sidebar-footer">
+        <a href="/account" hx-get="/account" hx-target="#main-content" hx-push-url="true"
+           class="{{if eq .ActiveSection "account"}}active{{end}}">My account</a>
         <a class="logout-link" hx-post="/logout" hx-swap="none">Logout</a>
       </div>
     </nav>

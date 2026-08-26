@@ -103,6 +103,54 @@ func (a *API) handleLogin(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+type localLoginRequest struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+}
+
+// handleLocalLogin is POST /login/local - a distinct endpoint from
+// handleLogin, mirroring handleBreakGlassLogin's own separate-endpoint
+// reasoning: a local-only account is not an AD/LDAP identity, and this
+// keeps it that way rather than special-casing it within handleLogin. Like
+// handleLogin, it serves two callers - the JSON API contract below and the
+// local-account login form's own browser submission (handleLocalLoginFormSubmit
+// in login_page.go) - same isFormRequest branch.
+func (a *API) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
+	if isFormRequest(r) {
+		a.handleLocalLoginFormSubmit(w, r)
+		return
+	}
+
+	var req localLoginRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "request body must be valid JSON")
+		return
+	}
+	if req.Username == "" || req.Password == "" {
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "username and password are required")
+		return
+	}
+
+	user, cookieValue, err := a.localLoginService.Login(r.Context(), req.Username, req.Password)
+	switch {
+	case errors.Is(err, auth.ErrInvalidCredentials):
+		writeError(w, r, http.StatusUnauthorized, "INVALID_CREDENTIALS", "invalid username or password")
+		return
+	case err != nil:
+		writeError(w, r, http.StatusInternalServerError, "INTERNAL_ERROR", "login failed")
+		return
+	}
+
+	setSessionCookie(w, r, cookieValue, int(sessionDuration.Seconds()))
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(loginResponse{
+		DisplayName: user.DisplayName,
+		Tier:        string(user.Tier),
+	})
+}
+
 func (a *API) handleLogout(w http.ResponseWriter, r *http.Request) {
 	setSessionCookie(w, r, "", -1)
 	// Inert for a plain API/curl caller - only htmx (the sidebar's logout
