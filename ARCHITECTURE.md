@@ -428,18 +428,19 @@ hardware.
 Not run in CI, and not implied by automated tests passing. Each item below must be
 explicitly confirmed by the releasing operator before a version is tagged.
 
-- [ ] Docker's native GPU passthrough (`DeviceRequests{Count:-1,
+- [x] Docker's native GPU passthrough (`DeviceRequests{Count:-1,
       Capabilities:[["gpu"]]}`, `NVIDIA_VISIBLE_DEVICES=all` - not CDI)
       confirmed against real DGX Spark hardware (2026-08-20): a real
       container launched with this exact contract, the GPU visible and
       claimed inside it, a real completion served, and GPU utilization
       measured rising during inference - see `PLANNING.md`'s 2026-08-20
-      Decisions Log entry. One narrower sub-question remains open:
-      `containers.go` sets `DeviceRequests.Driver` to the literal string
-      `"nvidia"`, but every real test so far (including this one) used
-      `docker run --gpus all`'s own CLI translation, which produces
-      `Driver: ""` instead - that literal value hasn't itself been
-      exercised. See `PLANNING.md` Known Issues
+      Decisions Log entry. The one narrower sub-question that entry left
+      open - whether `containers.go`'s literal `DeviceRequests.Driver:
+      "nvidia"` (as opposed to `docker run --gpus all`'s own CLI
+      translation, which produces `Driver: ""`) actually works on this
+      daemon - is now closed too, confirmed 2026-08-30 via Sparky's real
+      HTTP-driven launch path end to end: see that date's Decisions Log
+      entry
 - [ ] CDI GPU passthrough verified on Podman, target distro(s) - including the known
       read-only-filesystem hook behavior
 - [ ] Multi-node NCCL/MPI launch verified on physically linked Sparks (2+ nodes)
