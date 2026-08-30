@@ -1174,6 +1174,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Go code, no `internal/engines` adapter - this is producer-side tooling
   only, deliberately scoped narrower than the still-deferred koboldcpp
   `engine_type`/adapter work (PLANNING.md Future Ideas).
+- Model transfers page: a "New transfer" form (`GET`/`POST /transfers/new`)
+  to actually initiate an internet-sourced model download from the
+  Dashboard UI, closing the gap CLAUDE.md's own sidebar tier note flagged
+  ("Read-only view / Admin+grant initiate" - only the read-only half
+  existed until now). `internal/transfers.Service.InitiateTransfer` and its
+  agent-dispatch/progress-handling path were already built and unit-tested;
+  this is the missing HTTP form/route layer on top of them, mirroring the
+  Engine transfers page's own provisioning-form shape exactly. Gated by
+  `rbac.CanManageModelStore` (Admin/SuperAdmin always, PowerDev only with
+  the `manage_model_store` permission override) - checked directly in the
+  GET handler to decide whether to show the form at all, and again inside
+  `InitiateTransfer` itself as the real enforcement boundary, same
+  "never trust what the GET rendered" pattern as node registration and
+  engine provisioning. New exported `transfers.Service.CanInitiateTransfer`
+  lets `internal/httpapi` make that display-only decision without
+  bypassing the repository layer for the permission-override lookup.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,

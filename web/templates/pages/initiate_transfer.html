@@ -1,0 +1,32 @@
+{{define "content"}}
+<h1>New model transfer</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<form method="post" action="/transfers/new">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="dest_node_id">Destination node</label><br>
+    <select id="dest_node_id" name="dest_node_id" required>
+      {{range .Data.Nodes}}
+      <option value="{{.ID}}" {{if eq $.Data.Form.DestNodeID .ID}}selected{{end}}>{{.Name}}</option>
+      {{end}}
+    </select>
+  </p>
+  <p>
+    <label for="model_ref">Model</label><br>
+    <input type="text" id="model_ref" name="model_ref" value="{{.Data.Form.ModelRef}}" placeholder="RedHatAI/Qwen2-0.5B-Instruct-FP8" required>
+    <br><small>Hugging Face repo path, ideally with a pinned revision.</small>
+  </p>
+  <p>
+    <label for="quantization">Quantization</label><br>
+    <input type="text" id="quantization" name="quantization" value="{{.Data.Form.Quantization}}" placeholder="Q4_K_M">
+    <br><small>Optional. Restricts the download to the one matching .gguf
+    file - leave blank to download the whole repo (the only sensible choice
+    for vLLM/Aphrodite or a single-file GGUF repo).</small>
+  </p>
+  <p><button type="submit">Start download</button></p>
+</form>
+{{end}}

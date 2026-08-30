@@ -17,12 +17,15 @@ type transferLister interface {
 
 // transfersPageData is the Model transfers page's view model - CLAUDE.md
 // Frontend Conventions' Model transfers sidebar tier ("Read-only view /
-// Admin+grant initiate"); the "Admin+grant initiate" half is a later
-// phase - no initiate form exists yet. Labeled "Model transfers" in the
-// sidebar/page title (not just "Transfers") since the Engine transfers
-// page sits right below it.
+// Admin+grant initiate"). Labeled "Model transfers" in the sidebar/page
+// title (not just "Transfers") since the Engine transfers page sits right
+// below it. CanInitiate only decides whether the "New transfer" link is
+// shown, same non-security-boundary reasoning as
+// engineTransfersPageData.CanProvision - the real check happens inside
+// transfers.Service.InitiateTransfer.
 type transfersPageData struct {
-	Transfers []transferRow
+	Transfers   []transferRow
+	CanInitiate bool
 }
 
 type transferRow struct {
@@ -80,5 +83,20 @@ func (a *API) handleTransfers(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	a.render(w, r, "transfers", "Model transfers", transfersPageData{Transfers: rows})
+	// CanInitiate only decides whether the "New transfer" link is shown -
+	// it is not the security boundary. The real check happens inside
+	// transfers.Service.InitiateTransfer, same reasoning as the Engine
+	// transfers page's CanProvision.
+	var canInitiate bool
+	if identity, ok := IdentityFromContext(ctx); ok {
+		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
+			canInitiate, err = a.transferInitiatorSvc.CanInitiateTransfer(ctx, actor)
+			if err != nil {
+				a.logger.Printf("httpapi: check initiate-transfer permission for transfers list: %v", err)
+				canInitiate = false
+			}
+		}
+	}
+
+	a.render(w, r, "transfers", "Model transfers", transfersPageData{Transfers: rows, CanInitiate: canInitiate})
 }

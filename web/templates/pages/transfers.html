@@ -1,6 +1,10 @@
 {{define "content"}}
 <h1>Model transfers</h1>
 
+{{if .Data.CanInitiate}}
+<p><a href="/transfers/new">New transfer</a></p>
+{{end}}
+
 <table class="data-table">
   <thead>
     <tr>
