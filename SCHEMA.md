@@ -162,9 +162,10 @@ reduced-capacity launch uses fewer nodes than the profile defines).
 | `actual_port` | integer | Observed, may differ from the profile's declared port |
 | `started_by` | uuid, FK -> Users.id | |
 | `started_at` / `stopped_at` | timestamptz | |
-| `health_status` | enum | `healthy` / `unhealthy` / `unknown` |
-| `last_health_check_at` | timestamptz | |
-| `error_message` | text, nullable | Populated on failure - this is the only feedback mechanism when `required_memory_gb` was left unset and the launch didn't fit |
+| `health_status` | enum | `healthy` / `unhealthy` / `unknown`. Starts `unknown` at creation; set to `healthy`/`unhealthy` by the agent's periodic per-instance liveness check (`docs/AGENT.md` Engine readiness and health checks) once the instance has passed its own load-time readiness check - never set back to `unknown` |
+| `last_health_check_at` | timestamptz | Stamped by the same periodic check that sets `health_status` |
+| `health_detail` | jsonb, nullable | Best-effort, engine-specific load/utilization signal attached to a `healthy` check (e.g. vLLM/Aphrodite's own `/metrics` running/waiting request counts) - deliberately opaque, same reasoning as Model profiles' `engine_params`, since different engine types expose genuinely different metric names, or none at all. Always `NULL` on an `unhealthy` check - an unreachable engine has no metrics endpoint to read either |
+| `error_message` | text, nullable | Populated on failure - covers both a launch that never fit (`required_memory_gb` left unset) and, since the agent's load-time readiness check closed a real silent-failure gap, a launch whose process/container started but whose engine never came up (a bad model path, a corrupted quantization, a first-request crash) - see `docs/AGENT.md` Engine readiness and health checks |
 
 ---
 

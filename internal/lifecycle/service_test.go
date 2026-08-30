@@ -10,6 +10,7 @@ import (
 	"log"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/db"
@@ -61,6 +62,16 @@ type fakeInstanceStore struct {
 	runningByNodeResult []*db.RunningInstance
 	runningByNodeErr    error
 	runningByNodeCalls  []string
+
+	healthCalls     []healthCall
+	updateHealthErr error
+}
+
+type healthCall struct {
+	id        string
+	status    db.InstanceHealthStatus
+	checkedAt time.Time
+	detail    json.RawMessage
 }
 
 func (f *fakeInstanceStore) List(_ context.Context) ([]*db.RunningInstance, error) {
@@ -126,6 +137,14 @@ func (f *fakeInstanceStore) SetStatus(_ context.Context, id string, status db.Ru
 		return f.setStatusErr
 	}
 	f.statusCalls = append(f.statusCalls, statusCall{id, status, actualPort, errorMessage})
+	return nil
+}
+
+func (f *fakeInstanceStore) UpdateHealth(_ context.Context, id string, status db.InstanceHealthStatus, checkedAt time.Time, detail json.RawMessage) error {
+	if f.updateHealthErr != nil {
+		return f.updateHealthErr
+	}
+	f.healthCalls = append(f.healthCalls, healthCall{id, status, checkedAt, detail})
 	return nil
 }
 
@@ -867,6 +886,104 @@ func TestService_HandleInstanceResult_UnknownStatus_Ignored(t *testing.T) {
 
 	if len(instances.statusCalls) != 0 {
 		t.Error("HandleInstanceResult acted on an unrecognized status")
+	}
+}
+
+func newInstanceHealthEnvelope(t *testing.T, health agentproto.InstanceHealth) agentproto.Envelope {
+	t.Helper()
+	env, err := agentproto.NewEnvelope(agentproto.TypeInstanceHealth, "", health)
+	if err != nil {
+		t.Fatalf("build envelope: %v", err)
+	}
+	return env
+}
+
+func TestService_HandleInstanceHealth_Healthy_WithDetail(t *testing.T) {
+	instances := &fakeInstanceStore{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	checkedAt := time.Now().Truncate(time.Second)
+	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{
+		InstanceID: "instance-1",
+		Status:     agentproto.InstanceHealthStatusHealthy,
+		CheckedAt:  checkedAt,
+		Detail:     map[string]float64{"num_requests_running": 2},
+	})
+	svc.HandleInstanceHealth("node-1", env)
+
+	if len(instances.healthCalls) != 1 {
+		t.Fatalf("UpdateHealth called %d times, want 1", len(instances.healthCalls))
+	}
+	got := instances.healthCalls[0]
+	if got.id != "instance-1" {
+		t.Errorf("id = %q, want %q", got.id, "instance-1")
+	}
+	if got.status != db.InstanceHealthHealthy {
+		t.Errorf("status = %q, want %q", got.status, db.InstanceHealthHealthy)
+	}
+	if !got.checkedAt.Equal(checkedAt) {
+		t.Errorf("checkedAt = %v, want %v", got.checkedAt, checkedAt)
+	}
+	if !strings.Contains(string(got.detail), "num_requests_running") {
+		t.Errorf("detail = %s, want it to contain num_requests_running", got.detail)
+	}
+}
+
+func TestService_HandleInstanceHealth_Unhealthy_NoDetail(t *testing.T) {
+	instances := &fakeInstanceStore{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{InstanceID: "instance-1", Status: agentproto.InstanceHealthStatusUnhealthy, CheckedAt: time.Now()})
+	svc.HandleInstanceHealth("node-1", env)
+
+	if len(instances.healthCalls) != 1 {
+		t.Fatalf("UpdateHealth called %d times, want 1", len(instances.healthCalls))
+	}
+	got := instances.healthCalls[0]
+	if got.status != db.InstanceHealthUnhealthy {
+		t.Errorf("status = %q, want %q", got.status, db.InstanceHealthUnhealthy)
+	}
+	if got.detail != nil {
+		t.Errorf("detail = %s, want nil for an unhealthy check with no Detail", got.detail)
+	}
+}
+
+func TestService_HandleInstanceHealth_IgnoresOtherMessageTypes(t *testing.T) {
+	instances := &fakeInstanceStore{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	env, err := agentproto.NewEnvelope(agentproto.TypeHeartbeat, "", agentproto.Heartbeat{})
+	if err != nil {
+		t.Fatalf("build envelope: %v", err)
+	}
+	svc.HandleInstanceHealth("node-1", env)
+
+	if len(instances.healthCalls) != 0 {
+		t.Error("HandleInstanceHealth acted on a non-instance_health message type")
+	}
+}
+
+func TestService_HandleInstanceHealth_MalformedPayload_Ignored(t *testing.T) {
+	instances := &fakeInstanceStore{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	env := agentproto.Envelope{Type: agentproto.TypeInstanceHealth, Payload: []byte(`{"instance_id": 123}`)}
+	svc.HandleInstanceHealth("node-1", env)
+
+	if len(instances.healthCalls) != 0 {
+		t.Error("HandleInstanceHealth acted on a malformed payload")
+	}
+}
+
+func TestService_HandleInstanceHealth_UnknownStatus_Ignored(t *testing.T) {
+	instances := &fakeInstanceStore{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{InstanceID: "instance-1", Status: "unknown_status"})
+	svc.HandleInstanceHealth("node-1", env)
+
+	if len(instances.healthCalls) != 0 {
+		t.Error("HandleInstanceHealth acted on an unrecognized status")
 	}
 }
 

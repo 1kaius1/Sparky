@@ -7,11 +7,15 @@
 package containers
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 
 	cerrdefs "github.com/containerd/errdefs"
+	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/network"
 	"github.com/moby/moby/client"
@@ -50,6 +54,7 @@ type dockerClient interface {
 	ContainerStop(ctx context.Context, containerID string, options client.ContainerStopOptions) (client.ContainerStopResult, error)
 	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
+	ContainerLogs(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error)
 	ImagePull(ctx context.Context, refStr string, options client.ImagePullOptions) (client.ImagePullResponse, error)
 	Close() error
 }
@@ -228,4 +233,32 @@ func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error
 		return false, nil
 	}
 	return result.Container.State.Running, nil
+}
+
+// Logs returns instanceID's most recent stdout/stderr output, up to
+// tailLines - see runtime.Backend's own doc comment: best-effort
+// diagnostic evidence for a launch-readiness failure report, never
+// required for correctness. Docker multiplexes stdout/stderr into one
+// stream when the container has no TTY (Sparky never allocates one), so
+// stdcopy.StdCopy demultiplexes it back into plain text rather than
+// returning the raw framed bytes, which would otherwise interleave
+// unprintable frame headers into the diagnostic message a human is meant
+// to read.
+func (b *Backend) Logs(ctx context.Context, instanceID string, tailLines int) (string, error) {
+	name := InstanceContainerName(instanceID)
+	rc, err := b.cli.ContainerLogs(ctx, name, client.ContainerLogsOptions{
+		ShowStdout: true,
+		ShowStderr: true,
+		Tail:       strconv.Itoa(tailLines),
+	})
+	if err != nil {
+		return "", fmt.Errorf("get logs for container %s: %w", name, err)
+	}
+	defer rc.Close()
+
+	var out bytes.Buffer
+	if _, err := stdcopy.StdCopy(&out, &out, rc); err != nil && !errors.Is(err, io.EOF) {
+		return "", fmt.Errorf("read logs for container %s: %w", name, err)
+	}
+	return out.String(), nil
 }

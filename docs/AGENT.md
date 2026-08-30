@@ -253,6 +253,8 @@ come from Secrets, identically to the server.
 | `SPARKY_VLLM_BINARY_PATH`        | No       | -       | Bare-metal only - local vLLM executable/entrypoint for a `vllm` `load_instance`. Unset means this node doesn't run that engine type |
 | `SPARKY_ENGINE_INSTALL_PATH`     | No       | `/opt/sparky/serviceloop/engines` on a bare-metal host | Bare-metal only - root directory a `start_engine_transfer` provisioning run installs into. See Engine binary provisioning below |
 | `SPARKY_TELEMETRY_POLL_INTERVAL` | No       | `5s`    | How often telemetry is collected and pushed              |
+| `SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS` | No | `600` | How long a `load_instance`'s readiness check waits for the engine to prove it can genuinely serve before giving up and reporting the load failed - see Engine readiness and health checks below |
+| `SPARKY_HEALTH_CHECK_INTERVAL_SECONDS` | No | `60` | How often each running instance's liveness/load is re-checked and reported back - see Engine readiness and health checks below |
 | `LOG_LEVEL`                      | No       | `info`  | |
 | `LOG_FORMAT`                     | No       | `json`  | |
 
@@ -326,6 +328,76 @@ already produces, reported back as a failed `instance_result`.
 
 ---
 
+## Engine readiness and health checks
+
+`agent/runtime.Backend.Start` returning successfully only means the process
+(bare-metal) or container (Docker/Podman) itself launched - it says nothing
+about whether the engine inside it ever came up and started genuinely serving.
+Reporting `load_instance` success at that point is a real silent-failure bug: a
+model that fails to load (a bad path, a corrupted quantization, a first-request
+CUDA OOM) still reports `running` to the central app, which has no way to learn
+otherwise short of an operator noticing nothing answers the port. Two related,
+but distinct, checks close this gap - see `PLANNING.md`'s Decisions Log for the
+full design discussion.
+
+**Load-time readiness check** (`agent/connection.Conn.waitForReady`, one-shot,
+runs once per `load_instance` before the first `instance_result` is ever sent).
+Polls, up to `SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS`:
+
+1. `runtime.Backend.IsRunning` - if the process/container has already exited,
+   fails immediately (no reason to wait out the rest of the timeout), attaching
+   a tail of `runtime.Backend.Logs`' captured output as `error_message` when
+   available.
+2. Once alive, a cheap `GET` to the engine's own OpenAI-compatible `/v1/models`
+   - confirms the API layer itself is up before spending a real generation on a
+   check that would just fail anyway.
+3. Once that responds, one real, minimal `POST /v1/chat/completions` (a fixed
+   prompt, `temperature: 0`, a small `max_tokens`) - confirms the engine can
+   actually generate, not just that its HTTP server answers. Checked
+   structurally (a well-formed, non-empty, non-error response), not against any
+   particular "known good" content - a profile can name any model, so there is
+   no way to know in advance what a "correct" answer to any prompt looks like.
+
+A load that never becomes reachable before the timeout elapses is reported
+failed, timeout or not - "gave up waiting" is still an honest failure to
+report, not a success to assume. The timeout is generous by design (default 10
+minutes) since it only matters for the rare "never comes up, never crashes"
+case - a real load usually resolves via outcome 1 or 3 long before it, however
+long a large model legitimately takes to load from disk.
+
+**Ongoing health check** (`agent/connection.Conn.sendInstanceHealth`, a
+goroutine alongside the heartbeat/telemetry senders - see Service Architecture
+Notes below - re-checking every instance the load-time check above has already
+confirmed running, once per `SPARKY_HEALTH_CHECK_INTERVAL_SECONDS`). Reported
+back as `instance_health` (`SCHEMA.md` Running instances' `health_status`/
+`last_health_check_at`, unpopulated by anything before this). Deliberately
+cheap, not a repeated real completion - a synthetic generation request every
+interval, forever, for every active instance, is real GPU-cycle overhead this
+periodic check has no need to pay once an instance has already proven at
+launch that it can generate:
+
+- A `GET /v1/models` reachability check decides `healthy`/`unhealthy`.
+- A best-effort read of the engine's own Prometheus-format `/metrics` endpoint
+  (today: `vllm:num_requests_running`/`vllm:num_requests_waiting`, vLLM and
+  Aphrodite's own metric names) is attached as `health_detail` when the check
+  is healthy - a flexible blob (`SCHEMA.md` Running instances' `health_detail`
+  column), not fixed fields, since different engine types expose genuinely
+  different metric names, or none at all. Nothing is read when unhealthy - an
+  unreachable engine has no metrics endpoint to read either.
+
+Both checks share one small per-`engine_type` table
+(`agent/connection`'s `engineProbes`) naming the API paths to use - `vllm`,
+`aphrodite`, and `llamacpp` all share one definition today, since vLLM,
+Aphrodite, and llama.cpp's server mode are all OpenAI-API-compatible; the
+llama.cpp entry specifically is correct in principle, not empirically confirmed
+against real hardware the way vLLM's is, since no llama.cpp launch has ever
+been tested through Sparky end to end - see `PLANNING.md` Known Issues. An
+engine type with no entry in this table can't be confirmed ready and so can't
+be reported running either - same "can't confirm it, can't claim it" reasoning
+throughout this feature.
+
+---
+
 ## Service Architecture Notes
 
 The agent runs a small set of long-lived goroutines rather than a single blocking
@@ -340,6 +412,11 @@ loop:
   and writes the result back.
 - **Telemetry goroutine**: polls `nvidia-smi` and `/proc` on `SPARKY_TELEMETRY_POLL_INTERVAL`
   and pushes readings over the same connection - does not wait on the command loop.
+- **Instance health-check goroutine**: re-checks every instance the load-time
+  readiness check has confirmed running, once per
+  `SPARKY_HEALTH_CHECK_INTERVAL_SECONDS`, pushing an `instance_health` message
+  per instance - see Engine readiness and health checks above. Not tied to the
+  command loop either.
 - **Transfer goroutines**: one per active transfer, so a long-running download or
   rsync replication never blocks command handling. Progress is streamed back
   periodically, not just on completion.

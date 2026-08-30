@@ -838,6 +838,38 @@ func TestHandleModelProfiles_ShowsInstanceStatusAndLoadControl(t *testing.T) {
 	}
 }
 
+func TestHandleModelProfiles_ShowsHealthStatus_OnlyForRunningInstance(t *testing.T) {
+	profiles := &fakeProfileLister{profiles: []*db.Profile{
+		{ID: "profile-1", Name: "healthy-profile"},
+		{ID: "profile-2", Name: "starting-profile"},
+	}}
+	instances := &fakeInstanceLister{instances: []*db.RunningInstance{
+		{ID: "instance-1", ProfileID: "profile-1", Status: db.RunningInstanceStatusRunning, HealthStatus: db.InstanceHealthHealthy},
+		// Still starting - hasn't reached the periodic health check yet,
+		// so HealthStatus is db.InstanceHealthUnknown at the DB layer, but
+		// the row must not surface it as a real verdict.
+		{ID: "instance-2", ProfileID: "profile-2", Status: db.RunningInstanceStatusStarting, HealthStatus: db.InstanceHealthUnknown},
+	}}
+	users := newFakeUserLister()
+	users.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, profiles, instances, &fakeTransferLister{}, users, &fakeAuditLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/profiles", "dev-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "status-healthy") {
+		t.Errorf("response does not show the running instance's healthy status: %s", body)
+	}
+	if strings.Contains(body, "status-unknown") {
+		t.Errorf("response shows a health status for a still-starting instance, want it hidden until running: %s", body)
+	}
+}
+
 func TestHandleModelProfiles_LoadControlHiddenWithoutCanLaunch(t *testing.T) {
 	profiles := &fakeProfileLister{profiles: []*db.Profile{{ID: "profile-1", Name: "my-profile"}}}
 	users := newFakeUserLister()

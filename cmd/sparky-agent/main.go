@@ -72,10 +72,12 @@ func main() {
 			"llamacpp": cfg.LlamaCPPBinaryPath,
 			"vllm":     cfg.VLLMBinaryPath,
 		},
-		ModelStoragePath:      cfg.ModelStoragePath,
-		EngineInstallPath:     cfg.EngineInstallPath,
-		RuntimeBackend:        cfg.RuntimeBackend,
-		TelemetryPollInterval: telemetryPollInterval,
+		ModelStoragePath:            cfg.ModelStoragePath,
+		EngineInstallPath:           cfg.EngineInstallPath,
+		RuntimeBackend:              cfg.RuntimeBackend,
+		TelemetryPollInterval:       telemetryPollInterval,
+		InstanceStartupTimeout:      time.Duration(cfg.InstanceStartupTimeoutSecs) * time.Second,
+		InstanceHealthCheckInterval: time.Duration(cfg.HealthCheckIntervalSecs) * time.Second,
 	}, runtimeBackend, transfer.New(), enginetransfer.New(), telemetry.NewCollector(), logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

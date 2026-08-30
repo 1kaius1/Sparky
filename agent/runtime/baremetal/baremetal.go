@@ -16,6 +16,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"sync"
@@ -42,13 +43,13 @@ type trackedProcess struct {
 	done chan struct{}
 
 	// waitErr is cmd.Wait()'s return value, set before done is closed (so
-	// reading it after <-done is race-free). Deliberately captured rather
-	// than silently discarded even though nothing consumes it today -
-	// there is no crash-detection/restart feature yet for a bare-metal
-	// engine process that exits on its own outside of Stop/Shutdown; a
-	// future health-reporting pass has a value to read here instead of
-	// needing to add this plumbing from scratch.
+	// reading it after <-done is race-free).
 	waitErr error
+
+	// logs captures the most recent combined stdout/stderr this process
+	// produced - see logbuffer.go and Logs below. The health-reporting
+	// pass this type's own former doc comment anticipated.
+	logs *logBuffer
 }
 
 // Backend execs engine processes directly and tracks them by instance ID,
@@ -83,18 +84,21 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 
 	cmd := exec.Command(spec.BinaryPath, spec.Args...)
 	cmd.Env = append(os.Environ(), spec.Env...)
-	// Engine server output has no other destination configured anywhere
-	// in this project (LOG_LEVEL/LOG_FORMAT govern the agent's own
-	// structured logging, not a managed child's) - surfaced via journald
-	// alongside the agent's own output, same as the agent's own stderr.
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	// Engine server output still reaches journald exactly as before
+	// (alongside the agent's own output) via os.Stdout/os.Stderr - logs
+	// additionally captures the same bytes into a bounded in-memory
+	// buffer (logbuffer.go) so Logs can return real diagnostic evidence
+	// for a launch-readiness failure without needing a separate log
+	// shipper or journalctl access from this process.
+	logs := newLogBuffer()
+	cmd.Stdout = io.MultiWriter(os.Stdout, logs)
+	cmd.Stderr = io.MultiWriter(os.Stderr, logs)
 
 	if err := cmd.Start(); err != nil {
 		return "", fmt.Errorf("start %s: %w", spec.BinaryPath, err)
 	}
 
-	tp := &trackedProcess{cmd: cmd, done: make(chan struct{})}
+	tp := &trackedProcess{cmd: cmd, done: make(chan struct{}), logs: logs}
 	b.processes[spec.InstanceID] = tp
 	go func() {
 		tp.waitErr = cmd.Wait()
@@ -159,11 +163,19 @@ func (b *Backend) Shutdown(ctx context.Context) error {
 // runtime.Backend's doc comment. A closed tp.done means the reaper
 // goroutine already observed cmd.Wait() return (the process exited on its
 // own, outside of Stop/Shutdown, e.g. a crash) - the map entry itself
-// isn't proof of liveness, only Start/Stop ever remove it, so a
-// non-blocking check of done is what actually answers the question. While
-// here, an already-exited entry is also removed - Start's reaper leaves it
-// behind otherwise, since nothing but an explicit Stop/Shutdown normally
-// cleans it up.
+// isn't proof of liveness, only Start/Stop/Shutdown ever remove it, so a
+// non-blocking check of done is what actually answers the question.
+//
+// Deliberately does not remove an already-exited entry on observation
+// (an earlier version of this method did) - agent/connection's
+// load-readiness check calls IsRunning and, on a false result, immediately
+// calls Logs for the same instanceID to build a real diagnostic failure
+// message; deleting the entry here would make that Logs call always find
+// nothing. The trade-off: a crashed instance nobody ever unloads keeps its
+// entry (and up to logBufferCapacity bytes of captured output) in memory
+// indefinitely - accepted, since a real crash still surfaces as a
+// running_instances row an operator sees and eventually unloads, which
+// reaches Stop and removes it same as any other instance.
 func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -175,11 +187,28 @@ func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error
 
 	select {
 	case <-tp.done:
-		delete(b.processes, instanceID)
 		return false, nil
 	default:
 		return true, nil
 	}
+}
+
+// Logs returns instanceID's most recently captured combined stdout/stderr,
+// up to logBufferCapacity bytes - see runtime.Backend's own doc comment.
+// tailLines is accepted for interface parity with the containers backend
+// but unused here: logBuffer is a plain byte-capped ring, not line-aware,
+// since a bare-metal engine's own output has no framing this package can
+// safely split on (unlike Docker's multiplexed stream) - byte-capping
+// already keeps this bounded to a reasonable diagnostic size.
+func (b *Backend) Logs(ctx context.Context, instanceID string, tailLines int) (string, error) {
+	b.mu.Lock()
+	tp, exists := b.processes[instanceID]
+	b.mu.Unlock()
+
+	if !exists {
+		return "", fmt.Errorf("instance %s has no tracked process", instanceID)
+	}
+	return tp.logs.String(), nil
 }
 
 // stopProcess sends SIGTERM and waits up to grace for the process to exit

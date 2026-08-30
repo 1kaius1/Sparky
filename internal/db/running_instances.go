@@ -4,6 +4,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -55,7 +56,17 @@ type RunningInstance struct {
 	StoppedAt         *time.Time
 	HealthStatus      InstanceHealthStatus
 	LastHealthCheckAt *time.Time
-	ErrorMessage      *string
+	// HealthDetail is the periodic health check's best-effort read of the
+	// engine's own load/utilization signal (e.g. vLLM/Aphrodite's
+	// /metrics running/waiting request counts) - see
+	// agentproto.InstanceHealth.Detail's own doc comment for why this is
+	// a flexible blob, not fixed columns. json.RawMessage, not a typed Go
+	// map, matching Profile.EngineParams' own established convention for
+	// an opaque jsonb column - nil whenever the agent had nothing to
+	// report (an unhealthy check, or an engine type this agent doesn't
+	// know how to read metrics from).
+	HealthDetail json.RawMessage
+	ErrorMessage *string
 }
 
 // ErrRunningInstanceNotFound is returned when a lookup finds no matching
@@ -76,12 +87,12 @@ func NewRunningInstanceRepository(pool *pgxpool.Pool) *RunningInstanceRepository
 }
 
 const runningInstanceColumns = `id, profile_id, status, primary_node_id, actual_port, started_by,
-	started_at, stopped_at, health_status, last_health_check_at, error_message`
+	started_at, stopped_at, health_status, last_health_check_at, health_detail, error_message`
 
 func scanRunningInstance(row pgx.Row) (*RunningInstance, error) {
 	var inst RunningInstance
 	err := row.Scan(&inst.ID, &inst.ProfileID, &inst.Status, &inst.PrimaryNodeID, &inst.ActualPort, &inst.StartedBy,
-		&inst.StartedAt, &inst.StoppedAt, &inst.HealthStatus, &inst.LastHealthCheckAt, &inst.ErrorMessage)
+		&inst.StartedAt, &inst.StoppedAt, &inst.HealthStatus, &inst.LastHealthCheckAt, &inst.HealthDetail, &inst.ErrorMessage)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrRunningInstanceNotFound
 	}
@@ -209,6 +220,24 @@ func (r *RunningInstanceRepository) SetStatus(ctx context.Context, id string, st
 	}
 	if err != nil {
 		return fmt.Errorf("set status for running instance %s: %w", id, err)
+	}
+	return nil
+}
+
+// UpdateHealth records the result of a periodic agent-reported liveness
+// check - see agentproto.InstanceHealth. Deliberately does not touch
+// status/error_message: health is a distinct signal from lifecycle status
+// (SCHEMA.md Running instances) - an unhealthy-but-still-tracked instance
+// is not the same thing as a stopped/failed one, and conflating the two
+// would lose that distinction. detail is nil whenever the agent had
+// nothing to report - stored as SQL NULL, not an empty JSON object,
+// preserving that distinction through to a reader.
+func (r *RunningInstanceRepository) UpdateHealth(ctx context.Context, id string, status InstanceHealthStatus, checkedAt time.Time, detail json.RawMessage) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE running_instances SET health_status = $1, last_health_check_at = $2, health_detail = $3 WHERE id = $4`,
+		status, checkedAt, detail, id)
+	if err != nil {
+		return fmt.Errorf("update health for running instance %s: %w", id, err)
 	}
 	return nil
 }

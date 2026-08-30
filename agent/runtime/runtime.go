@@ -141,4 +141,13 @@ type Backend interface {
 	// which is why a genuine agent crash-and-restart correctly reports
 	// "not running" for anything it no longer remembers starting.
 	IsRunning(ctx context.Context, instanceID string) (bool, error)
+
+	// Logs returns instanceID's most recent stdout/stderr output, up to
+	// tailLines - best-effort diagnostic evidence used only to enrich a
+	// failure report (an early crash, a load-time readiness timeout) with
+	// real detail a human can act on. Never required for correctness -
+	// agent/connection's readiness check still reports failure correctly
+	// even when Logs itself errors (e.g. the container was already
+	// removed by the time it's called), it just has less to say why.
+	Logs(ctx context.Context, instanceID string, tailLines int) (string, error)
 }

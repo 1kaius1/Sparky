@@ -10,9 +10,11 @@ import (
 	"log"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -47,23 +49,40 @@ type fakeRuntimeBackend struct {
 	isRunningCalls  []string
 	isRunningResult bool
 	isRunningErr    error
+	// isRunningFunc, if set, overrides isRunningResult/isRunningErr -
+	// lets a test vary the answer across a readiness-poll loop's repeated
+	// IsRunning calls (e.g. running for the first two calls, then
+	// exited), keyed by the zero-based index of this call among all
+	// IsRunning calls so far.
+	isRunningFunc func(callIndex int) (bool, error)
+
+	logsCalls  []string
+	logsResult string
+	logsErr    error
 
 	// block, if non-nil, is closed by a test to let a blocked Start/Stop
 	// call proceed; called, if non-nil, is closed the moment that call is
 	// entered - lets a test control exactly when a load/unload "finishes"
 	// without a sleep-based poll, same pattern as fakeTransferExecutor's
-	// block/started.
-	block  chan struct{}
-	called chan struct{}
+	// block/started. calledOnce guards it - IsRunning can be called
+	// repeatedly by a readiness-poll loop, and closing an already-closed
+	// channel panics.
+	block      chan struct{}
+	called     chan struct{}
+	calledOnce sync.Once
+}
+
+func (f *fakeRuntimeBackend) signalCalled() {
+	if f.called != nil {
+		f.calledOnce.Do(func() { close(f.called) })
+	}
 }
 
 func (f *fakeRuntimeBackend) Start(_ context.Context, spec agentruntime.Spec) (string, error) {
 	f.mu.Lock()
 	f.startCalls = append(f.startCalls, spec)
 	f.mu.Unlock()
-	if f.called != nil {
-		close(f.called)
-	}
+	f.signalCalled()
 	if f.block != nil {
 		<-f.block
 	}
@@ -74,9 +93,7 @@ func (f *fakeRuntimeBackend) Stop(_ context.Context, instanceID string) error {
 	f.mu.Lock()
 	f.stopCalls = append(f.stopCalls, instanceID)
 	f.mu.Unlock()
-	if f.called != nil {
-		close(f.called)
-	}
+	f.signalCalled()
 	if f.block != nil {
 		<-f.block
 	}
@@ -93,12 +110,66 @@ func (f *fakeRuntimeBackend) Shutdown(_ context.Context) error {
 func (f *fakeRuntimeBackend) IsRunning(_ context.Context, instanceID string) (bool, error) {
 	f.mu.Lock()
 	f.isRunningCalls = append(f.isRunningCalls, instanceID)
+	callIndex := len(f.isRunningCalls) - 1
+	fn := f.isRunningFunc
 	f.mu.Unlock()
-	if f.called != nil {
-		close(f.called)
+	f.signalCalled()
+	if fn != nil {
+		return fn(callIndex)
 	}
 	return f.isRunningResult, f.isRunningErr
 }
+
+func (f *fakeRuntimeBackend) Logs(_ context.Context, instanceID string, _ int) (string, error) {
+	f.mu.Lock()
+	f.logsCalls = append(f.logsCalls, instanceID)
+	f.mu.Unlock()
+	return f.logsResult, f.logsErr
+}
+
+// newFakeEngineServer starts a real local HTTP server standing in for a
+// just-launched engine's own OpenAI-compatible API - needed by any test
+// where agent/connection's readiness check (waitForReady) must actually
+// succeed, not just runtime.Backend.Start being called; a fakeRuntimeBackend
+// has no real process/container for waitForReady to reach, so without this,
+// every "reports running" test would otherwise poll a real, unlisted port
+// until InstanceStartupTimeout. Serves a well-formed /v1/models response
+// (proves the API layer is "up") and a well-formed, non-error
+// /v1/chat/completions response (proves a completion succeeds) to any
+// request - not a real engine, just enough shape for completionProbeOK's
+// own structural checks to pass.
+func newFakeEngineServer(t *testing.T) (srv *httptest.Server, port int) {
+	t.Helper()
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Write([]byte(`{"object":"list","data":[]}`))
+		case "/v1/chat/completions":
+			w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse fake engine server URL: %v", err)
+	}
+	port, err = strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse fake engine server port: %v", err)
+	}
+	return srv, port
+}
+
+// fastReadinessTimeout is a short InstanceStartupTimeout for tests that
+// need a load to actually fail its readiness check (no fake engine server
+// standing in) within its own short overall deadline, rather than the
+// production default (minutes, meant for a real model that can
+// legitimately take that long to load).
+func fastReadinessTimeout() time.Duration { return 500 * time.Millisecond }
 
 // fakeTransferExecutor implements transferExecutor without a real HTTP
 // download - it records each call and, unless told to block, immediately
@@ -780,12 +851,13 @@ func TestConn_Dispatch_LoadInstance_PinnedEngineVersion_ResolvesVersionedBinaryP
 	// ModelStoragePath's ModelRef subdirectory directly, with no .gguf
 	// glob involved - irrelevant to what this test actually verifies
 	// (engine-version resolution, not model-path resolution).
+	_, enginePort := newFakeEngineServer(t)
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-model",
 		EngineType:               "llamacpp",
 		EngineVersion:            "b4610",
-		Port:                     8001,
+		Port:                     enginePort,
 		RequiresFullGPUResidency: true,
 	})
 	if err != nil {
@@ -798,7 +870,7 @@ func TestConn_Dispatch_LoadInstance_PinnedEngineVersion_ResolvesVersionedBinaryP
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	runtime := &fakeRuntimeBackend{startID: "process-1"}
+	runtime := &fakeRuntimeBackend{startID: "process-1", isRunningResult: true}
 	cfg := Config{
 		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
 		ModelStoragePath:  t.TempDir(),
@@ -845,12 +917,14 @@ func TestConn_Dispatch_LoadInstance_PinnedEngineVersion_ResolvesVersionedBinaryP
 }
 
 func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRunning(t *testing.T) {
+	_, enginePort := newFakeEngineServer(t)
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-model",
+		EngineType:               "vllm",
 		Image:                    "vllm/vllm-openai:latest",
 		Args:                     []string{"--tensor-parallel-size", "1"},
-		Port:                     8000,
+		Port:                     enginePort,
 		RequiresFullGPUResidency: true,
 	})
 	if err != nil {
@@ -863,7 +937,7 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	runtime := &fakeRuntimeBackend{startID: "container-1"}
+	runtime := &fakeRuntimeBackend{startID: "container-1", isRunningResult: true}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models"}
 	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
@@ -898,8 +972,8 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 		t.Fatal("Run() did not return after context cancellation")
 	}
 
-	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusRunning || result.ActualPort != 8000 {
-		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=running ActualPort=8000", result)
+	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusRunning || result.ActualPort != enginePort {
+		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=running ActualPort=%d", result, enginePort)
 	}
 
 	if len(runtime.startCalls) != 1 {
@@ -912,12 +986,12 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 	if spec.InstanceID != "instance-1" {
 		t.Errorf("InstanceID = %q, want %q", spec.InstanceID, "instance-1")
 	}
-	if spec.Port != 8000 {
-		t.Errorf("Port = %d, want 8000", spec.Port)
+	if spec.Port != enginePort {
+		t.Errorf("Port = %d, want %d", spec.Port, enginePort)
 	}
 	// RequiresFullGPUResidency true - --model should point at the whole
 	// destDir, not a specific file within it (there is no glob step).
-	wantArgs := []string{"--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	wantArgs := []string{"--model", "/models/test-org/test-model", "--port", strconv.Itoa(enginePort), "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
 	if !reflect.DeepEqual(spec.Args, wantArgs) {
 		t.Errorf("Args = %v, want %v", spec.Args, wantArgs)
 	}
@@ -932,11 +1006,13 @@ func TestConn_Dispatch_LoadInstance_FullGPUResidency_StartsContainerAndReportsRu
 // call through the full load_instance dispatch path, not just in isolation -
 // same reasoning as the FullGPUResidency test above asserting on spec.Args.
 func TestConn_Dispatch_LoadInstance_DockerBackend_SetsNvidiaGPUMechanism(t *testing.T) {
+	_, enginePort := newFakeEngineServer(t)
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-model",
+		EngineType:               "vllm",
 		Image:                    "vllm/vllm-openai:latest",
-		Port:                     8000,
+		Port:                     enginePort,
 		RequiresFullGPUResidency: true,
 	})
 	if err != nil {
@@ -949,7 +1025,7 @@ func TestConn_Dispatch_LoadInstance_DockerBackend_SetsNvidiaGPUMechanism(t *test
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	fakeBackend := &fakeRuntimeBackend{startID: "container-1"}
+	fakeBackend := &fakeRuntimeBackend{startID: "container-1", isRunningResult: true}
 	cfg := Config{
 		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
 		ModelStoragePath: "/models", RuntimeBackend: "docker",
@@ -1001,11 +1077,13 @@ func TestConn_Dispatch_LoadInstance_DockerBackend_SetsNvidiaGPUMechanism(t *test
 
 func TestConn_Dispatch_LoadInstance_ThreadsShmSizeAndIPCModeIntoSpec(t *testing.T) {
 	const shmSize = 16 * 1024 * 1024 * 1024
+	_, enginePort := newFakeEngineServer(t)
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-model",
+		EngineType:               "vllm",
 		Image:                    "vllm/vllm-openai:latest",
-		Port:                     8000,
+		Port:                     enginePort,
 		RequiresFullGPUResidency: true,
 		ShmSize:                  shmSize,
 		IPCMode:                  "host",
@@ -1020,7 +1098,7 @@ func TestConn_Dispatch_LoadInstance_ThreadsShmSizeAndIPCModeIntoSpec(t *testing.
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	fakeBackend := &fakeRuntimeBackend{startID: "container-1"}
+	fakeBackend := &fakeRuntimeBackend{startID: "container-1", isRunningResult: true}
 	cfg := Config{
 		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
 		ModelStoragePath: "/models", RuntimeBackend: "docker",
@@ -1170,12 +1248,13 @@ func TestBuildEngineLaunchArgs_ContainersVLLM_OverrideImage_PrependsVLLMServe(t 
 }
 
 func TestConn_Dispatch_LoadInstance_BareMetalVLLM_PrependsServeSubcommand(t *testing.T) {
+	_, enginePort := newFakeEngineServer(t)
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-model",
 		EngineType:               "vllm",
 		Args:                     []string{"--tensor-parallel-size", "1"},
-		Port:                     8000,
+		Port:                     enginePort,
 		RequiresFullGPUResidency: true,
 	})
 	if err != nil {
@@ -1188,7 +1267,7 @@ func TestConn_Dispatch_LoadInstance_BareMetalVLLM_PrependsServeSubcommand(t *tes
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	runtime := &fakeRuntimeBackend{startID: "instance-1"}
+	runtime := &fakeRuntimeBackend{startID: "instance-1", isRunningResult: true}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models", RuntimeBackend: "bare-metal"}
 	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
@@ -1222,7 +1301,7 @@ func TestConn_Dispatch_LoadInstance_BareMetalVLLM_PrependsServeSubcommand(t *tes
 	if len(runtime.startCalls) != 1 {
 		t.Fatalf("Start called %d times, want 1", len(runtime.startCalls))
 	}
-	wantArgs := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	wantArgs := []string{"serve", "--model", "/models/test-org/test-model", "--port", strconv.Itoa(enginePort), "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
 	if !reflect.DeepEqual(runtime.startCalls[0].Args, wantArgs) {
 		t.Errorf("Args = %v, want %v", runtime.startCalls[0].Args, wantArgs)
 	}
@@ -1236,13 +1315,14 @@ func TestConn_Dispatch_LoadInstance_DockerVLLM_OverrideImage_PrependsVLLMServe(t
 	// must get the full "vllm serve" prepended, not nothing - the container
 	// backend previously assumed every containers-backend image behaved
 	// like the default vllm/vllm-openai one.
+	_, enginePort := newFakeEngineServer(t)
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               "instance-1",
 		ModelRef:                 "test-org/test-model",
 		EngineType:               "vllm",
 		Image:                    "nvcr.io/nvidia/vllm:26.06-py3",
 		Args:                     []string{"--tensor-parallel-size", "1"},
-		Port:                     8000,
+		Port:                     enginePort,
 		RequiresFullGPUResidency: true,
 	})
 	if err != nil {
@@ -1255,7 +1335,7 @@ func TestConn_Dispatch_LoadInstance_DockerVLLM_OverrideImage_PrependsVLLMServe(t
 	srv := httptest.NewServer(app)
 	defer srv.Close()
 
-	runtime := &fakeRuntimeBackend{startID: "instance-1"}
+	runtime := &fakeRuntimeBackend{startID: "instance-1", isRunningResult: true}
 	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", ModelStoragePath: "/models", RuntimeBackend: "docker"}
 	conn := New(cfg, runtime, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	conn.minBackoff = 10 * time.Millisecond
@@ -1289,7 +1369,7 @@ func TestConn_Dispatch_LoadInstance_DockerVLLM_OverrideImage_PrependsVLLMServe(t
 	if len(runtime.startCalls) != 1 {
 		t.Fatalf("Start called %d times, want 1", len(runtime.startCalls))
 	}
-	wantArgs := []string{"vllm", "serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
+	wantArgs := []string{"vllm", "serve", "--model", "/models/test-org/test-model", "--port", strconv.Itoa(enginePort), "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
 	if !reflect.DeepEqual(runtime.startCalls[0].Args, wantArgs) {
 		t.Errorf("Args = %v, want %v", runtime.startCalls[0].Args, wantArgs)
 	}

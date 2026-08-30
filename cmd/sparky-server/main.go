@@ -186,6 +186,9 @@ func main() {
 		case agentproto.TypeInstanceResult:
 			lifecycleService.HandleInstanceResult(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypeInstanceHealth:
+			lifecycleService.HandleInstanceHealth(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(env.Type)})
 		case agentproto.TypeTelemetry:
 			metricsService.HandleTelemetry(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})

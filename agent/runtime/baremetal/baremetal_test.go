@@ -168,7 +168,7 @@ func TestIsRunning_NeverTracked_ReturnsFalse(t *testing.T) {
 	}
 }
 
-func TestIsRunning_TrackedButExited_ReturnsFalseAndCleansUp(t *testing.T) {
+func TestIsRunning_TrackedButExited_ReturnsFalseAndKeepsEntry(t *testing.T) {
 	b := New()
 	if _, err := b.Start(context.Background(), runtime.Spec{
 		InstanceID: "instance-1",
@@ -195,11 +195,54 @@ func TestIsRunning_TrackedButExited_ReturnsFalseAndCleansUp(t *testing.T) {
 		t.Error("running = true, want false for a process that already exited on its own")
 	}
 
+	// Deliberately still tracked - see IsRunning's own doc comment: a
+	// caller (agent/connection's load-readiness check) needs to call Logs
+	// for the same instanceID right after observing it exited, which
+	// would find nothing if this entry were removed here instead of by
+	// an explicit Stop.
 	b.mu.Lock()
 	_, stillTracked := b.processes["instance-1"]
 	b.mu.Unlock()
-	if stillTracked {
-		t.Error("instance-1 is still in processes after IsRunning() observed it had exited - want the stale entry cleaned up")
+	if !stillTracked {
+		t.Error("instance-1 was removed from processes after IsRunning() observed it had exited - want the entry kept until an explicit Stop, so Logs can still read it")
+	}
+}
+
+func TestLogs_CapturesStdoutAndStderr(t *testing.T) {
+	b := New()
+	if _, err := b.Start(context.Background(), runtime.Spec{
+		InstanceID: "instance-1",
+		BinaryPath: "/bin/sh",
+		Args:       []string{"-c", "echo on stdout; echo on stderr >&2"},
+	}); err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	defer b.Stop(context.Background(), "instance-1")
+
+	b.mu.Lock()
+	tp := b.processes["instance-1"]
+	b.mu.Unlock()
+	select {
+	case <-tp.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("process did not exit within 5s")
+	}
+
+	logs, err := b.Logs(context.Background(), "instance-1", 100)
+	if err != nil {
+		t.Fatalf("Logs() error: %v", err)
+	}
+	if !strings.Contains(logs, "on stdout") || !strings.Contains(logs, "on stderr") {
+		t.Errorf("Logs() = %q, want both the stdout and stderr lines captured", logs)
+	}
+}
+
+func TestLogs_UnknownInstanceID_FailsClearly(t *testing.T) {
+	b := New()
+
+	_, err := b.Logs(context.Background(), "no-such-instance", 100)
+	if err == nil {
+		t.Fatal("Logs() succeeded for an instance with no tracked process")
 	}
 }
 

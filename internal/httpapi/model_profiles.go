@@ -76,6 +76,11 @@ type profileRow struct {
 	Port             int
 	InstanceStatus   string
 	ActiveInstanceID string
+	// HealthStatus is empty whenever there's no active instance to report
+	// on - distinct from db.InstanceHealthUnknown, which is a real status
+	// value (not yet health-checked) an active instance can genuinely
+	// have. See SCHEMA.md Running instances' health_status.
+	HealthStatus string
 }
 
 func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
@@ -134,6 +139,14 @@ func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 		if active, ok := activeByProfile[p.ID]; ok {
 			row.InstanceStatus = string(active.Status)
 			row.ActiveInstanceID = active.ID
+			// Only meaningful once the instance is actually running - a
+			// still-starting instance hasn't reached the periodic health
+			// check yet, and showing db.InstanceHealthUnknown for it
+			// would read as a real (if uninformative) health verdict
+			// rather than "not applicable yet."
+			if active.Status == db.RunningInstanceStatusRunning {
+				row.HealthStatus = string(active.HealthStatus)
+			}
 		}
 		rows = append(rows, row)
 	}
