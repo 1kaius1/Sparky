@@ -23,6 +23,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/profiles"
 	"github.com/1kaius1/Sparky/internal/rbac"
 	"github.com/1kaius1/Sparky/internal/session"
+	"github.com/1kaius1/Sparky/internal/transfers"
 )
 
 func testLogger() *log.Logger {
@@ -166,6 +167,42 @@ func (f *fakeTransferLister) ListTransfers(context.Context) ([]*db.ModelTransfer
 		return nil, f.err
 	}
 	return f.transfers, nil
+}
+
+// fakeTransferInitiator implements transferInitiator for tests - a
+// distinct fake from fakeTransferLister, same "same value, multiple
+// interfaces in production, distinct fakes in tests" pattern as
+// fakeEngineProvisioner/fakeEngineTransferLister.
+type fakeTransferInitiator struct {
+	permitted    bool
+	permittedErr error
+	transfer     *db.ModelTransfer
+	err          error
+	calls        []transferInitiateCall
+}
+
+type transferInitiateCall struct {
+	actor  rbac.Actor
+	params transfers.InitiateTransferParams
+}
+
+func (f *fakeTransferInitiator) CanInitiateTransfer(context.Context, rbac.Actor) (bool, error) {
+	if f.permittedErr != nil {
+		return false, f.permittedErr
+	}
+	return f.permitted, nil
+}
+
+func (f *fakeTransferInitiator) InitiateTransfer(_ context.Context, actor rbac.Actor, params transfers.InitiateTransferParams) (*db.ModelTransfer, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	f.calls = append(f.calls, transferInitiateCall{actor, params})
+	transfer := f.transfer
+	if transfer == nil {
+		transfer = &db.ModelTransfer{DestNodeID: params.DestNodeID, ModelRef: params.ModelRef}
+	}
+	return transfer, nil
 }
 
 // fakeEngineTransferLister implements engineTransferLister for tests.
@@ -557,7 +594,7 @@ func newTestDashboardAPIWithEngineTransfers(t *testing.T, nodeList *fakeNodeList
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
+	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

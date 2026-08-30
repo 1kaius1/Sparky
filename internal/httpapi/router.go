@@ -33,28 +33,29 @@ type API struct {
 	sessionSecret          string
 	agentConn              http.Handler
 
-	nodes             nodeLister
-	registrar         nodeRegistrar
-	profiles          profileLister
-	profileEditor     profileEditor
-	instances         instanceLister
-	launcher          instanceLauncher
-	transfers         transferLister
-	users             userLister
-	audit             auditLister
-	userRoster        userRoster
-	elevator          userElevator
-	localAccounts     localAccountManager
-	selfAccount       selfAccountManager
-	settings          settingsViewer
-	metrics           metricsLister
-	events            eventSource
-	engineProvisioner engineProvisioner
-	engineTransfers   engineTransferLister
-	engineInventory   engineInventoryLister
-	templates         map[string]*template.Template
-	static            http.Handler
-	logger            *log.Logger
+	nodes                nodeLister
+	registrar            nodeRegistrar
+	profiles             profileLister
+	profileEditor        profileEditor
+	instances            instanceLister
+	launcher             instanceLauncher
+	transfers            transferLister
+	transferInitiatorSvc transferInitiator
+	users                userLister
+	audit                auditLister
+	userRoster           userRoster
+	elevator             userElevator
+	localAccounts        localAccountManager
+	selfAccount          selfAccountManager
+	settings             settingsViewer
+	metrics              metricsLister
+	events               eventSource
+	engineProvisioner    engineProvisioner
+	engineTransfers      engineTransferLister
+	engineInventory      engineInventoryLister
+	templates            map[string]*template.Template
+	static               http.Handler
+	logger               *log.Logger
 }
 
 // New constructs an API. sessionSecret is used to verify session cookies
@@ -112,7 +113,13 @@ type API struct {
 // read-only list via engineprovision.Service.ListNodeEngineInventory, also
 // unguarded at the Read-only floor - answers "what's installed right now"
 // (SCHEMA.md Node engine inventory) rather than engineTransfersSvc's "what
-// provisioning runs have happened"; logger is used for
+// provisioning runs have happened"; transferInitiatorSvc backs the Model
+// transfers page's download-initiation form via
+// transfers.Service.InitiateTransfer/CanInitiateTransfer, gated by
+// rbac.CanManageModelStore (Admin/SuperAdmin always, PowerDev only with the
+// manage_model_store override - see SCHEMA.md Permission overrides) - a
+// distinct interface from transfers, same "same value, multiple interfaces"
+// pattern as registrar/nodes; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
@@ -135,7 +142,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -169,6 +176,7 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		instances:              instances,
 		launcher:               launcher,
 		transfers:              transfers,
+		transferInitiatorSvc:   transferInitiatorSvc,
 		users:                  users,
 		audit:                  auditLog,
 		userRoster:             roster,
@@ -295,6 +303,13 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/{id}/load", a.handleLoadInstance)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/instances/{id}/unload", a.handleUnloadInstance)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
+	// The initiate form's own RBAC gate (rbac.CanManageModelStore) is
+	// checked directly in both handlers - GET to decide whether to show
+	// the form at all, POST (via transfers.Service.InitiateTransfer) as
+	// the real enforcement boundary that never trusts what the GET
+	// rendered - same reasoning as node registration/engine provisioning.
+	r.With(a.RequireSession).Get("/transfers/new", a.handleInitiateTransferForm)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/transfers/new", a.handleInitiateTransfer)
 	r.With(a.RequireSession).Get("/engine-inventory", a.handleEngineInventory)
 	r.With(a.RequireSession).Get("/engine-transfers", a.handleEngineTransfers)
 	// The provisioning form's own RBAC gate (rbac.CanManageNodes) is

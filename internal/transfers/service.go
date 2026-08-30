@@ -97,6 +97,18 @@ func (s *Service) canManageModelStore(ctx context.Context, actor rbac.Actor) (bo
 	return rbac.CanManageModelStore(actor, hasOverride), nil
 }
 
+// CanInitiateTransfer reports whether actor is currently permitted to call
+// InitiateTransfer - exported so internal/httpapi can decide whether to
+// show the "New transfer" link/form at all, same non-security-boundary
+// reasoning as engineTransfersPageData.CanProvision. The real enforcement
+// is still InitiateTransfer's own canManageModelStore check; this exists
+// only because that check needs an overrides-table lookup for a PowerDev
+// actor, which httpapi has no direct access to (CLAUDE.md: never bypass
+// the repository layer).
+func (s *Service) CanInitiateTransfer(ctx context.Context, actor rbac.Actor) (bool, error) {
+	return s.canManageModelStore(ctx, actor)
+}
+
 // InitiateTransfer starts a new internet-sourced (Hugging Face) model
 // download onto params.DestNodeID, if actor is permitted to - see
 // rbac.CanManageModelStore. Confirms the destination node currently has a
