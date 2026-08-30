@@ -3,11 +3,14 @@
 package containers
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"io"
 	"iter"
 	"reflect"
+	"strings"
 	"testing"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -35,6 +38,9 @@ type fakeDockerClient struct {
 
 	pullCalls int
 	pullErr   error
+
+	logsResult client.ContainerLogsResult
+	logsErr    error
 }
 
 func (f *fakeDockerClient) ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -64,6 +70,16 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ client.Image
 		return nil, f.pullErr
 	}
 	return &fakePullResponse{}, nil
+}
+
+func (f *fakeDockerClient) ContainerLogs(_ context.Context, _ string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+	if f.logsErr != nil {
+		return nil, f.logsErr
+	}
+	if f.logsResult != nil {
+		return f.logsResult, nil
+	}
+	return io.NopCloser(strings.NewReader("")), nil
 }
 
 func (f *fakeDockerClient) Close() error { return nil }
@@ -556,5 +572,43 @@ func TestIsRunning_InspectError(t *testing.T) {
 	_, err := b.IsRunning(context.Background(), "instance-1")
 	if err == nil {
 		t.Fatal("IsRunning() succeeded despite an inspect failure")
+	}
+}
+
+// stdcopyFrame builds one Docker multiplexed-stream frame - see
+// client.ContainerLogs' own doc comment for the exact wire format this
+// hand-builds, since the stdcopy package exports a demultiplexer
+// (stdcopy.StdCopy) but no corresponding multiplexing writer to build a
+// fake stream with.
+func stdcopyFrame(streamType byte, payload string) []byte {
+	header := make([]byte, 8)
+	header[0] = streamType
+	binary.BigEndian.PutUint32(header[4:], uint32(len(payload)))
+	return append(header, []byte(payload)...)
+}
+
+func TestLogs_DemuxesStdoutAndStderr(t *testing.T) {
+	var stream []byte
+	stream = append(stream, stdcopyFrame(1, "starting up\n")...)
+	stream = append(stream, stdcopyFrame(2, "a warning on stderr\n")...)
+	fake := &fakeDockerClient{logsResult: io.NopCloser(bytes.NewReader(stream))}
+	b := &Backend{cli: fake}
+
+	logs, err := b.Logs(context.Background(), "instance-1", 100)
+	if err != nil {
+		t.Fatalf("Logs() error: %v", err)
+	}
+	if !strings.Contains(logs, "starting up") || !strings.Contains(logs, "a warning on stderr") {
+		t.Errorf("Logs() = %q, want both the stdout and stderr lines demultiplexed into it", logs)
+	}
+}
+
+func TestLogs_ContainerLogsError(t *testing.T) {
+	fake := &fakeDockerClient{logsErr: errors.New("no such container")}
+	b := &Backend{cli: fake}
+
+	_, err := b.Logs(context.Background(), "instance-1", 100)
+	if err == nil {
+		t.Fatal("Logs() succeeded despite a ContainerLogs failure")
 	}
 }

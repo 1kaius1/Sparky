@@ -465,3 +465,48 @@ func TestEnvelope_EmptyRequestID_OmittedFromWire(t *testing.T) {
 		t.Errorf("wire JSON has request_id set despite an empty value: %s", raw)
 	}
 }
+
+func TestEnvelope_RoundTrip_InstanceHealth_Healthy(t *testing.T) {
+	checkedAt := time.Now().Truncate(time.Second).UTC()
+	want := InstanceHealth{
+		InstanceID: "instance-1",
+		Status:     InstanceHealthStatusHealthy,
+		CheckedAt:  checkedAt,
+		Detail:     map[string]float64{"num_requests_running": 2, "num_requests_waiting": 0},
+	}
+
+	env, err := NewEnvelope(TypeInstanceHealth, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got InstanceHealth
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("InstanceHealth = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_InstanceHealth_Unhealthy_NoDetail(t *testing.T) {
+	checkedAt := time.Now().Truncate(time.Second).UTC()
+	want := InstanceHealth{
+		InstanceID: "instance-1",
+		Status:     InstanceHealthStatusUnhealthy,
+		CheckedAt:  checkedAt,
+	}
+
+	env, err := NewEnvelope(TypeInstanceHealth, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got InstanceHealth
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("InstanceHealth = %+v, want %+v", got, want)
+	}
+}

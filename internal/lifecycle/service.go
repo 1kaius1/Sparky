@@ -4,9 +4,11 @@ package lifecycle
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/db"
@@ -30,6 +32,7 @@ type instanceStore interface {
 	SetStatus(ctx context.Context, id string, status db.RunningInstanceStatus, actualPort *int, errorMessage *string) error
 	List(ctx context.Context) ([]*db.RunningInstance, error)
 	ListRunningByNode(ctx context.Context, nodeID string) ([]*db.RunningInstance, error)
+	UpdateHealth(ctx context.Context, id string, status db.InstanceHealthStatus, checkedAt time.Time, detail json.RawMessage) error
 }
 
 // adapterRegistry is the subset of *engines.Registry this package needs -
@@ -276,6 +279,65 @@ func mapInstanceStatus(status string) (db.RunningInstanceStatus, error) {
 		return db.RunningInstanceStatusStopped, nil
 	default:
 		return "", fmt.Errorf("unknown instance status %q", status)
+	}
+}
+
+// mapHealthStatus mirrors mapInstanceStatus above, for
+// agentproto.InstanceHealth.Status's narrower two-value range - see that
+// type's own doc comment for why "unknown" never appears on the wire.
+func mapHealthStatus(status string) (db.InstanceHealthStatus, error) {
+	switch status {
+	case agentproto.InstanceHealthStatusHealthy:
+		return db.InstanceHealthHealthy, nil
+	case agentproto.InstanceHealthStatusUnhealthy:
+		return db.InstanceHealthUnhealthy, nil
+	default:
+		return "", fmt.Errorf("unknown instance health status %q", status)
+	}
+}
+
+// HandleInstanceHealth implements agentconn.OnMessageFunc for
+// agentproto.TypeInstanceHealth, the periodic liveness/load signal an
+// agent reports for each instance it has confirmed running - wire it in
+// as another onMessage case alongside HandleInstanceResult. Not audited -
+// system-internal, agent-initiated observational data, same precedent as
+// HandleInstanceResult/internal/transfers.HandleTransferProgress and
+// internal/metrics.HandleTelemetry, none of which are audited either (see
+// PLANNING.md's 2026-08-12 Decisions Log entry for the original
+// reasoning: there is no human actor and no state-changing action here,
+// just a recurring health/load reading).
+func (s *Service) HandleInstanceHealth(nodeID string, env agentproto.Envelope) {
+	if env.Type != agentproto.TypeInstanceHealth {
+		return
+	}
+
+	var health agentproto.InstanceHealth
+	if err := env.DecodePayload(&health); err != nil {
+		s.logger.Printf("lifecycle: node %s sent a malformed instance_health: %v", nodeID, err)
+		return
+	}
+
+	status, err := mapHealthStatus(health.Status)
+	if err != nil {
+		s.logger.Printf("lifecycle: node %s reported health for instance %s: %v", nodeID, health.InstanceID, err)
+		return
+	}
+
+	var detail json.RawMessage
+	if len(health.Detail) > 0 {
+		detail, err = json.Marshal(health.Detail)
+		if err != nil {
+			s.logger.Printf("lifecycle: marshal health detail for instance %s: %v", health.InstanceID, err)
+			detail = nil
+		}
+	}
+
+	// context.Background(), not a request context - this fires from
+	// agentconn's readLoop, off the tail of the WebSocket read, not any
+	// HTTP request - same reasoning as HandleInstanceResult below.
+	ctx := context.Background()
+	if err := s.instances.UpdateHealth(ctx, health.InstanceID, status, health.CheckedAt, detail); err != nil {
+		s.logger.Printf("lifecycle: update health for running instance %s: %v", health.InstanceID, err)
 	}
 }
 

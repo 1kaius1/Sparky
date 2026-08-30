@@ -1190,6 +1190,62 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine provisioning. New exported `transfers.Service.CanInitiateTransfer`
   lets `internal/httpapi` make that display-only decision without
   bypassing the repository layer for the permission-override lookup.
+- Fixed a real silent-failure bug in `load_instance`: the agent reported a
+  load successful the moment `runtime.Backend.Start` returned, which only
+  means the process/container itself launched - not that the engine inside
+  it ever came up. A model that failed to load (a bad path, a corrupted
+  quantization, a first-request crash) still reported `running`, with
+  nothing short of an operator noticing no answer on the port. Confirmed on
+  real DGX Spark hardware before and after: a profile pointed at a
+  nonexistent model now correctly reports `failed` with the engine's own
+  real crash output attached, instead of silently claiming success.
+  `agent/connection.Conn.waitForReady` (new) polls after `Start` succeeds -
+  `runtime.Backend.IsRunning` for a fast-fail on an early exit (attaching a
+  tail of the new `runtime.Backend.Logs` as `error_message`), then a cheap
+  `GET /v1/models` followed by one real, minimal chat-completion probe
+  (structurally checked - non-empty, non-error - not against any "known
+  good" content, since a profile can name any model) before reporting
+  success; a load that never becomes reachable within
+  `SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS` (default 600s, generous since a
+  large model can legitimately take minutes to load) reports failed rather
+  than hanging or silently succeeding. `runtime.Backend` gains `Logs` in
+  both backends - the containers backend via `ContainerLogs`/`stdcopy`
+  demuxing; bare-metal via a new bounded in-memory ring buffer
+  (`logbuffer.go`) capturing the same output already going to journald.
+- Added a periodic per-instance liveness/load check, confirmed with the
+  user directly: once a minute (`SPARKY_HEALTH_CHECK_INTERVAL_SECONDS`) the
+  agent - not the server, preserving the "central app never dials into
+  compute hardware" design - re-checks every instance its own load-time
+  readiness check above has confirmed running, and reports back over the
+  existing persistent connection (`instance_health`, a new protocol message
+  type). Populates `running_instances.health_status`/
+  `last_health_check_at`, real schema columns nothing wrote to before this.
+  A cheap `GET /v1/models` reachability check decides healthy/unhealthy - no
+  repeated real completion, unlike the one-time load check, since a
+  synthetic generation every minute forever for every active instance is
+  real GPU-cycle overhead nothing needs once an instance has already proven
+  once that it can generate. A best-effort read of the engine's own
+  Prometheus-format `/metrics` endpoint (new `health_detail jsonb` column,
+  migration `000025`) is attached on a healthy check - vLLM/Aphrodite's own
+  `num_requests_running`/`num_requests_waiting`, a flexible blob rather than
+  fixed columns since different engine types expose different metrics, or
+  none at all. Confirmed for real against the Spark fleet, including a real
+  bug this same pass caught and fixed: real vLLM `/metrics` output carries
+  a `{labels}` segment (`engine="0",model_name="..."`) on these two
+  metrics, which the first version of the parser's exact-string match
+  missed entirely - `health_detail` came back empty until the parser was
+  fixed to strip labels before matching, confirmed with real, correctly
+  populated values afterward. Both checks share one small per-`engine_type`
+  table (`vllm`/`aphrodite`/`llamacpp`, all OpenAI-API-compatible so all
+  three share one definition today) naming the API paths to probe - the
+  `llamacpp` entry is correct in principle, not verified against real
+  hardware, since no llama.cpp launch has ever been tested through Sparky
+  end to end.
+- Model profiles page shows a running instance's health status alongside
+  its lifecycle status, once it reaches `running` - directly surfaces what
+  the readiness/health-check work above now tracks, addressing the actual
+  motivating complaint ("Sparky says it's running but nothing answers the
+  port") with a visible signal rather than just a fixed detection path.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,

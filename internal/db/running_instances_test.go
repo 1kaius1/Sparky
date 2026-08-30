@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 )
 
 // createTestProfile creates a throwaway single-node model profile to
@@ -444,6 +445,66 @@ func TestRunningInstanceRepository_SetStatus_Terminal(t *testing.T) {
 	}
 	if got.ErrorMessage == nil || *got.ErrorMessage != errMsg {
 		t.Errorf("ErrorMessage = %v, want %q", got.ErrorMessage, errMsg)
+	}
+}
+
+func TestRunningInstanceRepository_UpdateHealth_HealthyWithDetail(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profile := createTestProfile(t, profiles, node.ID)
+	created := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+
+	checkedAt := time.Now().Truncate(time.Second).UTC()
+	detail := json.RawMessage(`{"num_requests_running":2,"num_requests_waiting":0}`)
+	if err := instances.UpdateHealth(ctx, created.ID, InstanceHealthHealthy, checkedAt, detail); err != nil {
+		t.Fatalf("UpdateHealth() error: %v", err)
+	}
+
+	got, err := instances.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.HealthStatus != InstanceHealthHealthy {
+		t.Errorf("HealthStatus = %q, want %q", got.HealthStatus, InstanceHealthHealthy)
+	}
+	if got.LastHealthCheckAt == nil || !got.LastHealthCheckAt.Equal(checkedAt) {
+		t.Errorf("LastHealthCheckAt = %v, want %v", got.LastHealthCheckAt, checkedAt)
+	}
+	if string(got.HealthDetail) != string(detail) {
+		t.Errorf("HealthDetail = %s, want %s", got.HealthDetail, detail)
+	}
+}
+
+func TestRunningInstanceRepository_UpdateHealth_UnhealthyNilDetail(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profile := createTestProfile(t, profiles, node.ID)
+	created := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+
+	checkedAt := time.Now().Truncate(time.Second).UTC()
+	if err := instances.UpdateHealth(ctx, created.ID, InstanceHealthUnhealthy, checkedAt, nil); err != nil {
+		t.Fatalf("UpdateHealth() error: %v", err)
+	}
+
+	got, err := instances.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.HealthStatus != InstanceHealthUnhealthy {
+		t.Errorf("HealthStatus = %q, want %q", got.HealthStatus, InstanceHealthUnhealthy)
+	}
+	if got.HealthDetail != nil {
+		t.Errorf("HealthDetail = %s, want nil for an unhealthy check", got.HealthDetail)
 	}
 }
 

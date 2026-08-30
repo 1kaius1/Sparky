@@ -137,6 +137,26 @@ type Config struct {
 	// time.NewTicker panic here would be unrecovered and take the whole
 	// agent process down over what should only ever disable telemetry.
 	TelemetryPollInterval time.Duration
+
+	// InstanceStartupTimeout bounds how long runLoad's readiness check
+	// (waitForReady, readiness.go) waits for a newly started instance to
+	// prove it can genuinely serve before giving up and reporting the
+	// load itself as failed - SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS. A
+	// large model can legitimately take minutes to load from disk before
+	// its engine even binds a port; this is a safety net for "never comes
+	// up at all," not a tight bound on normal startup time. Non-positive
+	// falls back to defaultInstanceStartupTimeout (readiness.go), same
+	// "a caller's zero value must never disable a safety mechanism by
+	// accident" reasoning as TelemetryPollInterval's own guard, just
+	// applied as a substitution here instead of an outright disable.
+	InstanceStartupTimeout time.Duration
+
+	// InstanceHealthCheckInterval is how often sendInstanceHealth
+	// (readiness.go) re-checks every instance this Conn has confirmed
+	// running - SPARKY_HEALTH_CHECK_INTERVAL_SECONDS. Non-positive
+	// disables the health-check goroutine entirely, same convention as
+	// TelemetryPollInterval.
+	InstanceHealthCheckInterval time.Duration
 }
 
 // Conn owns the agent's single persistent WebSocket connection to the
@@ -171,19 +191,29 @@ type Conn struct {
 	// since a load and a transfer are unrelated operations with no reason
 	// to block each other's shutdown wait.
 	instanceWG sync.WaitGroup
+
+	// activeMu guards activeInstances - see readiness.go's
+	// trackActiveInstance/untrackActiveInstance/snapshotActiveInstances.
+	// Written by runLoad (on a successful readiness check) and runUnload,
+	// read by sendInstanceHealth's periodic goroutine - genuinely
+	// concurrent access, unlike most of this type's other fields, which
+	// are only ever touched by the one goroutine that owns them.
+	activeMu        sync.Mutex
+	activeInstances map[string]activeInstance
 }
 
 // New constructs a Conn.
 func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, engineTransferExec engineTransferExecutor, collector telemetryCollector, logger *log.Logger) *Conn {
 	return &Conn{
-		cfg:            cfg,
-		runtime:        runtime,
-		transfer:       transferExec,
-		engineTransfer: engineTransferExec,
-		telemetry:      collector,
-		logger:         logger,
-		minBackoff:     defaultMinBackoff,
-		maxBackoff:     defaultMaxBackoff,
+		cfg:             cfg,
+		runtime:         runtime,
+		transfer:        transferExec,
+		engineTransfer:  engineTransferExec,
+		telemetry:       collector,
+		logger:          logger,
+		minBackoff:      defaultMinBackoff,
+		maxBackoff:      defaultMaxBackoff,
+		activeInstances: make(map[string]activeInstance),
 	}
 }
 
@@ -291,6 +321,7 @@ func (c *Conn) runOnce(ctx context.Context) (connected bool, err error) {
 	defer cancelBackgroundSenders()
 	go c.sendHeartbeats(readCtx, conn)
 	go c.sendTelemetry(readCtx, conn)
+	go c.sendInstanceHealth(readCtx, conn)
 
 	return true, c.readLoop(ctx, conn)
 }
@@ -803,6 +834,17 @@ func gpuPassthrough(runtimeBackend string) (mechanism runtime.GPUDeviceMechanism
 // reported back as an instance_result message, success or failure - never
 // silently dropped, since the central app has no other way to learn what
 // actually happened on this node.
+//
+// runtime.Start succeeding only means the process/container itself
+// launched - it says nothing about whether the engine inside it ever came
+// up and started actually serving. Reporting success right there (as this
+// method used to) is a real silent-failure bug: a model that fails to
+// load (a bad path, a corrupted quantization, a first-request CUDA OOM)
+// still reports "running" to the central app, which has no way to learn
+// otherwise short of an operator noticing nothing answers the port. See
+// waitForReady (readiness.go) for the fix - it polls until the instance
+// proves it can genuinely generate, or gives up and reports failure, with
+// the container/process's own recent output attached as evidence.
 func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentproto.LoadInstance) {
 	modelPath, err := c.resolveModelPath(load.ModelRef, load.Quantization, load.RequiresFullGPUResidency)
 	if err != nil {
@@ -840,6 +882,18 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
 		return
 	}
+
+	if err := c.waitForReady(ctx, load.InstanceID, load.EngineType, load.Port, modelPath); err != nil {
+		msg := err.Error()
+		if logs, logErr := c.runtime.Logs(ctx, load.InstanceID, logsTailLines); logErr == nil && logs != "" {
+			msg = msg + "\n\n" + truncateForErrorMessage(logs)
+		}
+		c.logger.Printf("agent connection: instance %s did not become ready: %v", load.InstanceID, err)
+		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, msg)
+		return
+	}
+
+	c.trackActiveInstance(load.InstanceID, load.Port, modelPath, load.EngineType)
 	c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusRunning, load.Port, "")
 }
 
@@ -848,6 +902,13 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 // containers.InstanceContainerName and agent/runtime/baremetal.Backend's
 // own tracking map).
 func (c *Conn) runUnload(ctx context.Context, conn *websocket.Conn, unload agentproto.UnloadInstance) {
+	// Untracked regardless of Stop's own outcome below - either way, this
+	// instance is no longer something the periodic health check
+	// (readiness.go's sendInstanceHealth) should keep polling; a failed
+	// Stop is reported back for an operator to retry, not silently
+	// covered for by continuing to health-check it here.
+	defer c.untrackActiveInstance(unload.InstanceID)
+
 	if err := c.runtime.Stop(ctx, unload.InstanceID); err != nil {
 		c.logger.Printf("agent connection: stop instance %s: %v", unload.InstanceID, err)
 		c.sendInstanceResult(ctx, conn, unload.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())

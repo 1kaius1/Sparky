@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 )
 
 // Config holds sparky-agent's validated environment configuration.
@@ -20,6 +21,25 @@ type Config struct {
 	TelemetryPollInterval string
 	LogLevel              string
 	LogFormat             string
+
+	// InstanceStartupTimeoutSecs is how long a load_instance's readiness
+	// check (agent/connection.Conn.waitForReady) waits for a newly started
+	// instance to prove it can genuinely serve before giving up and
+	// reporting the load itself as failed -
+	// SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS, optional, defaulting to 600
+	// (10 minutes) - see agent/connection's defaultInstanceStartupTimeout
+	// for why that default is generous. A non-positive value (here or via
+	// this env var) falls back to that same package-level default rather
+	// than disabling the check entirely - unlike TelemetryPollInterval,
+	// there is no sensible "off" for a load's own success/failure
+	// determination.
+	InstanceStartupTimeoutSecs int
+
+	// HealthCheckIntervalSecs is how often the periodic instance
+	// health-check goroutine (agent/connection.Conn.sendInstanceHealth)
+	// re-checks every instance this agent has confirmed running -
+	// SPARKY_HEALTH_CHECK_INTERVAL_SECONDS, optional, defaulting to 60.
+	HealthCheckIntervalSecs int
 
 	// LlamaCPPBinaryPath / VLLMBinaryPath are the local executables to run
 	// for a load_instance of that engine type on a bare-metal runtime
@@ -71,6 +91,20 @@ const bareMetalDefaultModelStoragePath = "/opt/sparky/serviceloop/models"
 // /opt/sparky/serviceloop tree, for the same ProtectHome=true reasoning.
 const bareMetalDefaultEngineInstallPath = "/opt/sparky/serviceloop/engines"
 
+// defaultInstanceStartupTimeoutSecs is SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS'
+// own default (600s = 10 minutes) - deliberately the same value as
+// agent/connection's defaultInstanceStartupTimeout, kept as a separate
+// duplicated constant rather than an import: agent/config has no
+// dependency on agent/connection (the reverse dependency already exists),
+// matching this repo's existing precedent for small duplicated constants
+// across package boundaries (e.g. agent/connection's own vllmDefaultImage).
+const defaultInstanceStartupTimeoutSecs = 600
+
+// defaultHealthCheckIntervalSecs is SPARKY_HEALTH_CHECK_INTERVAL_SECONDS'
+// own default - the "once a minute" cadence confirmed directly with the
+// user.
+const defaultHealthCheckIntervalSecs = 60
+
 // Load reads and validates configuration from the environment, failing fast
 // if anything required is missing.
 func Load() (*Config, error) {
@@ -112,6 +146,18 @@ func Load() (*Config, error) {
 		cfg.EngineInstallPath = bareMetalDefaultEngineInstallPath
 	}
 
+	instanceStartupTimeoutSecs, err := getEnvDefaultInt("SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS", defaultInstanceStartupTimeoutSecs)
+	if err != nil {
+		return nil, fmt.Errorf("parse SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS: %w", err)
+	}
+	cfg.InstanceStartupTimeoutSecs = instanceStartupTimeoutSecs
+
+	healthCheckIntervalSecs, err := getEnvDefaultInt("SPARKY_HEALTH_CHECK_INTERVAL_SECONDS", defaultHealthCheckIntervalSecs)
+	if err != nil {
+		return nil, fmt.Errorf("parse SPARKY_HEALTH_CHECK_INTERVAL_SECONDS: %w", err)
+	}
+	cfg.HealthCheckIntervalSecs = healthCheckIntervalSecs
+
 	return cfg, nil
 }
 
@@ -120,4 +166,17 @@ func getEnvDefault(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+// getEnvDefaultInt mirrors internal/config's own identically-named helper
+// (server-side) - parses key as an integer if set, or returns fallback if
+// unset. Kept as a separate copy rather than a shared helper package: this
+// is the only integer-valued env var either binary's agent-side config
+// needs today, not worth a new shared dependency for one function.
+func getEnvDefaultInt(key string, fallback int) (int, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return fallback, nil
+	}
+	return strconv.Atoi(v)
 }

@@ -102,6 +102,16 @@ const (
 	// provisioning run's progress, the same streamed-not-just-on-completion
 	// shape as TypeTransferProgress.
 	TypeEngineTransferProgress MessageType = "engine_transfer_progress"
+
+	// TypeInstanceHealth is sent by an agent once per
+	// Config.InstanceHealthCheckInterval for every instance it has
+	// confirmed running (passed its load-time readiness check - see
+	// LoadInstance's own doc comment on why that check exists) - a
+	// recurring liveness signal distinct from TypeInstanceResult's
+	// one-shot load/unload/check_instance outcome. See SCHEMA.md Running
+	// instances' health_status/last_health_check_at, unpopulated by
+	// anything before this.
+	TypeInstanceHealth MessageType = "instance_health"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -311,6 +321,37 @@ type EngineTransferProgress struct {
 	ErrorMessage       string `json:"error_message,omitempty"`
 	InstallPath        string `json:"install_path,omitempty"`
 	InstalledSizeBytes int64  `json:"installed_size_bytes,omitempty"`
+}
+
+// InstanceHealthStatus* are InstanceHealth.Status's possible values - plain
+// strings, not internal/db.InstanceHealthStatus, for the same reason as
+// InstanceResult.Status: this package has no dependency on internal/db.
+// There is no "unknown" value here - that is running_instances' own
+// initial-row default (SCHEMA.md), never something an agent actively
+// reports; a real check always resolves to one of these two.
+const (
+	InstanceHealthStatusHealthy   = "healthy"
+	InstanceHealthStatusUnhealthy = "unhealthy"
+)
+
+// InstanceHealth is TypeInstanceHealth's payload. CheckedAt is when the
+// agent itself performed the check, not when the central app receives the
+// message - meaningful given this arrives on a best-effort periodic
+// cadence, not synchronously with an operator action. Detail is an
+// optional, best-effort read of the engine's own load/utilization
+// signal (e.g. vLLM/Aphrodite's Prometheus `/metrics` endpoint's running/
+// waiting request counts) - deliberately a flexible map, not fixed fields,
+// since different engine types expose genuinely different metric names
+// (or none at all, e.g. llama.cpp, unverified against real hardware
+// today) - same "opaque, engine-specific shape" reasoning as
+// db.Profile.EngineParams. Never populated when Status is
+// InstanceHealthStatusUnhealthy - an unreachable engine has nothing to
+// read metrics from.
+type InstanceHealth struct {
+	InstanceID string             `json:"instance_id"`
+	Status     string             `json:"status"`
+	CheckedAt  time.Time          `json:"checked_at"`
+	Detail     map[string]float64 `json:"detail,omitempty"`
 }
 
 // GPUTelemetry is a single point-in-time reading from one physical GPU -
