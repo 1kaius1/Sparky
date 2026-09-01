@@ -126,6 +126,37 @@ anything real that shouldn't be disturbed. Do not proceed past node
 registration for this second node until you have real, confirmed answers,
 not assumptions carried over from Spark #1.
 
+### Requirements: SSH keys and sudo on both Sparks
+
+Both Sparks' real SSH keys will change once the hardware is physically
+back at the user's office - whatever key/access this document's own
+authors used is not expected to still be valid then. Rather than
+documenting a specific key (which would just be stale), this is the
+**access shape** both nodes need, confirmed against Spark #1's real,
+live configuration at the time this was written:
+
+- A `developer` system account on each node (already exists on both, per
+  the user directly).
+- Passwordless, key-based SSH to that account - confirm you can run a
+  real command over SSH with no password/passphrase prompt before relying
+  on it for anything in this plan.
+- Passwordless sudo for that account - Spark #1's real, live `sudo -l`
+  output for `developer` reads:
+  ```
+  User developer may run the following commands on nmn-1984525004012:
+      (ALL : ALL) NOPASSWD: ALL
+  ```
+  i.e. unrestricted `NOPASSWD: ALL`, not a narrowly-scoped rule (contrast
+  this with the deliberately minimal-privilege `claude` account used for
+  Proxmox VM work elsewhere in this project - Spark access follows a
+  different, broader convention, already established and not something
+  to second-guess or tighten here).
+
+If either requirement isn't already true for a given Spark when you start
+this pass, that's a real setup gap to raise with the user directly, not
+something to work around (e.g. by prompting for a sudo password inline,
+or skipping steps that need root).
+
 ### Control node
 
 Use `scripts/dev-server.sh` (already in this repo, has its own complete
