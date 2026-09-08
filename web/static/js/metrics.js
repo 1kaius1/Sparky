@@ -8,16 +8,20 @@
                     // sparkyMetricsLiveUpdate (in-place tick) can find them.
   var colors = ["#2f5fda", "#1a8a5f", "#b98900", "#c0342c", "#7a3fd1", "#0f8a9e"];
 
-  // padLabelPrefix marks a slot manufactured by fitSeriesToWidth to pad out
-  // a sparse series, not a real reading - each pad slot gets a distinct
-  // suffix (padLabelPrefix + its own index) so the category scale never
-  // collapses two pad slots into one shared tick, and the x-axis tick
-  // callback below blanks anything with this prefix so it renders as
-  // nothing rather than a stray raw label.
-  var padLabelPrefix = "__pad_";
+  // formatTimeOfDay renders a point's real Unix-milliseconds x value as a
+  // "HH:MM:SS" string in the viewer's own local timezone, via plain JS
+  // Date - no date-parsing library needed. Deliberately viewer-local, not
+  // the server's timezone the old server-formatted string used - a real,
+  // acknowledged behavior change (see chartPoint's own doc comment in
+  // internal/httpapi/metrics.go).
+  function formatTimeOfDay(ms) {
+    var d = new Date(ms);
+    function pad(n) { return n < 10 ? "0" + n : "" + n; }
+    return pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+  }
 
   // crosshairPlugin draws a single vertical line at the hovered x position
-  // across every panel - Chart.js's own interaction/tooltip "index" mode
+  // across every panel - Chart.js's own interaction/tooltip "x" mode
   // (see baseOptions below) already synchronizes the tooltip box across
   // series at that position, but draws no line of its own. Registered once,
   // globally, so it applies to every Chart instance this file creates with
@@ -56,36 +60,34 @@
   var maxSlots = 180;
 
   // targetSlotCount computes how many points a panel's canvas can show
-  // with reasonable spacing, from its own actual rendered width.
+  // with reasonable spacing, from its own actual rendered width. Now used
+  // purely as a decimation ceiling (see fitSeriesToWidth) - it no longer
+  // determines a padding target, since the x-axis is a real linear time
+  // scale, not a category scale needing every series to share one set of
+  // slots.
   function targetSlotCount(canvasEl) {
     var width = canvasEl.clientWidth || 0;
     var slots = Math.floor(width / minPxPerSlot);
     return Math.max(minSlots, Math.min(maxSlots, slots || minSlots));
   }
 
-  // fitSeriesToWidth transforms one series' already-hour-bounded, already-
-  // chronological points to exactly targetCount slots. seriesIndex scopes
-  // this series' own pad labels (see padLabelPrefix) so two series in the
-  // same panel padding by different amounts never collide on an identical
-  // placeholder string - each series is still fit independently, so
-  // multiple series sharing one panel aren't guaranteed perfect tick-for-
-  // tick alignment when their real data coverage differs, an accepted
-  // trade-off for the common case of one or a few series per panel.
-  // - fewer real points than slots: right-justify them - pad only the left
-  //   with blank slots, so real data always lands flush against the
-  //   newest/right edge (matching how the chart already reads once it's
-  //   full, since the newest reading is always the rightmost point).
-  // - more real points than slots: stride-decimate down to targetCount by
-  //   evenly-spaced index - simple and deterministic, not LTTB/min-max
-  //   bucketing; readable spacing is the goal here, not peak fidelity.
-  function fitSeriesToWidth(points, targetCount, seriesIndex) {
+  // fitSeriesToWidth stride-decimates one series' already-hour-bounded,
+  // already-chronological real points down to targetCount when there are
+  // more of them than a panel can usefully show - simple and
+  // deterministic, not LTTB/min-max bucketing; readable spacing is the
+  // goal here, not peak fidelity. A sparse series (fewer real points than
+  // targetCount) is returned unchanged, with no padding - the x-axis is a
+  // real linear time scale (see baseOptions), so a sparse series simply
+  // plots its own real points at their own real x position, correctly
+  // overlaid against any other series sharing the same panel by actual
+  // time value, not by a shared, artificially-padded slot count. This
+  // replaces an earlier category-axis design whose per-series padding
+  // could not actually align two nodes' real, non-coincident timestamps -
+  // see chartPoint's doc comment in internal/httpapi/metrics.go for the
+  // real bug that caused.
+  function fitSeriesToWidth(points, targetCount) {
     if (points.length <= targetCount) {
-      var padCount = targetCount - points.length;
-      var result = [];
-      for (var i = 0; i < padCount; i++) {
-        result.push({ x: padLabelPrefix + seriesIndex + "_" + i, y: null });
-      }
-      return result.concat(points);
+      return points;
     }
     var step = points.length / targetCount;
     var decimated = [];
@@ -106,23 +108,34 @@
       y.max = yMax;
     }
     return {
-      // A shared crosshair-style tooltip across every line at the hovered
-      // x position, not just the one line directly under the cursor -
-      // paired with crosshairPlugin above for the actual vertical line.
-      interaction: { mode: "index", intersect: false },
-      plugins: { tooltip: { enabled: true, mode: "index", intersect: false } },
+      // "x" mode (not "index") - matches every dataset's point nearest the
+      // hovered pixel's real x value, rather than the point at the same
+      // array index in each dataset. "index" mode was the right choice
+      // back when every series was padded to share one identical set of
+      // category slots (so "same index" and "same real time" always
+      // agreed); now that the x-axis is a real linear time scale and a
+      // sparse series is left unpadded (see fitSeriesToWidth), two
+      // series' points at the same array index are not generally at the
+      // same real time, so "index" mode would mismatch the tooltip.
+      interaction: { mode: "x", intersect: false },
+      plugins: { tooltip: { enabled: true, mode: "x", intersect: false } },
       scales: {
         x: {
-          type: "category",
+          // Real linear time scale (Unix milliseconds, see chartPoint's
+          // doc comment in internal/httpapi/metrics.go) - not "category".
+          // A category scale can only align two series by identical label
+          // values, which is exactly what caused the original bug: two
+          // nodes polling telemetry on independent 5-second intervals
+          // almost never produce identical formatted timestamps, so their
+          // real, non-coincident readings rendered as two abutting blocks
+          // instead of one interleaved timeline. A linear scale plots
+          // every series' real x value directly, so multiple nodes'
+          // series correctly overlay by actual time regardless of
+          // whether their poll ticks ever coincide.
+          type: "linear",
           title: { display: true, text: "Time" },
           ticks: {
-            // Blank a manufactured pad slot's label instead of showing its
-            // raw placeholder text - real timestamp labels pass through
-            // unchanged.
-            callback: function (value, index) {
-              var label = this.getLabelForValue(value);
-              return typeof label === "string" && label.indexOf(padLabelPrefix) === 0 ? "" : label;
-            }
+            callback: function (value) { return formatTimeOfDay(value); }
           }
         },
         y: y
@@ -134,7 +147,7 @@
     return series.map(function (s, i) {
       return {
         label: s.label,
-        data: fitSeriesToWidth(s.points, targetCount, i),
+        data: fitSeriesToWidth(s.points, targetCount),
         borderColor: colors[i % colors.length],
         backgroundColor: colors[i % colors.length],
         fill: false,

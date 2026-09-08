@@ -1607,6 +1607,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new tool dependency needed); the lib-copying `find` now matches symlinks
   too (`-type f -o -type l`) and uses `cp -P` to preserve them as symlinks
   rather than dereferencing them into duplicate full copies.
+- Metrics page chart: with more than one node reporting telemetry, each
+  node's line rendered as its own contiguous, non-overlapping block along
+  the x-axis instead of interleaving on one shared timeline - found during
+  a real two-node fleet-testing pass. The x-axis was a Chart.js `category`
+  scale, and each series was independently padded/right-justified against
+  its own literal formatted-timestamp string; two nodes polling telemetry
+  on independent intervals almost never produce identical timestamp
+  strings, so the category scale laid their real, non-coincident readings
+  out end to end rather than overlaid by actual time. Fixed by sending each
+  point's real Unix-millisecond timestamp instead of a pre-formatted
+  string, and switching the x-axis to a real linear time scale - every
+  series now plots against one shared, continuous timeline regardless of
+  whether nodes' poll ticks ever coincide. The tooltip/crosshair
+  interaction mode also changed from `index` to `x` accordingly, since a
+  sparse series is no longer padded to share an identical point count with
+  other series. Chart labels now render in the viewer's own local
+  timezone rather than the server's - a deliberate, acknowledged behavior
+  change.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,
