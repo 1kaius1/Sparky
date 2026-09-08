@@ -50,13 +50,23 @@ type metricsGPURow struct {
 }
 
 // chartPoint/chartSeries are the JSON shape web/static/js/metrics.js
-// expects - see that file. Point values are pre-formatted server-side
-// (RecordedAt as a fixed-format string) rather than left as raw
-// timestamps, so the chart's category axis and this page's own table use
-// the same rendering, and no date-parsing library needs vendoring
-// alongside Chart.js.
+// expects - see that file. X is the reading's real timestamp as Unix
+// milliseconds (RecordedAt.UnixMilli()), not a pre-formatted string - this
+// is what lets the chart plot every series against one shared, continuous
+// time axis instead of each series claiming its own set of category
+// labels. A pre-formatted "15:04:05" string was the original design, but
+// two nodes polling telemetry on independent 5-second intervals almost
+// never produce identical formatted strings, so a category axis (which
+// only knows how to align series by identical label values) laid two
+// real, non-coincident nodes' readings out as two abutting blocks instead
+// of one interleaved timeline - a real bug found during the first two-node
+// fleet-testing pass (see PLANNING.md's 2026-09-08 Decisions Log entries).
+// metrics.js formats this back into a time-of-day string for display, in
+// the viewer's own local timezone rather than the server's - a real,
+// deliberate behavior change from the old server-formatted string, and an
+// improvement for a viewer in a different timezone than the server.
 type chartPoint struct {
-	X string  `json:"x"`
+	X int64   `json:"x"`
 	Y float64 `json:"y"`
 }
 
@@ -103,7 +113,7 @@ func buildMetricsChartData(recentNode []*db.Metric, recentGPU []*db.GPUMetric, n
 		if _, ok := utilByGPU[key]; !ok {
 			gpuOrder = append(gpuOrder, key)
 		}
-		x := m.RecordedAt.Format("15:04:05")
+		x := m.RecordedAt.UnixMilli()
 		utilByGPU[key] = append(utilByGPU[key], chartPoint{X: x, Y: m.UtilizationPct})
 		memByGPU[key] = append(memByGPU[key], chartPoint{X: x, Y: m.MemoryUsedMB})
 	}
@@ -124,7 +134,7 @@ func buildMetricsChartData(recentNode []*db.Metric, recentGPU []*db.GPUMetric, n
 		if _, ok := cpuByNode[m.NodeID]; !ok {
 			nodeOrder = append(nodeOrder, m.NodeID)
 		}
-		x := m.RecordedAt.Format("15:04:05")
+		x := m.RecordedAt.UnixMilli()
 		cpuByNode[m.NodeID] = append(cpuByNode[m.NodeID], chartPoint{X: x, Y: m.CPUUtilizationPct})
 		memNodeByNode[m.NodeID] = append(memNodeByNode[m.NodeID], chartPoint{X: x, Y: m.SystemMemoryUsedMB})
 	}
