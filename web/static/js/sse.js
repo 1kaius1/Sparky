@@ -2,12 +2,16 @@
 
 // Live-refresh client for GET /events (Dashboard UI Phase 11) - the
 // Server-Sent Events channel ARCHITECTURE.md commits to for live telemetry
-// and transfer progress. Deliberately minimal: rather than patching
-// specific DOM nodes per event type (a Chart.js point, a progress bar's
-// width, a status badge), a relevant event triggers an htmx refetch of the
-// page currently visible - see PLANNING.md's Decisions Log for this phase.
-// Plain vanilla JS, no htmx extension - CLAUDE.md Frontend Conventions'
-// "minimal vanilla JS - no framework" rule, and EventSource's own built-in
+// and transfer progress. Rather than hand-patching individual DOM nodes per
+// event type (a Chart.js point, a progress bar's width, a status badge), a
+// relevant event refetches the current page's HTML and morphs it into
+// #main-content via idiomorph's htmx "morph" swap extension (vendored in
+// base.html, enabled by hx-ext="morph" on <body>) - so the refetch keeps
+// scroll position, focus, text selection, and open <details> / <select>
+// state instead of destroying and rebuilding the subtree. See PLANNING.md's
+// Decisions Log for this phase and its 2026-09-08 "Level A + Tier 0" entry.
+// Plain vanilla JS otherwise - CLAUDE.md Frontend Conventions' "minimal
+// vanilla JS - no framework" rule, and EventSource's own built-in
 // reconnect-with-retry already covers what a hand-rolled reconnect loop
 // would otherwise need to.
 //
@@ -53,16 +57,19 @@
         return;
       }
       // Drop - not reschedule - the refetch while the user has focus in a
-      // form control inside the content area. Replacing #main-content's
-      // subtree would close an open <select>, discard an unsaved value, and
-      // move focus. Matches internal/events.Broker's own "drop rather than
-      // block" behavior on a full subscriber buffer.
+      // form control inside the content area. idiomorph preserves the active
+      // element's focus and caret across a morph, but a morph can still
+      // churn sibling fields and disrupt an in-progress edit, so skip it
+      // entirely until they're done. Matches internal/events.Broker's own
+      // "drop rather than block" behavior on a full subscriber buffer.
       var active = document.activeElement;
       if (active && main.contains(active) &&
           (active.tagName === "INPUT" || active.tagName === "SELECT" || active.tagName === "TEXTAREA")) {
         return;
       }
-      htmx.ajax("GET", window.location.pathname, { target: "#main-content", swap: "innerHTML" });
+      // morph:innerHTML diffs the response against the live subtree and
+      // patches only what changed - see this file's header comment.
+      htmx.ajax("GET", window.location.pathname, { target: "#main-content", swap: "morph:innerHTML" });
     }, refreshDebounceMs);
   }
 
