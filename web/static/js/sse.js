@@ -110,14 +110,17 @@
   document.addEventListener("DOMContentLoaded", function () {
     var source = new EventSource("/events");
     // Each of these full-page-refetch events is gated on the current page's
-    // declared topics - see refreshIfRelevant. instance_health is published
-    // by cmd/sparky-server's onMessage but had no browser listener before
-    // 2026-09-08; the Profiles page declares it so a live health-status
-    // change shows without a manual reload.
+    // declared topics - see refreshIfRelevant. instance_health and
+    // node_status are published by cmd/sparky-server but had no browser
+    // listener before 2026-09-08: Profiles declares instance_health so a
+    // live health change shows without a reload, and Nodes / Dashboard
+    // declare node_status so a node coming online or dropping does too
+    // (agentconn emits it on every agent_status transition).
     source.addEventListener("transfer_progress", refreshIfRelevant("transfer_progress"));
     source.addEventListener("engine_transfer_progress", refreshIfRelevant("engine_transfer_progress"));
     source.addEventListener("instance_result", refreshIfRelevant("instance_result"));
     source.addEventListener("instance_health", refreshIfRelevant("instance_health"));
+    source.addEventListener("node_status", refreshIfRelevant("node_status"));
     // The Metrics page's own live-update path (web/static/js/metrics.js)
     // replaces just its chart data in place instead of a full-page refetch
     // - see PLANNING.md's Decisions Log for why this page's live-update

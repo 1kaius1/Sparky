@@ -127,15 +127,25 @@ type OnMessageFunc func(nodeID string, env agentproto.Envelope)
 // connection just became usable.
 type OnConnectFunc func(ctx context.Context, nodeID string)
 
+// OnStatusChangeFunc is called after this layer transitions a node's
+// agent_status - online on connect, offline on disconnect, unreachable on
+// heartbeat silence, online again on recovery. Same genericity reasoning as
+// OnConnectFunc: this package only reports that the status changed, not what
+// a caller does with it (internal/httpapi's SSE broadcast, so the Nodes and
+// Dashboard pages pick it up without a manual reload). Fired only on an
+// actual transition, and only once the DB write for it has succeeded.
+type OnStatusChangeFunc func(nodeID string, status db.AgentStatus)
+
 // Handler is the WebSocket endpoint agents dial into. It implements
 // http.Handler so it mounts directly into internal/httpapi's router.
 type Handler struct {
-	auth      authenticator
-	status    statusStore
-	registry  *Registry
-	logger    *log.Logger
-	onMessage OnMessageFunc
-	onConnect OnConnectFunc
+	auth           authenticator
+	status         statusStore
+	registry       *Registry
+	logger         *log.Logger
+	onMessage      OnMessageFunc
+	onConnect      OnConnectFunc
+	onStatusChange OnStatusChangeFunc
 
 	// unreachableTimeout/unreachableCheckEvery default to
 	// defaultUnreachableTimeout/defaultUnreachableCheckEvery in NewHandler -
@@ -149,10 +159,10 @@ type Handler struct {
 // command types to dispatch yet (as of Model transfers Phase 2, nothing
 // wires a real callback in) simply passes nil, and every message this
 // package doesn't already handle internally is silently discarded.
-// onConnect may also be nil, same reasoning.
-func NewHandler(auth authenticator, status statusStore, registry *Registry, logger *log.Logger, onMessage OnMessageFunc, onConnect OnConnectFunc) *Handler {
+// onConnect and onStatusChange may also be nil, same reasoning.
+func NewHandler(auth authenticator, status statusStore, registry *Registry, logger *log.Logger, onMessage OnMessageFunc, onConnect OnConnectFunc, onStatusChange OnStatusChangeFunc) *Handler {
 	return &Handler{
-		auth: auth, status: status, registry: registry, logger: logger, onMessage: onMessage, onConnect: onConnect,
+		auth: auth, status: status, registry: registry, logger: logger, onMessage: onMessage, onConnect: onConnect, onStatusChange: onStatusChange,
 		unreachableTimeout:    defaultUnreachableTimeout,
 		unreachableCheckEvery: defaultUnreachableCheckEvery,
 	}
@@ -184,6 +194,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.registry.Register(node.ID, conn)
 	if err := h.status.SetAgentStatus(r.Context(), node.ID, db.AgentStatusOnline, true); err != nil {
 		h.logger.Printf("agentconn: set agent_status online for node %s: %v", node.ID, err)
+	} else if h.onStatusChange != nil {
+		h.onStatusChange(node.ID, db.AgentStatusOnline)
 	}
 	if err := h.sendHelloAck(r.Context(), conn, requestID, true, ""); err != nil {
 		h.logger.Printf("agentconn: send hello_ack for node %s: %v", node.ID, err)
@@ -223,6 +235,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// but this write still needs to go through.
 		if err := h.status.SetAgentStatus(context.Background(), node.ID, db.AgentStatusOffline, false); err != nil {
 			h.logger.Printf("agentconn: set agent_status offline for node %s: %v", node.ID, err)
+		} else if h.onStatusChange != nil {
+			h.onStatusChange(node.ID, db.AgentStatusOffline)
 		}
 		h.logger.Printf("agentconn: node %s (%s) disconnected", node.Name, node.ID)
 	}()
@@ -253,6 +267,8 @@ func (h *Handler) watchLiveness(ctx context.Context, nodeID string, tracker *liv
 			if tracker.markUnreachableIfStale(h.unreachableTimeout) {
 				if err := h.status.SetAgentStatus(ctx, nodeID, db.AgentStatusUnreachable, false); err != nil {
 					h.logger.Printf("agentconn: set agent_status unreachable for node %s: %v", nodeID, err)
+				} else if h.onStatusChange != nil {
+					h.onStatusChange(nodeID, db.AgentStatusUnreachable)
 				}
 			}
 		}
@@ -334,6 +350,8 @@ func (h *Handler) readLoop(ctx context.Context, nodeID string, conn *websocket.C
 		if tracker.recordActivity() {
 			if err := h.status.SetAgentStatus(ctx, nodeID, db.AgentStatusOnline, true); err != nil {
 				h.logger.Printf("agentconn: set agent_status online for node %s (recovered from unreachable): %v", nodeID, err)
+			} else if h.onStatusChange != nil {
+				h.onStatusChange(nodeID, db.AgentStatusOnline)
 			}
 		}
 
