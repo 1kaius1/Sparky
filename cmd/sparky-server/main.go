@@ -196,7 +196,16 @@ func main() {
 			logger.Printf("agentconn: node %s sent an unhandled message type %q", nodeID, env.Type)
 		}
 	}
-	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, onMessage, lifecycleService.ReconcileNode)
+	// onNodeStatusChange broadcasts a coarse "a node's agent_status changed"
+	// signal to open SSE connections whenever agentconn transitions a node
+	// online/offline/unreachable. Unlike onMessage above there is no service
+	// handler to call - agentconn has already written the DB status itself;
+	// this only exists so the Nodes and Dashboard pages (which listen for
+	// "node_status") refetch without a manual reload.
+	onNodeStatusChange := func(_ string, _ db.AgentStatus) {
+		eventsBroker.Publish(events.Event{Type: "node_status"})
+	}
+	agentConnHandler := agentconn.NewHandler(nodeAuth, nodeRepo, agentRegistry, logger, onMessage, lifecycleService.ReconcileNode, onNodeStatusChange)
 
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.

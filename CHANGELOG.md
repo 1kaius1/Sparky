@@ -1391,6 +1391,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/auth/ldap.go`) now point at `CLAUDE.md` instead.
 
 ### Fixed
+- The Nodes and Dashboard pages now update without a manual reload when a
+  node's agent connects, disconnects, or goes unreachable. `internal/agentconn`
+  wrote `agent_status` transitions straight to the database and broadcast
+  nothing - `cmd/sparky-server` only emitted SSE events for agent *messages*
+  (transfers, instances, telemetry), never for connection lifecycle - so no
+  page could react to a node coming online. `agentconn.Handler` now fires an
+  `OnStatusChangeFunc` after each of its four `SetAgentStatus` transitions
+  (mirroring the existing `OnConnectFunc`/`OnMessageFunc`), which
+  `cmd/sparky-server` turns into a `node_status` SSE event; `nodes.html`
+  declares `data-sse-topics="node_status"` and `dashboard.html` adds it
+  alongside `instance_result`. Part of the "Level A + Tier 0" live-refresh
+  work - see PLANNING.md's 2026-09-08 Decisions Log entries.
 - Live SSE-driven page refreshes are now scoped to the page being viewed.
   `web/static/js/sse.js` previously wired `transfer_progress`,
   `engine_transfer_progress`, and `instance_result` straight to an
