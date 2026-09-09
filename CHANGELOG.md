@@ -1379,6 +1379,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/auth/ldap.go`) now point at `CLAUDE.md` instead.
 
 ### Fixed
+- Live SSE-driven page refreshes are now scoped to the page being viewed.
+  `web/static/js/sse.js` previously wired `transfer_progress`,
+  `engine_transfer_progress`, and `instance_result` straight to an
+  unconditional htmx refetch that replaced all of `#main-content` on any such
+  event from anywhere in the fleet - which, on a form page, closed an open
+  `<select>`, discarded unsaved input, and reset scroll (found during
+  two-Spark live testing, 2026-09-08, and since a transfer reports progress
+  periodically the next tick within the 500ms debounce always eventually
+  landed). Each page now declares the live-event types it displays in a
+  `data-sse-topics` marker inside its own `content` block (Dashboard:
+  `instance_result`; Model profiles: `instance_result`, `instance_health`;
+  Model transfers: `transfer_progress`; Engine transfers / Engine inventory:
+  `engine_transfer_progress`), and `sse.js` only refetches when an incoming
+  event's type is in that set - a page with no marker (every create/edit
+  form, and the static pages) never auto-refetches. `scheduleRefresh` also
+  now drops - rather than reschedules - a refetch while focus is in an
+  `INPUT`/`SELECT`/`TEXTAREA` inside `#main-content`, matching
+  `internal/events.Broker`'s own drop-rather-than-block behavior. Also adds
+  the `instance_health` browser listener that `cmd/sparky-server`'s
+  `onMessage` has published since 2026-08-13 with nothing consuming it, so a
+  live health-status change now shows on the Profiles page without a manual
+  reload. See PLANNING.md's 2026-09-08 Decisions Log entry ("Level A + Tier
+  0").
 - CLAUDE.md's Current Focus section no longer states stale v0.1.0/v0.2.0
   status: v0.1.0's remaining item was described as blocked on DGX Spark
   hardware "not yet in hand" (that hardware has been in hand since
