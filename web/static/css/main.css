@@ -335,3 +335,76 @@ table.data-table:not(.panel .data-table) {
 .login-form button:hover {
   opacity: 0.92;
 }
+
+/* Live-updates (SSE) connection indicator - sidebar footer. */
+.sse-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--color-sidebar-text);
+  margin-bottom: 10px;
+}
+
+.sse-status-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--color-status-offline);
+}
+
+.sse-status[data-state="live"] .sse-status-dot {
+  background: var(--color-status-online);
+}
+
+.sse-status[data-state="reconnecting"] .sse-status-dot {
+  background: var(--color-status-starting);
+  animation: sse-status-pulse 1.2s ease-in-out infinite;
+}
+
+.sse-status[data-state="down"] .sse-status-dot {
+  background: var(--color-status-failed);
+}
+
+@keyframes sse-status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
+}
+
+/* Toast notifications - feedback for hx-swap="none" actions and failed
+   mutating requests (web/static/js/toast.js). */
+.toast-container {
+  position: fixed;
+  top: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.toast {
+  pointer-events: auto;
+  min-width: 200px;
+  max-width: 360px;
+  padding: 10px 14px;
+  border-radius: var(--radius);
+  background: var(--color-text);
+  color: #ffffff;
+  font-size: 13px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.18s ease, transform 0.18s ease;
+}
+
+.toast-visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.toast-error {
+  background: var(--color-status-failed);
+}

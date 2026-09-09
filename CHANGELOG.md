@@ -1390,6 +1390,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   references (`docs/AGENT.md`, a code comment in
   `internal/auth/ldap.go`) now point at `CLAUDE.md` instead.
 
+### Added
+- SSE connection-status indicator in the sidebar footer (Connecting / Live /
+  Reconnecting / Disconnected), driven by the `EventSource`'s own connection
+  state (`web/static/js/sse.js`), so a dropped live-updates connection is
+  visible instead of the page silently going stale.
+- Toast notifications (`web/static/js/toast.js`) for htmx actions that use
+  `hx-swap="none"` and otherwise give no visible feedback: the Model profiles
+  Load/Unload controls and the Users & permissions tier-change and
+  password-reset forms opt in with a `data-toast` message, and any failed
+  *mutating* (non-GET) htmx request raises a generic error toast. GET
+  requests - sidebar navigation and `sse.js`'s own live refetch - are
+  ignored, so a server blip during a refetch never spams toasts. Part of the
+  "Level A + Tier 0" live-refresh work (PLANNING.md 2026-09-08 Decisions Log).
+
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a
   node's agent connects, disconnects, or goes unreachable. `internal/agentconn`

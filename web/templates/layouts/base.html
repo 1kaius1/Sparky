@@ -11,6 +11,7 @@
   <script src="/static/js/chart.umd.min.js"></script>
   <script src="/static/js/metrics.js"></script>
   <script src="/static/js/sse.js"></script>
+  <script src="/static/js/toast.js"></script>
 </head>
 <body hx-headers='{"X-CSRF-Token": "{{.CSRFToken}}"}' hx-ext="morph">
   <div class="layout">
@@ -75,6 +76,10 @@
         {{end}}
       </ul>
       <div class="sidebar-footer">
+        <div id="sse-status" class="sse-status" data-state="connecting" title="Live updates connection">
+          <span class="sse-status-dot" aria-hidden="true"></span>
+          <span class="sse-status-label">Connecting</span>
+        </div>
         <a href="/account" hx-get="/account" hx-target="#main-content" hx-push-url="true"
            class="{{if eq .ActiveSection "account"}}active{{end}}">My account</a>
         <a class="logout-link" hx-post="/logout" hx-swap="none">Logout</a>
@@ -84,6 +89,7 @@
       {{template "content" .}}
     </main>
   </div>
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>
 </html>
 {{end}}
