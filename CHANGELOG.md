@@ -1248,6 +1248,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   port") with a visible signal rather than just a fixed detection path.
 
 ### Changed
+- Live SSE-driven page refreshes now morph the new HTML into `#main-content`
+  instead of replacing its innerHTML wholesale. Adds a vendored copy of
+  idiomorph 0.8.0 bundled with its htmx `morph` swap extension
+  (`web/static/js/idiomorph-ext.min.js`, 0BSD, loaded in `base.html` after
+  htmx and enabled by `hx-ext="morph"` on `<body>`); `web/static/js/sse.js`'s
+  `scheduleRefresh` now uses `swap: "morph:innerHTML"`. A refetch triggered
+  by a live event keeps scroll position, focus, text selection, and open
+  `<details>` / `<select>` state rather than destroying and rebuilding the
+  subtree - no visible flash on the ~5s telemetry-adjacent update cadence.
+  Slice 2 of the "Level A + Tier 0" live-refresh work - see PLANNING.md's
+  2026-09-08 Decisions Log entry. First vendored JS beyond htmx and Chart.js,
+  approved with the user per CLAUDE.md Frontend Conventions.
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
   and `scripts/install_agent.sh`: account/group/model-storage-directory
   provisioning moved into `sparky-agent setup` (see above) - the shell
