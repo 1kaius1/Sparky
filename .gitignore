@@ -17,3 +17,6 @@ coverage.out
 
 # Editor/OS
 .DS_Store
+
+# Disposable files never to be committed
+DISPOSABLE-*
