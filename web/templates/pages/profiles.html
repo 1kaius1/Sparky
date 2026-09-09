@@ -38,11 +38,11 @@
         {{if $.Data.CanManage}}<a href="/profiles/{{.ID}}/edit">Edit</a>{{end}}
         {{if $.Data.CanLaunch}}
           {{if not .InstanceStatus}}
-          <form hx-post="/profiles/{{.ID}}/load" hx-swap="none">
+          <form hx-post="/profiles/{{.ID}}/load" hx-swap="none" data-toast="Load requested for {{.Name}}">
             <button type="submit">Load</button>
           </form>
           {{else if eq .InstanceStatus "running"}}
-          <form hx-post="/instances/{{.ActiveInstanceID}}/unload" hx-swap="none">
+          <form hx-post="/instances/{{.ActiveInstanceID}}/unload" hx-swap="none" data-toast="Unload requested for {{.Name}}">
             <button type="submit">Unload</button>
           </form>
           {{end}}

@@ -25,7 +25,7 @@
       <td>{{.ElevatedAt}}</td>
       <td>
         {{if .ReachableTiers}}
-        <form hx-post="/users/{{.ID}}/tier" hx-swap="none">
+        <form hx-post="/users/{{.ID}}/tier" hx-swap="none" data-toast="Tier updated for {{.DisplayName}}">
           <select name="tier">
             {{range .ReachableTiers}}<option value="{{.}}">{{.}}</option>{{end}}
           </select>
@@ -35,7 +35,7 @@
       </td>
       <td>
         {{if .IsLocalAccount}}
-        <form hx-post="/users/{{.ID}}/local/reset-password" hx-swap="none">
+        <form hx-post="/users/{{.ID}}/local/reset-password" hx-swap="none" data-toast="Password reset for {{.DisplayName}}">
           <input type="password" name="password" placeholder="new password" autocomplete="new-password" required>
           <button type="submit">Reset</button>
         </form>

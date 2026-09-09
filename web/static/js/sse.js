@@ -107,8 +107,36 @@
     }, refreshDebounceMs);
   }
 
+  // setConnectionStatus reflects the EventSource's own connection state in
+  // the sidebar footer indicator (#sse-status, rendered by base.html and
+  // never re-rendered by an htmx partial swap, so this element is stable
+  // for the life of the page). EventSource reconnects on its own; its
+  // readyState is CONNECTING while retrying and CLOSED only if it has given
+  // up entirely (a non-2xx response or wrong content-type from /events).
+  function setConnectionStatus(state, label) {
+    var el = document.getElementById("sse-status");
+    if (!el) {
+      return;
+    }
+    el.setAttribute("data-state", state);
+    var labelEl = el.querySelector(".sse-status-label");
+    if (labelEl) {
+      labelEl.textContent = label;
+    }
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var source = new EventSource("/events");
+    source.addEventListener("open", function () {
+      setConnectionStatus("live", "Live");
+    });
+    source.addEventListener("error", function () {
+      if (source.readyState === EventSource.CLOSED) {
+        setConnectionStatus("down", "Disconnected");
+      } else {
+        setConnectionStatus("reconnecting", "Reconnecting");
+      }
+    });
     // Each of these full-page-refetch events is gated on the current page's
     // declared topics - see refreshIfRelevant. instance_health and
     // node_status are published by cmd/sparky-server but had no browser
