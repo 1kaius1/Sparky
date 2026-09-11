@@ -192,6 +192,24 @@ background jobs: downsampling raw data older than 6 months into aggregates, and
 exporting those aggregates to the configured NFS or S3 destination (Metrics export
 config).
 
+#### Theme System
+Resolves and lets a user customize their own color theme (`SCHEMA.md` Users'
+`theme_preset`/`theme_custom_colors`/`theme_status_palette`), and lets an Admin
+configure the system-wide default any viewer with no preference of their own
+inherits (`SCHEMA.md` Theme settings) - either a built-in preset or a fully custom
+theme uploaded as YAML, since the default row is the same three-column shape as a
+user's own preference. Resolution happens once per full page render
+(`internal/httpapi/render.go`'s `resolveTheme`), never on an htmx partial swap -
+`<html>`'s `data-theme`/`data-status-palette` attributes and any custom-color
+`<style>` override live in `base.html`, outside `#main-content`, so they survive a
+swap untouched and the CSS variables they select cascade into whatever gets
+swapped in regardless. All color/preset validation (the 8 preset names, the 15
+whitelisted customizable CSS variables, `#RRGGBB` hex format) lives in one place,
+`internal/rbac/theme.go`, shared by both the self-service path
+(`rbac.Service.UpdateOwnTheme`) and the Admin-configured default's path
+(`settings.Service.UpdateDefaultTheme`) - the latter is the Settings page's first
+write path, everything else there having been read-only until this feature.
+
 #### HTTP/API + Dashboard
 REST/JSON for all actions, Server-Sent Events for live telemetry and transfer
 progress push to the dashboard. Frontend is server-rendered Go templates with htmx

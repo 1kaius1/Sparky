@@ -148,11 +148,21 @@ func main() {
 	// job before either had an HTTP caller.
 	rbacService := rbac.NewService(users, auditRecorder, logger)
 
-	// settingsService backs the Settings page's read-only view of the two
-	// singleton config rows - no write path exists yet in the Dashboard
-	// UI (Phase 6 and beyond, PLANNING.md), so nothing has ever called
-	// either repository's Set beyond what migrations 000012/000013 seed.
-	settingsService := settings.NewService(db.NewMetricsExportConfigRepository(pool), db.NewAuditSettingsRepository(pool))
+	// themeSettingsRepo is passed to settingsService below (folded into the
+	// Admin-gated write path, internal/settings.Service.UpdateDefaultTheme)
+	// and separately to httpapi.New as themeSettingsSvc (an ungated read
+	// used to resolve every viewer's own effective theme on each full page
+	// load) - one concrete repository, two narrow interfaces, same
+	// "same value, multiple interfaces" pattern nodeService/profileService/
+	// engineProvisionService already establish in this file.
+	themeSettingsRepo := db.NewThemeSettingsRepository(pool)
+
+	// settingsService backs the Settings page's read-only view of Metrics
+	// export config/Audit settings, plus its own write path for the
+	// Admin-configurable default theme (UpdateDefaultTheme) - the first
+	// write path this Service has ever had, so it now also needs
+	// auditRecorder.
+	settingsService := settings.NewService(db.NewMetricsExportConfigRepository(pool), db.NewAuditSettingsRepository(pool), themeSettingsRepo, auditRecorder)
 
 	// metricsService backs the Metrics page's two read methods and, as of
 	// Dashboard UI Phase 11 (via the onMessage dispatch below),
@@ -210,7 +220,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

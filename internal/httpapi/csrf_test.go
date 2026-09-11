@@ -3,11 +3,35 @@
 package httpapi
 
 import (
+	"bytes"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
+
+// newMultipartCSRFRequest builds a multipart/form-data POST request with a
+// csrf_token field (unless includeToken is false) - the Settings page's
+// theme-file upload form's own encoding, the only multipart write route in
+// this codebase.
+func newMultipartCSRFRequest(t *testing.T, includeToken bool) *http.Request {
+	t.Helper()
+	var body bytes.Buffer
+	w := multipart.NewWriter(&body)
+	if includeToken {
+		if err := w.WriteField(csrfFormFieldName, testCSRFToken); err != nil {
+			t.Fatalf("WriteField() error: %v", err)
+		}
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("multipart Writer.Close() error: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/settings/theme/upload", &body)
+	req.Header.Set("Content-Type", w.FormDataContentType())
+	return req
+}
 
 // testCSRFToken is a fixed value used by addValidCSRF - any value works as
 // long as the cookie and the submitted value match, so tests that aren't
@@ -164,6 +188,50 @@ func TestRequireCSRF_MismatchedToken_Rejected(t *testing.T) {
 
 	if called {
 		t.Error("next handler was called despite a mismatched CSRF token")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
+// TestRequireCSRF_MultipartFormField_Passes and
+// TestRequireCSRF_MultipartMissingToken_Rejected together confirm the fix
+// for a real gap found while adding the theme-file upload route: isFormRequest
+// originally only recognized application/x-www-form-urlencoded, so a
+// multipart/form-data request (any plain <form enctype="multipart/form-data">
+// submission - just as naively cross-site-forgeable as a urlencoded one) fell
+// into RequireCSRF's "not a form request, skip validation" branch entirely,
+// silently bypassing CSRF protection for that content type. isFormRequest
+// (login_page.go) and RequireCSRF's own form-parsing branch (csrf.go) were
+// both fixed to handle multipart explicitly - these two tests are the
+// regression coverage for that fix.
+func TestRequireCSRF_MultipartFormField_Passes(t *testing.T) {
+	api := testAPIForCSRF(t)
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+
+	req := newMultipartCSRFRequest(t, true)
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: testCSRFToken})
+	rec := httptest.NewRecorder()
+	api.RequireCSRF(next).ServeHTTP(rec, req)
+
+	if !called {
+		t.Errorf("next handler was not called for a valid multipart request, response = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestRequireCSRF_MultipartMissingToken_Rejected(t *testing.T) {
+	api := testAPIForCSRF(t)
+	called := false
+	next := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { called = true })
+
+	req := newMultipartCSRFRequest(t, false)
+	req.AddCookie(&http.Cookie{Name: csrfCookieName, Value: testCSRFToken})
+	rec := httptest.NewRecorder()
+	api.RequireCSRF(next).ServeHTTP(rec, req)
+
+	if called {
+		t.Error("next handler was called for a multipart request with no csrf_token field at all")
 	}
 	if rec.Code != http.StatusForbidden {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)

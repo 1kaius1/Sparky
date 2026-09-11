@@ -4,9 +4,11 @@ package httpapi
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
+	"strings"
 
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -15,13 +17,50 @@ import (
 
 // pageData wraps a page's own view model with the shell-level fields the
 // base layout needs (nav highlighting, tab title, which Admin-floor nav
-// links to show) - see web/templates/layouts/base.html.
+// links to show, the active theme) - see web/templates/layouts/base.html.
 type pageData struct {
 	Title         string
 	ActiveSection string
 	CSRFToken     string
 	ShowAdminNav  bool
+	Theme         themeViewModel
 	Data          any
+}
+
+// themeSettingsReader is the subset of *db.ThemeSettingsRepository this
+// package needs to resolve every viewer's own effective theme - a plain
+// repository dependency, not internal/settings.Service, since that
+// package's Get is Admin-gated and every viewer (not just Admins) needs
+// to resolve their own theme on every full page load. See
+// *db.ThemeSettingsRepository.Get's own doc comment for why this
+// bypasses that gate deliberately.
+type themeSettingsReader interface {
+	Get(ctx context.Context) (*db.ThemeSettings, error)
+}
+
+// themeViewModel is the resolved theme for the current viewer - computed
+// once per full page load (see render below), never on an htmx partial
+// swap, since <html>'s data-theme attribute is untouched by a swap of
+// #main-content alone and the CSS variables it selects cascade into
+// whatever gets swapped in regardless.
+//
+// CustomCSS is pre-built as a single template.CSS-typed blob (resolveTheme
+// below), not a map rendered via a template {{range}} over key/value pairs -
+// html/template's CSS contextual autoescaper does not have a notion of "a
+// dynamically-supplied string is a safe CSS property name," so a bare
+// {{$key}} used as a property name inside a <style> block gets replaced
+// with its "ZgotmplZ" safety sentinel regardless of how well-vetted the
+// value actually is server-side (found while manually verifying this
+// feature end to end - the override silently never applied). template.CSS
+// is Go's own sanctioned way to assert "this content has already been
+// validated, trust it verbatim" - safe here specifically because every
+// key/value pair going into it was already checked against the 15-entry
+// whitelist and the strict #RRGGBB regex before this type is ever
+// constructed (see resolveTheme and internal/rbac/theme.go).
+type themeViewModel struct {
+	Preset        string
+	StatusPalette string
+	CustomCSS     template.CSS
 }
 
 // loadPageTemplates parses each page template together with the base
@@ -92,6 +131,7 @@ func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string,
 		// sidebar... never reload[s]") - so this extra tier lookup is paid
 		// once per full page load, not on every section change.
 		pd.ShowAdminNav = a.canViewAdminNav(r.Context())
+		pd.Theme = a.resolveTheme(r.Context())
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
@@ -119,6 +159,83 @@ func (a *API) canViewAdminNav(ctx context.Context) bool {
 		return false
 	}
 	return rbac.CanViewAuditLog(actor)
+}
+
+// resolveTheme determines the current viewer's effective theme - a full
+// page load's own extra lookup, same "paid once per full page load"
+// reasoning as canViewAdminNav's own tier lookup above. Any failure to
+// resolve the system default or the viewer's own row falls back to the
+// bare carbon-dark preset rather than failing the page render, matching
+// canViewAdminNav's own "display nicety, not a security boundary" stance.
+func (a *API) resolveTheme(ctx context.Context) themeViewModel {
+	fallback := themeViewModel{Preset: string(db.ThemePresetCarbonDark), StatusPalette: string(db.ThemeFamilyDark)}
+
+	settings, err := a.themeSettings.Get(ctx)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve system default theme: %v", err)
+		return fallback
+	}
+
+	// The default triple (preset, custom colors, status palette) - what a
+	// user with no preference of their own inherits in full, not just the
+	// bare preset, since an Admin's uploaded custom default is itself a
+	// full triple - see SCHEMA.md Theme settings.
+	preset := settings.DefaultTheme
+	rawCustomColors := settings.DefaultCustomColors
+	statusPaletteOverride := settings.DefaultStatusPalette
+
+	identity, ok := IdentityFromContext(ctx)
+	if ok && !identity.IsSuperAdmin {
+		user, err := a.users.FindByID(ctx, identity.UserID)
+		if err != nil {
+			a.logger.Printf("httpapi: resolve theme for %s: %v", identity.UserID, err)
+			return fallback
+		}
+		// A user who has picked their own preset fully overrides the
+		// system default's triple - never partially blended with it.
+		if user.ThemePreset != nil {
+			preset = *user.ThemePreset
+			rawCustomColors = user.ThemeCustomColors
+			statusPaletteOverride = user.ThemeStatusPalette
+		}
+	}
+
+	statusPalette := preset.Family()
+	if statusPaletteOverride != nil {
+		statusPalette = db.ThemeFamily(*statusPaletteOverride)
+	}
+
+	// Defense in depth: re-filter stored custom colors against the same
+	// whitelist/regex used at write time (internal/rbac's
+	// UpdateOwnTheme/UpdateDefaultTheme) before they ever reach
+	// base.html's <style> block - belt-and-braces against a row ever
+	// being edited by hand or by a future code path that bypasses the
+	// service layer.
+	customColors := map[string]string{}
+	var raw map[string]string
+	if json.Unmarshal(rawCustomColors, &raw) == nil {
+		for k, v := range raw {
+			if rbac.AllowedThemeColorKey(k) && rbac.ValidHexColor(v) {
+				customColors[k] = v
+			}
+		}
+	}
+
+	// Built here, once, as a single trusted blob - see CustomCSS's own doc
+	// comment on themeViewModel for why this can't be a map rendered via
+	// the template itself. Iterates rbac.ThemeColorKeys' fixed order
+	// (not customColors' own map order) for deterministic output.
+	var cssRules strings.Builder
+	for _, k := range rbac.ThemeColorKeys {
+		if v, ok := customColors[k.CSSVar]; ok {
+			cssRules.WriteString(k.CSSVar)
+			cssRules.WriteString(": ")
+			cssRules.WriteString(v)
+			cssRules.WriteString(";\n")
+		}
+	}
+
+	return themeViewModel{Preset: string(preset), StatusPalette: string(statusPalette), CustomCSS: template.CSS(cssRules.String())}
 }
 
 // forbiddenPageData is the "access denied" page's view model.

@@ -1,24 +1,42 @@
 /* SPDX-License-Identifier: AGPL-3.0-or-later */
 
+/* Theme system - see SCHEMA.md Theme settings and internal/rbac/theme.go
+   (the whitelist of which of these variables a user/Admin may override).
+   This :root block is also the fallback palette for login.html/
+   breakglass_login.html, which are standalone documents that never get a
+   data-theme attribute (see internal/httpapi/render.go's loadPageTemplates) -
+   kept identical to [data-theme="carbon-dark"] below, the shipped
+   system-wide default. Every other page gets its palette from one of the
+   eight [data-theme="..."] blocks further down, loaded after this block so
+   its own declarations always win the cascade; a customizing user's inline
+   <style> override (web/templates/layouts/base.html) loads after main.css
+   entirely, so it always wins over both. */
 :root {
-  --color-bg: #f5f6f8;
-  --color-surface: #ffffff;
-  --color-border: #dfe3e8;
-  --color-text: #1c2230;
-  --color-text-muted: #667085;
-  --color-primary: #2f5fda;
+  --color-bg: #12151c;
+  --color-surface: #1a1f29;
+  --color-border: #2a3140;
+  --color-text: #e6e9f0;
+  --color-text-muted: #8b93a7;
+  --color-primary: #5b8def;
   --color-primary-contrast: #ffffff;
-  --color-sidebar-bg: #161b26;
-  --color-sidebar-text: #c6cbd8;
+  --color-sidebar-bg: #0b0d12;
+  --color-sidebar-text: #9aa3b8;
   --color-sidebar-text-active: #ffffff;
-  --color-status-online: #1a8a5f;
-  --color-status-running: #1a8a5f;
-  --color-status-offline: #98a2b3;
-  --color-status-unreachable: #98a2b3;
-  --color-status-starting: #b98900;
-  --color-status-stopping: #b98900;
-  --color-status-stopped: #98a2b3;
-  --color-status-failed: #c0342c;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #3a2020;
+  --color-form-success-bg: #1e3328;
+  --color-chart-accent-1: #7a3fd1;
+  --color-chart-accent-2: #0f8a9e;
+  --color-status-online: #2fa876;
+  --color-status-running: #2fa876;
+  --color-status-offline: #7c8797;
+  --color-status-unreachable: #7c8797;
+  --color-status-starting: #c68a1f;
+  --color-status-stopping: #c68a1f;
+  --color-status-stopped: #7c8797;
+  --color-status-failed: #d1453a;
   --sidebar-width: 220px;
   --radius: 6px;
 }
@@ -51,6 +69,22 @@ h2 {
   margin: 0 0 12px;
 }
 
+/* Base link color - every more-specific selector below (.sidebar-nav a,
+   .sidebar-subnav a, .logout-link, etc.) already sets its own color and
+   wins on specificity regardless, so this only actually reaches genuinely
+   unstyled links (e.g. "Register node", "New profile", "Provision engine" -
+   plain <a> tags in several page templates with no class at all). Those
+   fell back to the browser's native link blue on every theme before this,
+   including the original single light palette - a barely-noticeable gap
+   against a light background, but a glaringly out-of-place one against
+   any of the dark presets now shipped as options (found by screenshotting
+   a real dark-themed session against real content, not caught by the
+   markup/CSS-value-level curl checks used everywhere else while building
+   this feature). */
+a {
+  color: var(--color-primary);
+}
+
 .layout {
   display: flex;
   min-height: 100vh;
@@ -67,7 +101,7 @@ h2 {
 .sidebar-brand {
   font-weight: 600;
   font-size: 16px;
-  color: #ffffff;
+  color: var(--color-sidebar-brand);
   padding: 8px 20px 20px;
 }
 
@@ -88,7 +122,7 @@ h2 {
 
 .sidebar-nav a:hover,
 .sidebar-subnav a:hover {
-  background: rgba(255, 255, 255, 0.06);
+  background: var(--color-sidebar-hover-bg);
   color: var(--color-sidebar-text-active);
 }
 
@@ -96,7 +130,7 @@ h2 {
 .sidebar-subnav a.active {
   color: var(--color-sidebar-text-active);
   border-left-color: var(--color-primary);
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--color-sidebar-active-bg);
 }
 
 .sidebar-group summary {
@@ -220,7 +254,7 @@ table.data-table:not(.panel .data-table) {
 
 .sidebar-footer {
   margin-top: 16px;
-  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  border-top: 1px solid var(--color-sidebar-active-bg);
   padding: 12px 20px 0;
 }
 
@@ -264,7 +298,7 @@ table.data-table:not(.panel .data-table) {
 }
 
 .login-error {
-  background: #fdecea;
+  background: var(--color-form-error-bg);
   color: var(--color-status-failed);
   border-radius: var(--radius);
   padding: 8px 12px;
@@ -273,7 +307,7 @@ table.data-table:not(.panel .data-table) {
 }
 
 .form-error {
-  background: #fdecea;
+  background: var(--color-form-error-bg);
   color: var(--color-status-failed);
   border-radius: var(--radius);
   padding: 8px 12px;
@@ -282,7 +316,7 @@ table.data-table:not(.panel .data-table) {
 }
 
 .form-success {
-  background: #e6f4ed;
+  background: var(--color-form-success-bg);
   color: var(--color-status-online);
   border-radius: var(--radius);
   padding: 8px 12px;
@@ -391,8 +425,12 @@ table.data-table:not(.panel .data-table) {
   max-width: 360px;
   padding: 10px 14px;
   border-radius: var(--radius);
-  background: var(--color-text);
-  color: #ffffff;
+  /* Always a dark surface with light text, same pairing as the sidebar -
+     unlike --color-text (light-on-dark for a dark preset, which would make
+     this background near-white with white text and unreadable), sidebar-bg/
+     sidebar-text-active are deliberately dark/light regardless of family. */
+  background: var(--color-sidebar-bg);
+  color: var(--color-sidebar-text-active);
   font-size: 13px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
   opacity: 0;
@@ -407,4 +445,216 @@ table.data-table:not(.panel .data-table) {
 
 .toast-error {
   background: var(--color-status-failed);
+}
+
+/* Theme presets - internal/db.ThemePresets is the Go-side source of truth
+   for this same list of 8 values; keep both in sync. Light family first,
+   then dark, matching that order. Each block is deliberately complete (every
+   variable restated, not partially inherited) so there's no ambiguity about
+   what a given preset looks like from reading this file alone. Status
+   colors are handled separately, by the two [data-status-palette] blocks
+   below - never set in these preset blocks, since they're locked/shared
+   across whichever presets share a family (see SCHEMA.md Users). */
+
+[data-theme="slate-light"] {
+  --color-bg: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-border: #dfe3e8;
+  --color-text: #1c2230;
+  --color-text-muted: #667085;
+  --color-primary: #2f5fda;
+  --color-primary-contrast: #ffffff;
+  --color-sidebar-bg: #161b26;
+  --color-sidebar-text: #c6cbd8;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #fdecea;
+  --color-form-success-bg: #e6f4ed;
+  --color-chart-accent-1: #7a3fd1;
+  --color-chart-accent-2: #0f8a9e;
+}
+
+[data-theme="linen-light"] {
+  --color-bg: #f7f5f0;
+  --color-surface: #ffffff;
+  --color-border: #e4ded2;
+  --color-text: #2b2621;
+  --color-text-muted: #7a7266;
+  --color-primary: #0f8a72;
+  --color-primary-contrast: #ffffff;
+  --color-sidebar-bg: #1f2421;
+  --color-sidebar-text: #c9d1c8;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #f9e9e6;
+  --color-form-success-bg: #e3f0e8;
+  --color-chart-accent-1: #7a3fd1;
+  --color-chart-accent-2: #0f8a9e;
+}
+
+[data-theme="arctic-light"] {
+  --color-bg: #f2f4f8;
+  --color-surface: #ffffff;
+  --color-border: #dde1ea;
+  --color-text: #1e2433;
+  --color-text-muted: #616b7d;
+  --color-primary: #5b5bd6;
+  --color-primary-contrast: #ffffff;
+  --color-sidebar-bg: #10182b;
+  --color-sidebar-text: #b9c3dd;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #f5e8ea;
+  --color-form-success-bg: #e2eef0;
+  --color-chart-accent-1: #7a3fd1;
+  --color-chart-accent-2: #0f8a9e;
+}
+
+[data-theme="sand-light"] {
+  --color-bg: #f7f3ee;
+  --color-surface: #fffefb;
+  --color-border: #e6ddd0;
+  --color-text: #2c2620;
+  --color-text-muted: #7d7364;
+  --color-primary: #b8562f;
+  --color-primary-contrast: #ffffff;
+  --color-sidebar-bg: #241c16;
+  --color-sidebar-text: #d8c9b8;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #f7e6e0;
+  --color-form-success-bg: #eaf0e2;
+  --color-chart-accent-1: #7a3fd1;
+  --color-chart-accent-2: #0f8a9e;
+}
+
+/* carbon-dark is the system-wide shipped default (SCHEMA.md Theme
+   settings) - a neutral, unthemed dark palette, deliberately not one of
+   the three iconic ones below, so the out-of-the-box look isn't a
+   Matrix/Tron/Amethyst reference unless a viewer explicitly picks one. */
+[data-theme="carbon-dark"] {
+  --color-bg: #12151c;
+  --color-surface: #1a1f29;
+  --color-border: #2a3140;
+  --color-text: #e6e9f0;
+  --color-text-muted: #8b93a7;
+  --color-primary: #5b8def;
+  --color-primary-contrast: #ffffff;
+  --color-sidebar-bg: #0b0d12;
+  --color-sidebar-text: #9aa3b8;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #3a2020;
+  --color-form-success-bg: #1e3328;
+  --color-chart-accent-1: #7a3fd1;
+  --color-chart-accent-2: #0f8a9e;
+}
+
+/* Digital-rain green terminal aesthetic. */
+[data-theme="matrix-dark"] {
+  --color-bg: #050a05;
+  --color-surface: #0a140a;
+  --color-border: #1f3d1f;
+  --color-text: #d6ffd6;
+  --color-text-muted: #6b9c6b;
+  --color-primary: #33ff66;
+  --color-primary-contrast: #050a05;
+  --color-sidebar-bg: #030602;
+  --color-sidebar-text: #4ddb4d;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #3a2020;
+  --color-form-success-bg: #1e3328;
+  --color-chart-accent-1: #00ff88;
+  --color-chart-accent-2: #a6ff00;
+}
+
+/* Cyan grid on near-black navy. --color-chart-accent-2 doubles as a nod to
+   Tron's own blue-vs-orange visual motif, used here purely as the second
+   chart series color for contrast. */
+[data-theme="tron-dark"] {
+  --color-bg: #050a14;
+  --color-surface: #0a1626;
+  --color-border: #1f3a5c;
+  --color-text: #d6f0ff;
+  --color-text-muted: #6b93b3;
+  --color-primary: #4dd8ff;
+  --color-primary-contrast: #050a14;
+  --color-sidebar-bg: #030712;
+  --color-sidebar-text: #66c2ff;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #3a2020;
+  --color-form-success-bg: #1e3328;
+  --color-chart-accent-1: #00f6ff;
+  --color-chart-accent-2: #ff8c00;
+}
+
+/* Deep violet-black, a single electric-violet accent. */
+[data-theme="amethyst-dark"] {
+  --color-bg: #12081f;
+  --color-surface: #1c1030;
+  --color-border: #34205a;
+  --color-text: #e6dcff;
+  --color-text-muted: #9784bd;
+  --color-primary: #8b5cf6;
+  --color-primary-contrast: #ffffff;
+  --color-sidebar-bg: #0a0515;
+  --color-sidebar-text: #b3a0d9;
+  --color-sidebar-text-active: #ffffff;
+  --color-sidebar-brand: #ffffff;
+  --color-sidebar-hover-bg: rgba(255, 255, 255, 0.06);
+  --color-sidebar-active-bg: rgba(255, 255, 255, 0.08);
+  --color-form-error-bg: #3a2020;
+  --color-form-success-bg: #1e3328;
+  --color-chart-accent-1: #a855f7;
+  --color-chart-accent-2: #6366f1;
+}
+
+/* Status palettes - the two fixed, locked sets of --color-status-* values
+   (SCHEMA.md Users: never part of arbitrary custom-color overrides). Each
+   preset's family selects one automatically (db.ThemePreset.Family, mirrored
+   here by which data-theme block a given data-status-palette normally
+   accompanies); a customizing user's explicit override
+   (internal/httpapi/render.go's resolveTheme) can pair either palette with
+   either preset, which is why these live in their own attribute selector
+   rather than being folded into the [data-theme] blocks above - a
+   [data-status-palette] block must be able to win regardless of which
+   preset is currently active, so these are declared after every preset
+   block above, not interleaved with them. */
+
+[data-status-palette="light"] {
+  --color-status-online: #1a8a5f;
+  --color-status-running: #1a8a5f;
+  --color-status-offline: #98a2b3;
+  --color-status-unreachable: #98a2b3;
+  --color-status-starting: #b98900;
+  --color-status-stopping: #b98900;
+  --color-status-stopped: #98a2b3;
+  --color-status-failed: #c0342c;
+}
+
+[data-status-palette="dark"] {
+  --color-status-online: #2fa876;
+  --color-status-running: #2fa876;
+  --color-status-offline: #7c8797;
+  --color-status-unreachable: #7c8797;
+  --color-status-starting: #c68a1f;
+  --color-status-stopping: #c68a1f;
+  --color-status-stopped: #7c8797;
+  --color-status-failed: #d1453a;
 }
