@@ -1246,6 +1246,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the readiness/health-check work above now tracks, addressing the actual
   motivating complaint ("Sparky says it's running but nothing answers the
   port") with a visible signal rather than just a fixed detection path.
+- Dashboard: a "Running instances" table replaces the old capped "Recent
+  running instances" list. One row per non-terminal instance
+  (running/starting/stopping) showing the model (from its profile), engine
+  type, node, start time, a coarse uptime, status and health, plus two
+  per-row rolling "load strips" - recent GPU utilization and GPU memory as
+  small inline-SVG bar runs (~2 min of history) with a numeric readout, for
+  an at-a-glance sense of how hard each model is pushing its node without
+  opening the Metrics page. The strips update in place on each telemetry
+  tick from a new `GET /dashboard/live-data` endpoint (Read-only, no
+  audit), the same way the Metrics charts already do - no full-page refetch
+  every 5s. Note: GPU load is attributed per node, so on a node running
+  more than one instance every row would show that node's total (the fleet
+  runs one instance per node today) - see PLANNING.md Known Issues.
 
 ### Changed
 - `scripts/packaging/lib/agent-common.sh`, `scripts/packaging/postinstall.sh`,
@@ -1625,6 +1638,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other series. Chart labels now render in the viewer's own local
   timezone rather than the server's - a deliberate, acknowledged behavior
   change.
+- SSE-driven live refreshes are now scoped to the page that actually
+  displays the changed data. Previously any `transfer_progress`,
+  `engine_transfer_progress`, or `instance_result` event - from anywhere in
+  the fleet - triggered a full re-render of whatever page was open,
+  including a create/edit form the user was part-way through, which closed
+  its open `<select>` dropdown (progress events stream periodically, not
+  just at completion, so this recurred until the form was submitted). Each
+  list page now declares a `data-sse-topics` attribute naming the event
+  types it shows live (`web/templates/pages/*.html`); a page with no such
+  declaration - every form page, plus Nodes/Audit/Users/Settings - never
+  auto-refreshes. `sse.js` also gained a focus guard that drops a refresh
+  landing while a form control is focused, and a listener for
+  `instance_health` (published server-side since the health-check work but
+  not previously acted on in the browser - the Model profiles Health
+  column now updates live).
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

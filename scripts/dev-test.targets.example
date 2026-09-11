@@ -1,0 +1,20 @@
+# dev-test.sh target list - one endpoint per line, whitespace-separated:
+#   name  base_url  ssh_host
+#
+# name      - a short label used in reports and output filenames
+# base_url  - the OpenAI-compatible engine's base URL (no trailing slash),
+#             reachable directly from wherever dev-test.sh runs
+# ssh_host  - passwordless-SSH-reachable host string (user@host) used only
+#             for nvidia-smi GPU sampling during a run; the same host the
+#             engine itself runs on
+#
+# The model id is never read from this file - dev-test.sh always resolves
+# it live from each endpoint's own GET /v1/models, since that's the only
+# way to know exactly what a server-side --served-model-name override (if
+# any) actually reports (see PLAN-FLEET_PROMPT_TEST.md D1/D11).
+#
+# Copy this file to dev-test.targets (gitignored - environment-specific)
+# and fill in real values, or pass a different path with --targets FILE.
+
+# spark-1   http://192.168.0.101:8000   developer@192.168.0.101
+# spark-2   http://192.168.0.102:8000   developer@192.168.0.102

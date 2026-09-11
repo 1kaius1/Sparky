@@ -146,98 +146,117 @@ solutions for this exact problem in a server-rendered/htmx app:
   used in `internal/events.Broker.Publish` (a full subscriber buffer drops
   the event rather than blocking the publisher).
 
-**Recommendation: do both.** They cover different cases - `hx-preserve`
-protects a specific known-important element across a swap that does
-proceed; the focus guard prevents the swap from happening at all while the
-user is actively engaged with any control, which is simpler and broader but
-means the rest of the page also stays stale until they're done. Given list
-pages (the only pages that will have any topics at all) don't generally
-have persistent open dropdowns the way create/edit forms do, the focus
-guard alone may be sufficient in practice - but `hx-preserve` is cheap
-insurance for the one case it doesn't cover (a list page's own filter/sort
-control, if one is ever added).
+**Decision: focus guard only** (see Decisions 5 below). Topic scoping
+already fixes the reported bug outright - the form pages it happened on
+declare no topics and so never auto-refresh. The focus guard is added as
+forward-looking defence-in-depth for the topic-declaring pages; none of
+them have an interactive control today. `hx-preserve` is deferred until a
+concrete element needs to survive a refresh that *does* proceed.
 
 ---
 
 ## Implementation plan
 
-1. **Decide where the per-page topics marker lives** (see Open Questions -
-   this must be resolved before writing template changes, since
-   `<main id="main-content">` in `base.html` is never re-rendered by the
-   htmx partial swap `scheduleRefresh` performs - only its innerHTML is
-   replaced with each page's own `content` block).
-2. Add the topics marker to every page template's `content` block per the
-   table below.
-3. `web/static/js/sse.js`:
-   - Add a helper reading the current page's declared topics from the
-     marker.
-   - Change each of the three `addEventListener` calls to check topics
-     before calling `scheduleRefresh`, instead of calling it unconditionally.
-   - Add the missing `instance_health` listener (see per-page table -
-     needed if Profiles is to correctly reflect live health changes).
-   - Add the `document.activeElement` focus guard inside `scheduleRefresh`.
-4. Apply `hx-preserve` to any page element judged worth it once the topic
-   tagging is in place (likely none needed immediately - re-evaluate after
-   step 3, since most of the risk is already removed once forms declare no
-   topics).
-5. Update `CHANGELOG.md` (`### Fixed`) and `PLANNING.md` (Decisions Log +
-   removing/narrowing the relevant Known Issues row, if one gets filed
-   before this lands) per this project's normal change process.
-6. Tests: `sse.js` has no existing test coverage (no JS test framework in
-   this project - CLAUDE.md Frontend Conventions, "no build step"). Manual
-   browser verification is the applicable gate here, same precedent as the
-   Metrics chart's own crosshair/right-justify claims (PLANNING.md's
-   2026-08-20 entry) - plan to verify by hand: open a create-form page,
+1. Wrap the `content` block of the 5 topic-declaring templates
+   (`transfers`, `engine_transfers`, `engine_inventory`, `dashboard`,
+   `profiles`) in `<div data-sse-topics="...">...</div>` per the table
+   below. No other template changes.
+2. `web/static/js/sse.js`:
+   - Add a `pageWantsTopic(topic)` helper: read
+     `#main-content [data-sse-topics]`, split its value on whitespace,
+     return whether `topic` is in the list; return `false` if no such
+     element exists.
+   - Wrap the three existing `transfer_progress` /
+     `engine_transfer_progress` / `instance_result` listeners so they call
+     `scheduleRefresh` only when `pageWantsTopic(<that type>)` is true.
+   - Add a fourth listener for `instance_health`, gated the same way.
+   - Leave the `telemetry` listener alone - it already routes through
+     `sparkyMetricsLiveUpdate`, which self-scopes via its canvas-presence
+     check.
+   - Add the focus guard inside `scheduleRefresh`'s debounced callback:
+     after the `visibilityState` check, `return` early if
+     `document.activeElement` is an `INPUT`/`SELECT`/`TEXTAREA` contained
+     in `#main-content`.
+3. `PLANNING.md`: add a Known Issues row for the node online/offline
+   live-update gap (Decision 4), and a Decisions Log entry for this fix.
+4. `CHANGELOG.md`: a `### Fixed` entry.
+5. Tests: `sse.js` has no existing test coverage (no JS test framework in
+   this project - CLAUDE.md Frontend Conventions, "no build step").
+   `go build ./... && go vet ./... && gofmt -l . && go test ./...` still
+   applies (template parse errors surface via the `internal/httpapi`
+   template-loading tests). Manual browser verification is the real gate,
+   same precedent as the Metrics chart's own crosshair/right-justify
+   claims (PLANNING.md's 2026-08-20 entry): open a create-form page,
    trigger a transfer/instance event elsewhere in the fleet, confirm the
-   form's dropdown survives and the rest of the page does not unexpectedly
-   refresh.
+   form's dropdown survives and unrelated pages no longer refresh; then
+   confirm a topic-declaring page (Transfers) still does refresh on its
+   own event type.
 
-### Per-page topic assignment
+### Per-page topic assignment (final)
 
-Based on what each page actually displays; entries marked "needs
-confirmation" are a best-effort read of the template, not confirmed against
-the user's own intent - confirm before implementing.
-
-| Page template | Topics | Notes |
-|---|---|---|
-| `dashboard.html` | `instance_result` | Shows running-instance counts and a recent-instances table. Node online/offline counts (`OnlineNodes`) have no corresponding published event type today - agent connect/disconnect isn't one of `onMessage`'s five cases - so this page still won't live-update on that specific stat. Existing gap, out of scope for this fix. |
-| `nodes.html` | none today | Same agent-connect/disconnect gap as above - `agent_status` changes aren't broadcast as an event type at all currently. Out of scope unless the user wants it added as part of this pass. |
-| `profiles.html` | `instance_result`, `instance_health` | Health requires adding the missing `instance_health` `sse.js` listener (see above) - needs confirmation this is wanted in the same pass, since it's a real feature gap, not just a scoping fix. |
-| `transfers.html` | `transfer_progress` | |
-| `engine_transfers.html` | `engine_transfer_progress` | |
-| `engine_inventory.html` | `engine_transfer_progress` (needs confirmation) | A completed engine transfer changes what this page lists; worth confirming this is actually wanted live vs. acceptable to require a manual revisit. |
-| `metrics.html` | handled separately | Already uses its own `sparkyMetricsLiveUpdate` in-place update path (`telemetry` event), not `scheduleRefresh` - no topics tag needed. |
-| `audit.html`, `users.html`, `settings.html` | none | No live SSE-driven data. |
-| `register_node.html`, `profile_form.html`, `initiate_transfer.html`, `provision_engine.html`, `create_local_account.html`, `account.html` | none | All create/edit forms - the exact class of page the reported bug hit. Never auto-refresh, regardless of event type. |
-| `node_registered.html` | none | One-time bearer-token display page - refreshing it would be actively harmful even if it were otherwise safe, since the token is shown only once and a re-fetch of this route does not re-show it. |
-| `forbidden.html` | none | Static. |
+| Page template | `data-sse-topics` | Wrapper div added? | Notes |
+|---|---|---|---|
+| `transfers.html` | `transfer_progress` | yes | |
+| `engine_transfers.html` | `engine_transfer_progress` | yes | |
+| `engine_inventory.html` | `engine_transfer_progress` | yes | Decision 3 - refreshes on progress ticks too; harmless, page is form-free. |
+| `dashboard.html` | `instance_result` | yes | The `OnlineNodes` tile still won't live-update - no event type for agent connect/disconnect (Decision 4, filed separately). |
+| `profiles.html` | `instance_result instance_health` | yes | `instance_health` also needs the new `sse.js` listener (Decision 2). |
+| `nodes.html` | *(none)* | no | Agent-status live-update filed as a separate follow-up (Decision 4). |
+| `metrics.html` | *(none)* | no | Uses its own `sparkyMetricsLiveUpdate` in-place path for `telemetry`, not `scheduleRefresh` - untouched by this change. |
+| `audit.html`, `users.html`, `settings.html` | *(none)* | no | No live SSE-driven data. |
+| `register_node.html`, `profile_form.html`, `initiate_transfer.html`, `provision_engine.html`, `create_local_account.html`, `account.html` | *(none)* | no | Create/edit forms - the exact class of page the reported bug hit. Never auto-refresh. |
+| `node_registered.html` | *(none)* | no | One-time bearer-token display - a re-fetch of this route does not re-show the token, so refreshing it would be actively harmful. |
+| `forbidden.html` | *(none)* | no | Static. |
 
 ---
 
-## Open questions (resolve before implementing)
+## Decisions (resolved 2026-09-10)
 
-1. **Where does the per-page topics marker actually live?** Confirmed via
-   `internal/httpapi/render.go`: for an `HX-Request: true` request (what
-   `scheduleRefresh` sends), only the page's own `{{define "content"}}`
-   block renders - `<main id="main-content">` in `base.html` is not
-   re-rendered by a partial swap, only its innerHTML replaced. So the
-   marker must live inside each page's own `content` block (e.g. a
-   `data-sse-topics="..."` attribute on that block's own root wrapper
-   element, or a small dedicated marker element at its top), not on
-   `#main-content` itself. Several page templates (e.g.
-   `initiate_transfer.html`) currently start directly with an `<h1>` and no
-   wrapping element - adding one is a small structural change to most page
-   templates, worth doing consistently rather than ad hoc per page.
-2. **Is extending `sse.js` to also listen for `instance_health` in scope
-   for this pass**, or should Profiles' topic list omit it and this gets
-   filed as its own separate follow-up? Recommended: include it, since
-   defining Profiles' topic set at all means confronting this gap directly,
-   but confirm before implementing since it's a small feature addition, not
-   purely a bug fix.
-3. **`engine_inventory.html`'s topic** - confirm whether a completed engine
-   transfer should live-update this page or whether a manual revisit is
-   acceptable.
-4. **Node online/offline live-updating** (`dashboard.html`/`nodes.html`) -
-   confirmed out of scope for this pass (no event type exists for it today),
-   but worth deciding whether to file it as its own follow-up item now
-   while it's fresh, or leave it undiscovered until someone notices.
+1. **Where the per-page topics marker lives.** A `data-sse-topics="..."`
+   attribute on a plain `<div>` wrapping each topic-declaring page's
+   `{{define "content"}}` block. Confirmed layout-safe: `.main` in
+   `main.css` is `flex: 1; padding; min-width: 0` - a flex *item*, not a
+   flex/grid *container* - and there are no `.main > *` /
+   `#main-content > *` child-combinator selectors anywhere in `main.css`,
+   so an inert wrapper `<div>` in normal block flow changes nothing
+   visually. The wrapper is added only to pages that declare topics; every
+   other page gets no wrapper and no attribute, and `sse.js` treats
+   "no `[data-sse-topics]` element found inside `#main-content`" as "this
+   page wants no live refresh" - the safe default. This works for both a
+   full page load (the wrapper is in the server-rendered HTML) and an htmx
+   partial swap (the wrapper is inside the swapped-in `content` block),
+   without needing anything on `<main id="main-content">` itself, which a
+   partial swap never re-renders.
+2. **`instance_health` listener - in scope for this pass.** `sse.js` gains
+   a fourth `addEventListener("instance_health", ...)`, topic-gated the
+   same way as the other three. `profiles.html` declares
+   `data-sse-topics="instance_result instance_health"`. This closes the
+   pre-existing gap (health changes were published but nothing in the
+   browser listened) in the same change that defines Profiles' topic set.
+3. **`engine_inventory.html` live-updates.** Declares
+   `data-sse-topics="engine_transfer_progress"`. It refreshes on every
+   progress tick during a provisioning run (mostly redundant, but the
+   500ms debounce collapses bursts and the page is form-free so a refresh
+   is harmless), which is the only available signal that a run has
+   completed and added a new inventory row.
+4. **Node online/offline live-updating - filed, not fixed here.** Recorded
+   as a PLANNING.md Known Issues row: the Nodes page and the Dashboard
+   "Online" tile don't live-update on agent connect/disconnect because
+   nothing publishes an SSE event for it (it's handled on the WebSocket
+   lifecycle in `agentconn`, not through `onMessage`'s five message types).
+   Fixing it needs new server-side work - a new event type plus a publish
+   call on connect/disconnect - out of scope for this refresh-scoping fix.
+   `nodes.html` therefore declares no topics; `dashboard.html` declares
+   only `instance_result`.
+5. **Input protection - focus guard only, no `hx-preserve`.** Topic scoping
+   alone fully fixes the reported bug (the form pages it happened on
+   declare no topics and so never auto-refresh). As defence-in-depth for
+   the topic-declaring pages, `scheduleRefresh` gains a guard: when its
+   debounced timer fires, if `document.activeElement` is an
+   `INPUT`/`SELECT`/`TEXTAREA` inside `#main-content`, the refresh is
+   *dropped* (not re-queued) - matching this file's own debounce-and-drop
+   behaviour and `internal/events.Broker.Publish`'s full-buffer drop. The
+   page catches up on the next event after the control loses focus. No
+   topic-declaring page has such a control today, so this is purely
+   forward-looking; `hx-preserve` is left for whenever a concrete element
+   needs to survive a refresh that *does* proceed.

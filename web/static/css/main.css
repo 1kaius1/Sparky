@@ -218,6 +218,34 @@ table.data-table:not(.panel .data-table) {
 .status-stopped { background: var(--color-status-stopped); }
 .status-failed, .status-unhealthy { background: var(--color-status-failed); }
 
+/* Dashboard "Running instances" load strips - a coarse, non-interactive
+   at-a-glance GPU utilization / memory indicator per instance, drawn as
+   inline SVG by web/static/js/dashboard.js. The Metrics page is where the
+   real chart lives. */
+.load-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.load-val {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--color-text);
+  min-width: 34px;
+  text-align: right;
+}
+.load-strip svg {
+  display: block;
+}
+.load-strip-track {
+  fill: var(--color-border);
+}
+.load-empty {
+  color: var(--color-text-muted);
+  font-style: italic;
+  font-size: 12px;
+}
+
 .sidebar-footer {
   margin-top: 16px;
   border-top: 1px solid rgba(255, 255, 255, 0.08);

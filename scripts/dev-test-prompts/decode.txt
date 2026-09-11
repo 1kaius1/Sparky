@@ -1,0 +1,7 @@
+Write a detailed technical design document for a distributed key-value
+store built on the Raft consensus protocol. Cover the data model, the
+replication and log-consensus flow, leader election and failure detection,
+snapshotting and log compaction, client-facing read/write consistency
+guarantees, the network protocol between nodes, and how the cluster
+handles a minority-partition network split. Be thorough and comprehensive,
+writing in full prose with section headings.

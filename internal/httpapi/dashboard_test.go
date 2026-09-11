@@ -2411,3 +2411,234 @@ func TestHandleUpdateProfile_Forbidden(t *testing.T) {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
 	}
 }
+
+// --- Dashboard "Running instances" table + load strips ---------------------
+
+func TestHumanizeUptime(t *testing.T) {
+	for _, tc := range []struct {
+		d    time.Duration
+		want string
+	}{
+		{-5 * time.Second, "0s"},
+		{0, "0s"},
+		{42 * time.Second, "42s"},
+		{59 * time.Second, "59s"},
+		{90 * time.Second, "1m"},
+		{59 * time.Minute, "59m"},
+		{time.Hour + 47*time.Minute, "1h 47m"},
+		{25*time.Hour + 3*time.Minute, "25h 3m"},
+	} {
+		if got := humanizeUptime(tc.d); got != tc.want {
+			t.Errorf("humanizeUptime(%s) = %q, want %q", tc.d, got, tc.want)
+		}
+	}
+}
+
+func TestBuildDashboardLiveData_GroupsByInstanceAndTrims(t *testing.T) {
+	inst1 := "inst-1"
+	inst2 := "inst-2"
+	base := time.Date(2026, 9, 10, 15, 0, 0, 0, time.UTC)
+
+	var gpu []*db.GPUMetric
+	// 30 readings for inst-1 (more than dashboardLoadBars=24), 3 for inst-2.
+	for i := 0; i < 30; i++ {
+		gpu = append(gpu, &db.GPUMetric{
+			RecordedAt: base.Add(time.Duration(i) * 5 * time.Second), NodeID: "node-1", GPUIndex: 0,
+			RunningInstanceID: &inst1, UtilizationPct: float64(i), MemoryUsedMB: 500, MemoryTotalMB: 1000,
+		})
+	}
+	for i := 0; i < 3; i++ {
+		gpu = append(gpu, &db.GPUMetric{
+			RecordedAt: base.Add(time.Duration(i) * 5 * time.Second), NodeID: "node-2", GPUIndex: 0,
+			RunningInstanceID: &inst2, UtilizationPct: 10, MemoryUsedMB: 250, MemoryTotalMB: 1000,
+		})
+	}
+	// A reading with no correlated instance must be ignored, not crash.
+	gpu = append(gpu, &db.GPUMetric{RecordedAt: base, NodeID: "node-3", GPUIndex: 0, RunningInstanceID: nil, UtilizationPct: 99})
+
+	instances := []*db.RunningInstance{
+		{ID: inst1, Status: db.RunningInstanceStatusRunning, StartedAt: base, HealthStatus: db.InstanceHealthHealthy},
+		{ID: inst2, Status: db.RunningInstanceStatusStarting, StartedAt: base},
+		{ID: "inst-stopped", Status: db.RunningInstanceStatusStopped, StartedAt: base},
+	}
+
+	got := buildDashboardLiveData(instances, gpu)
+
+	if len(got.Instances) != 2 {
+		t.Fatalf("got %d instance entries, want 2 (stopped one excluded): %+v", len(got.Instances), got.Instances)
+	}
+	byID := map[string]dashboardInstanceLoad{}
+	for _, l := range got.Instances {
+		byID[l.ID] = l
+	}
+	one, ok := byID[inst1]
+	if !ok {
+		t.Fatalf("inst-1 missing from result")
+	}
+	if len(one.GPUUtil) != dashboardLoadBars {
+		t.Errorf("inst-1 GPUUtil len = %d, want %d (trimmed to newest)", len(one.GPUUtil), dashboardLoadBars)
+	}
+	// Newest reading is i=29 (util 29); trimming keeps the last 24, so the
+	// final entry must be 29, not 23.
+	if last := one.GPUUtil[len(one.GPUUtil)-1]; last != 29 {
+		t.Errorf("inst-1 newest GPUUtil = %v, want 29 (kept the newest, not the oldest)", last)
+	}
+	if one.GPUMem[0] != 50 {
+		t.Errorf("inst-1 GPUMem[0] = %v, want 50 (500/1000*100)", one.GPUMem[0])
+	}
+	two := byID[inst2]
+	if len(two.GPUUtil) != 3 {
+		t.Errorf("inst-2 GPUUtil len = %d, want 3 (fewer than the cap, no padding)", len(two.GPUUtil))
+	}
+	if two.Status != "starting" {
+		t.Errorf("inst-2 status = %q, want starting", two.Status)
+	}
+}
+
+func TestBuildDashboardLiveData_AveragesMultipleGPUsPerReading(t *testing.T) {
+	inst := "inst-1"
+	ts := time.Date(2026, 9, 10, 15, 0, 0, 0, time.UTC)
+	gpu := []*db.GPUMetric{
+		{RecordedAt: ts, NodeID: "n", GPUIndex: 0, RunningInstanceID: &inst, UtilizationPct: 20, MemoryUsedMB: 100, MemoryTotalMB: 1000},
+		{RecordedAt: ts, NodeID: "n", GPUIndex: 1, RunningInstanceID: &inst, UtilizationPct: 80, MemoryUsedMB: 300, MemoryTotalMB: 1000},
+	}
+	instances := []*db.RunningInstance{{ID: inst, Status: db.RunningInstanceStatusRunning, StartedAt: ts}}
+
+	got := buildDashboardLiveData(instances, gpu)
+	if len(got.Instances) != 1 || len(got.Instances[0].GPUUtil) != 1 {
+		t.Fatalf("unexpected shape: %+v", got.Instances)
+	}
+	if got.Instances[0].GPUUtil[0] != 50 {
+		t.Errorf("averaged GPUUtil = %v, want 50 ((20+80)/2)", got.Instances[0].GPUUtil[0])
+	}
+	if got.Instances[0].GPUMem[0] != 20 {
+		t.Errorf("averaged GPUMem = %v, want 20 ((10%%+30%%)/2)", got.Instances[0].GPUMem[0])
+	}
+}
+
+func TestHandleDashboard_ShowsRunningInstanceDetail(t *testing.T) {
+	nodes := &fakeNodeLister{nodes: []*db.Node{{ID: "node-1", Name: "spark-1", AgentStatus: db.AgentStatusOnline}}}
+	profiles := &fakeProfileLister{profiles: []*db.Profile{
+		{ID: "profile-1", Name: "qwen-test", ModelRef: "Qwen/Qwen2.5-0.5B-Instruct", EngineType: db.ProfileEngineVLLM},
+	}}
+	instances := &fakeInstanceLister{instances: []*db.RunningInstance{
+		{ID: "inst-1", ProfileID: "profile-1", PrimaryNodeID: "node-1", Status: db.RunningInstanceStatusRunning, HealthStatus: db.InstanceHealthHealthy, StartedAt: time.Now().Add(-90 * time.Minute)},
+		{ID: "inst-stopped", ProfileID: "profile-1", PrimaryNodeID: "node-1", Status: db.RunningInstanceStatusStopped, StartedAt: time.Now().Add(-3 * time.Hour)},
+	}}
+	api := newTestDashboardAPIWithMetrics(t, nodes, profiles, instances, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/dashboard", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		"Running instances",
+		"Qwen/Qwen2.5-0.5B-Instruct",
+		"vllm",
+		`data-instance-id="inst-1"`,
+		"status-running",
+		"status-healthy",
+		"1h 30m",
+		"sparkyDashboardRenderAll",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("dashboard body missing %q: %s", want, body)
+		}
+	}
+	if strings.Contains(body, `data-instance-id="inst-stopped"`) {
+		t.Errorf("dashboard shows a stopped instance in the Running instances table: %s", body)
+	}
+}
+
+func TestHandleDashboard_EmptyRunningInstances(t *testing.T) {
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/dashboard", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	if !strings.Contains(rec.Body.String(), "No running instances.") {
+		t.Errorf("empty-state message missing: %s", rec.Body.String())
+	}
+}
+
+func TestHandleDashboard_ListProfilesFails(t *testing.T) {
+	profiles := &fakeProfileLister{err: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, profiles, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/dashboard", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleDashboard_ListRecentGPUFails(t *testing.T) {
+	metricsSvc := &fakeMetricsLister{recentGPUErr: errors.New("database unreachable")}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/dashboard", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusInternalServerError)
+	}
+}
+
+func TestHandleDashboardLiveData_ReturnsJSON(t *testing.T) {
+	started := time.Now().Add(-10 * time.Minute)
+	inst := "inst-1"
+	instances := &fakeInstanceLister{instances: []*db.RunningInstance{
+		{ID: inst, Status: db.RunningInstanceStatusRunning, StartedAt: started},
+	}}
+	metricsSvc := &fakeMetricsLister{recentGPU: []*db.GPUMetric{
+		{RecordedAt: started.Add(5 * time.Second), NodeID: "n", GPUIndex: 0, RunningInstanceID: &inst, UtilizationPct: 55, MemoryUsedMB: 400, MemoryTotalMB: 800},
+	}}
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, instances, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, metricsSvc)
+
+	req := newAuthenticatedRequest(t, http.MethodGet, "/dashboard/live-data", "user-1")
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if ct := rec.Header().Get("Content-Type"); ct != "application/json" {
+		t.Errorf("Content-Type = %q, want application/json", ct)
+	}
+	var payload dashboardLiveData
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("response is not valid dashboardLiveData JSON: %v (body: %s)", err, rec.Body.String())
+	}
+	if len(payload.Instances) != 1 || payload.Instances[0].ID != inst {
+		t.Fatalf("unexpected payload: %+v", payload.Instances)
+	}
+	if got := payload.Instances[0].GPUUtil; len(got) != 1 || got[0] != 55 {
+		t.Errorf("GPUUtil = %v, want [55]", got)
+	}
+	if got := payload.Instances[0].GPUMem; len(got) != 1 || got[0] != 50 {
+		t.Errorf("GPUMem = %v, want [50] (400/800*100)", got)
+	}
+}
+
+func TestHandleDashboardLiveData_Unauthenticated(t *testing.T) {
+	api := newTestDashboardAPIWithMetrics(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{}, &fakeUserRoster{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := httptest.NewRequest(http.MethodGet, "/dashboard/live-data", nil)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusFound {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusFound)
+	}
+}

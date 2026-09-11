@@ -1,4 +1,5 @@
 {{define "content"}}
+<div data-sse-topics="engine_transfer_progress">
 <h1>Engine transfers</h1>
 
 {{if .Data.CanProvision}}
@@ -33,4 +34,5 @@
     {{end}}
   </tbody>
 </table>
+</div>
 {{end}}

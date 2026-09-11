@@ -17,3 +17,8 @@ coverage.out
 
 # Editor/OS
 .DS_Store
+
+# dev-test.sh fleet benchmark - environment-specific target list and
+# per-run result artifacts, see PLAN-FLEET_PROMPT_TEST.md
+/scripts/dev-test.targets
+/dev-test-results/

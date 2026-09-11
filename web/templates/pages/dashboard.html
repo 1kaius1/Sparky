@@ -1,4 +1,5 @@
 {{define "content"}}
+<div data-sse-topics="instance_result">
 <h1>Dashboard</h1>
 
 <section class="stat-grid">
@@ -21,26 +22,60 @@
 </section>
 
 <section class="panel">
-  <h2>Recent running instances</h2>
-  <table class="data-table">
+  <h2>Running instances</h2>
+  <table class="data-table" id="dashboard-running">
     <thead>
       <tr>
-        <th>Status</th>
+        <th>Model</th>
+        <th>Engine</th>
         <th>Node</th>
         <th>Started</th>
+        <th>Uptime</th>
+        <th>Status</th>
+        <th>GPU util</th>
+        <th>GPU mem</th>
       </tr>
     </thead>
     <tbody>
-      {{range .Data.RecentInstances}}
-      <tr>
-        <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
+      {{range .Data.RunningInstances}}
+      <tr data-instance-id="{{.InstanceID}}">
+        <td>{{.Model}}</td>
+        <td>{{.Engine}}</td>
         <td>{{.NodeName}}</td>
         <td>{{.StartedAt}}</td>
+        <td data-role="uptime">{{.Uptime}}</td>
+        <td>
+          <span class="status status-{{.Status}}">{{.Status}}</span>
+          {{if .Health}}<span class="status status-{{.Health}}">{{.Health}}</span>{{end}}
+        </td>
+        <td>
+          <span class="load-cell">
+            <span class="load-val" data-role="util-val">-</span>
+            <span class="load-strip" data-role="util-strip"></span>
+          </span>
+        </td>
+        <td>
+          <span class="load-cell">
+            <span class="load-val" data-role="mem-val">-</span>
+            <span class="load-strip" data-role="mem-strip"></span>
+          </span>
+        </td>
       </tr>
       {{else}}
-      <tr><td colspan="3" class="empty">No running instances yet.</td></tr>
+      <tr><td colspan="8" class="empty">No running instances.</td></tr>
       {{end}}
     </tbody>
   </table>
 </section>
+</div>
+
+<script>
+  // Seed the load strips from the same shape GET /dashboard/live-data
+  // returns, so they render on first paint instead of waiting for the
+  // first telemetry tick - mirrors metrics.html seeding chartData.
+  window.sparkyDashboardSeed = {{.Data.LiveDataJSON}};
+  if (typeof window.sparkyDashboardRenderAll === "function") {
+    window.sparkyDashboardRenderAll(window.sparkyDashboardSeed);
+  }
+</script>
 {{end}}
