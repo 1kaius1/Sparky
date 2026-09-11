@@ -48,6 +48,7 @@ type API struct {
 	localAccounts        localAccountManager
 	selfAccount          selfAccountManager
 	settings             settingsViewer
+	themeSettings        themeSettingsReader
 	metrics              metricsLister
 	events               eventSource
 	engineProvisioner    engineProvisioner
@@ -91,7 +92,12 @@ type API struct {
 // pattern as registrar/nodes; settingsSvc backs the Settings page (same
 // Admin floor) via internal/settings.Service.Get, covering the two
 // singleton config rows neither internal/metrics nor internal/audit
-// owns - see that package's doc comment; metricsSvc backs the Metrics
+// owns - see that package's doc comment; themeSettingsSvc backs
+// render()'s own per-viewer theme resolution via
+// db.ThemeSettingsRepository.Get directly, deliberately bypassing
+// settingsSvc's Admin-only RBAC gate - see themeSettingsReader's own doc
+// comment for why every viewer, not just Admins, needs this read;
+// metricsSvc backs the Metrics
 // page, back at the Read-only floor like nodes/profiles/instances/
 // transfers - unlike audit/roster/elevator/settingsSvc, no RBAC check is
 // involved; launcher backs the Model profiles page's Load/Unload controls
@@ -142,7 +148,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -184,6 +190,7 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		localAccounts:          localAccountsSvc,
 		selfAccount:            selfAccountSvc,
 		settings:               settingsSvc,
+		themeSettings:          themeSettingsSvc,
 		metrics:                metricsSvc,
 		events:                 eventsSource,
 		engineProvisioner:      engineProvisionerSvc,
@@ -352,6 +359,17 @@ func (a *API) Router() http.Handler {
 	// /users - the tier check happens inside handleSettings via
 	// settings.Service.Get.
 	r.With(a.RequireSession).Get("/settings", a.handleSettings)
+	// The default-theme forms' own RBAC decision happens inside
+	// settings.Service.UpdateDefaultTheme, same reasoning as the tier-change
+	// form above - two entry points (a plain preset dropdown and a YAML
+	// custom-theme upload) into the same service method.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/theme", a.handleUpdateDefaultTheme)
+	// limitBody runs ahead of RequireCSRF, not just inside the handler -
+	// RequireCSRF itself must parse the multipart body to find the
+	// csrf_token field (see its own doc comment), so the hard size cap has
+	// to already be in place before that parse ever happens, not only
+	// inside handleUploadDefaultTheme's own later ParseMultipartForm call.
+	r.With(a.RequireSession, limitBody(maxThemeYAMLBytes), a.RequireCSRF).Post("/settings/theme/upload", a.handleUploadDefaultTheme)
 	// /events is the SSE endpoint (Dashboard UI Phase 11) - session-gated
 	// like every Read-only-tier page above, no RBAC beyond that (see
 	// handleEvents' own doc comment).
@@ -364,6 +382,11 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Get("/account", a.handleAccountPage)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/account/display-name", a.handleUpdateDisplayName)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/account/password", a.handleChangeOwnPassword)
+	// Theme is a preference, not a local-account identity/credential
+	// action - handleUpdateTheme itself gates only against IsSuperAdmin
+	// (the break-glass session has no Users row to persist to), unlike
+	// the two forms above.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/account/theme", a.handleUpdateTheme)
 
 	// Static assets (CSS, vendored htmx) - public, no session required,
 	// same reasoning a login page's own assets would need if one existed.
@@ -386,6 +409,20 @@ func setRequestIDHeader(next http.Handler) http.Handler {
 		w.Header().Set("X-Request-ID", middleware.GetReqID(r.Context()))
 		next.ServeHTTP(w, r)
 	})
+}
+
+// limitBody wraps r.Body in http.MaxBytesReader so any read of it - by
+// RequireCSRF's own multipart parse, or by the handler afterward - errors
+// out past n bytes, rather than buffering an arbitrarily large request
+// body first. See POST /settings/theme/upload's own doc comment for why
+// this has to run ahead of RequireCSRF, not only inside the handler.
+func limitBody(n int64) func(http.Handler) http.Handler {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			r.Body = http.MaxBytesReader(w, r.Body, n)
+			next.ServeHTTP(w, r)
+		})
+	}
 }
 
 type contextKey string

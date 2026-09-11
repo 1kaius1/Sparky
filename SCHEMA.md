@@ -28,6 +28,9 @@ the schema.
 | `ldap_dn` | text, nullable | The user's LDAP distinguishedName, cached and refreshed at every login (same "cached from AD" reasoning as `display_name`) - lets a mid-session AD group-membership recheck (PLANNING.md Decisions Log) re-verify against LDAP without needing the user's password again. Nullable: a user who hasn't logged in since this column was added has no cached value yet - a recheck treats that the same as no longer being a member, which self-heals on the user's next real login. Always `NULL` for a local-only account - see Local-only accounts, which is never subject to this recheck at all |
 | `local_username` | text, nullable, unique | The login identifier for a local-only account - `NULL` for an AD-backed row. Kept distinct from `display_name` (which a local user can freely rename) for the same reason `ad_sid` and `display_name` are already two separate concerns for an AD-backed row - what you log in with, versus what you're called |
 | `local_password_hash` | text, nullable | Argon2id-encoded, same format and helper (`auth.HashPassword`) as the Break-glass credential below - `NULL` for an AD-backed row |
+| `theme_preset` | enum, nullable | `slate-light` / `linen-light` / `arctic-light` / `sand-light` / `carbon-dark` / `matrix-dark` / `tron-dark` / `amethyst-dark` - see Theme settings below. `NULL` means this user has never picked one - they inherit the *entire* system-wide default triple (preset, custom colors, and status palette together, not just the bare preset), since an Admin's uploaded custom default (Theme settings) is itself a full triple. Set only via self-service (`/account`, `internal/rbac.Service.UpdateOwnTheme`) - any tier, AD-backed or local-only alike, since this is a preference, not an identity/credential action the way `local_username`/`local_password_hash` are |
+| `theme_custom_colors` | jsonb, `NOT NULL DEFAULT '{}'` | Sparse map of CSS custom-property name -> `"#RRGGBB"` string, layered on top of `theme_preset` (or the inherited system default) - deliberately opaque to the database, validated against a fixed 15-key whitelist at the service layer (`internal/rbac/theme.go`, the single source of truth for that whitelist), same "validated in Go, not SQL" precedent as Model profiles' `engine_params`. Never includes a `--color-status-*` key - status colors are locked, never part of arbitrary customization, see `theme_status_palette` below. Empty object means no customization is active |
+| `theme_status_palette` | enum, nullable | `light` / `dark`. `NULL` means auto-derive from the resolved preset's own family (each of the 8 presets belongs to exactly one); non-null is an explicit override, letting a customizing user pair either status-color palette with either preset independent of its family - only ever meaningful once `theme_custom_colors` is non-empty |
 
 `tier` is a plain enum column, not a normalized roles table - four fixed values with
 no per-tier metadata does not justify the extra join.
@@ -261,6 +264,48 @@ yet" state distinct from "configured to export nothing".
 | `config` | jsonb | Non-secret connection details only - bucket, endpoint, region, export path. Credentials are never stored here; see Security Considerations in `ARCHITECTURE.md` |
 | `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row (never yet configured), and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
 | `updated_at` | timestamptz | |
+
+---
+
+## Theme settings
+
+Singleton settings row, editable via the Settings page (Admin only). Governs the
+system-wide default theme used by any viewer with no personal preference of their
+own set on their Users row (see Users' `theme_preset`/`theme_custom_colors`/
+`theme_status_palette` above) - same seeded-at-migration-time reasoning as Metrics
+export config above (`default_theme = 'carbon-dark'`), so there is always an
+effective default to resolve, never a "not configured yet" state.
+
+This row is deliberately the same three-column shape as a user's own theme
+preference - `default_theme` plays the role `theme_preset` does for a user (except
+never `NULL`; there is always a concrete base preset), and `default_custom_colors`/
+`default_status_palette` mirror `theme_custom_colors`/`theme_status_palette`
+exactly. That symmetry is what lets the system-wide default itself be a fully
+custom theme, not just one of the 8 built-in presets - an Admin can either pick a
+preset from a dropdown (`default_custom_colors` stays `{}`) or upload a small YAML
+file describing a custom theme (`internal/httpapi`'s `handleUploadDefaultTheme`),
+which populates all three columns exactly as if a user had customized their own
+theme, just applied fleet-wide instead of to one account.
+
+| Field | Type | Notes |
+|---|---|---|
+| `default_theme` | enum | The 8 built-in presets - see Users' `theme_preset` for the full value list. Defaults to `carbon-dark` (a neutral, unthemed dark palette - deliberately not one of the three iconic ones, `matrix-dark`/`tron-dark`/`amethyst-dark`, so the out-of-the-box look isn't a themed reference unless a viewer explicitly picks one) on the seeded row |
+| `default_custom_colors` | jsonb, `NOT NULL DEFAULT '{}'` | Same shape, same 15-key whitelist, and same validation path (`internal/rbac/theme.go`) as Users' `theme_custom_colors` - layered on `default_theme`. Empty for the plain-dropdown case; populated when an Admin has uploaded a custom theme file instead |
+| `default_status_palette` | enum, nullable | Same `light`/`dark` values and same auto-derive-from-family-unless-overridden semantics as Users' `theme_status_palette` |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row (never yet configured), and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
+
+The uploaded YAML file's expected shape (validated strictly - unknown top-level
+keys are rejected, `colors` keys must be one of the 15 whitelisted slugs, every
+color value must be a strict `#RRGGBB` hex string, and the file is capped at 16 KB):
+
+```yaml
+base_preset: carbon-dark   # required - one of the 8 built-in presets above
+status_palette: dark       # optional - "light" or "dark"; omitted = auto from base_preset
+colors:                    # optional - only the keys you want to override
+  primary: "#5b8def"
+  sidebar_bg: "#0b0d12"
+```
 
 ---
 

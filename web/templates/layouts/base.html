@@ -1,11 +1,18 @@
 {{define "base"}}
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{{.Theme.Preset}}" data-status-palette="{{.Theme.StatusPalette}}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>{{.Title}} - Sparky</title>
   <link rel="stylesheet" href="/static/css/main.css">
+  {{if .Theme.CustomCSS}}
+  <style>
+    :root {
+      {{.Theme.CustomCSS}}
+    }
+  </style>
+  {{end}}
   <script src="/static/js/htmx.min.js"></script>
   <script src="/static/js/idiomorph-ext.min.js"></script>
   <script src="/static/js/chart.umd.min.js"></script>

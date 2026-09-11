@@ -4,6 +4,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"testing"
@@ -456,5 +457,69 @@ func TestUserRepository_List(t *testing.T) {
 	}
 	if !foundA || !foundB {
 		t.Errorf("List() = %d users, missing one or both of the two just created", len(got))
+	}
+}
+
+func TestUserRepository_UpdateTheme(t *testing.T) {
+	repo := newTestUserRepo(t)
+	ctx := context.Background()
+	username := uniqueLocalUsername(t)
+	cleanupLocalUser(t, repo, username)
+
+	created, err := repo.CreateLocal(ctx, username, "hash", "Theme Test User", TierReadOnly)
+	if err != nil {
+		t.Fatalf("CreateLocal() error: %v", err)
+	}
+	if created.ThemePreset != nil {
+		t.Errorf("newly created user's ThemePreset = %v, want nil", *created.ThemePreset)
+	}
+	if string(created.ThemeCustomColors) != "{}" {
+		t.Errorf("newly created user's ThemeCustomColors = %s, want {}", created.ThemeCustomColors)
+	}
+
+	preset := ThemePresetTronDark
+	statusPalette := ThemeStatusPaletteLight
+	colors := json.RawMessage(`{"--color-primary":"#4dd8ff"}`)
+	if err := repo.UpdateTheme(ctx, created.ID, &preset, colors, &statusPalette); err != nil {
+		t.Fatalf("UpdateTheme() error: %v", err)
+	}
+
+	found, _, err := repo.FindByLocalUsername(ctx, username)
+	if err != nil {
+		t.Fatalf("FindByLocalUsername() error: %v", err)
+	}
+	if found.ThemePreset == nil || *found.ThemePreset != preset {
+		t.Errorf("ThemePreset = %v, want %q", found.ThemePreset, preset)
+	}
+	if found.ThemeStatusPalette == nil || *found.ThemeStatusPalette != statusPalette {
+		t.Errorf("ThemeStatusPalette = %v, want %q", found.ThemeStatusPalette, statusPalette)
+	}
+	if !jsonEqual(t, found.ThemeCustomColors, colors) {
+		t.Errorf("ThemeCustomColors = %s, want %s", found.ThemeCustomColors, colors)
+	}
+
+	// Clearing back to nil (inherit system default / auto-derive) - pointers
+	// must persist SQL NULL, not be silently ignored.
+	if err := repo.UpdateTheme(ctx, created.ID, nil, json.RawMessage(`{}`), nil); err != nil {
+		t.Fatalf("UpdateTheme() (clear) error: %v", err)
+	}
+	cleared, _, err := repo.FindByLocalUsername(ctx, username)
+	if err != nil {
+		t.Fatalf("FindByLocalUsername() error: %v", err)
+	}
+	if cleared.ThemePreset != nil {
+		t.Errorf("ThemePreset = %v, want nil after clearing", *cleared.ThemePreset)
+	}
+	if cleared.ThemeStatusPalette != nil {
+		t.Errorf("ThemeStatusPalette = %v, want nil after clearing", *cleared.ThemeStatusPalette)
+	}
+}
+
+func TestUserRepository_UpdateTheme_NotFound(t *testing.T) {
+	repo := newTestUserRepo(t)
+
+	err := repo.UpdateTheme(context.Background(), "00000000-0000-0000-0000-000000000000", nil, json.RawMessage(`{}`), nil)
+	if err != ErrUserNotFound {
+		t.Errorf("UpdateTheme() error = %v, want ErrUserNotFound", err)
 	}
 }

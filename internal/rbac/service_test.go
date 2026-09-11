@@ -5,6 +5,7 @@ package rbac
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log"
 	"strings"
@@ -57,6 +58,7 @@ type fakeUserStore struct {
 	createLocalErr         error
 	updateDisplayNameErr   error
 	updateLocalPasswordErr error
+	updateThemeErr         error
 
 	// updateTierFailAfter delays updateTierErr until this many UpdateTier
 	// calls have already succeeded - lets a test simulate the forward tier
@@ -65,6 +67,12 @@ type fakeUserStore struct {
 	// fakeInstanceStore.setStatusFailAfter.
 	updateTierFailAfter int
 	updateTierCalls     []updateTierCall
+
+	// updateThemeFailAfter is UpdateTheme's own version of
+	// updateTierFailAfter above - lets a test simulate the forward theme
+	// update succeeding and a later revert call failing.
+	updateThemeFailAfter int
+	updateThemeCalls     []updateThemeCall
 }
 
 type updateTierCall struct {
@@ -72,6 +80,13 @@ type updateTierCall struct {
 	tier       db.Tier
 	elevatedBy *string
 	elevatedAt *time.Time
+}
+
+type updateThemeCall struct {
+	id            string
+	preset        *db.ThemePreset
+	customColors  json.RawMessage
+	statusPalette *db.ThemeStatusPalette
 }
 
 func newFakeUserStore(users ...*db.User) *fakeUserStore {
@@ -165,6 +180,21 @@ func (f *fakeUserStore) UpdateLocalPassword(_ context.Context, id, passwordHash 
 		return db.ErrUserNotFound
 	}
 	f.localHashByID[id] = passwordHash
+	return nil
+}
+
+func (f *fakeUserStore) UpdateTheme(_ context.Context, id string, preset *db.ThemePreset, customColors json.RawMessage, statusPalette *db.ThemeStatusPalette) error {
+	f.updateThemeCalls = append(f.updateThemeCalls, updateThemeCall{id, preset, customColors, statusPalette})
+	if f.updateThemeErr != nil && len(f.updateThemeCalls) > f.updateThemeFailAfter {
+		return f.updateThemeErr
+	}
+	u, ok := f.byID[id]
+	if !ok {
+		return db.ErrUserNotFound
+	}
+	u.ThemePreset = preset
+	u.ThemeCustomColors = customColors
+	u.ThemeStatusPalette = statusPalette
 	return nil
 }
 
@@ -576,5 +606,121 @@ func TestService_ChangeOwnPassword_WrongCurrentPassword(t *testing.T) {
 	err = svc.ChangeOwnPassword(context.Background(), actor, "wrong-password", "new-password")
 	if !errors.Is(err, ErrWrongPassword) {
 		t.Errorf("ChangeOwnPassword() error = %v, want ErrWrongPassword", err)
+	}
+}
+
+func TestService_UpdateOwnTheme_Success(t *testing.T) {
+	target := &db.User{ID: "user-1", Tier: db.TierReadOnly}
+	store := newFakeUserStore(target)
+	audit := &fakeAuditRecorder{}
+	svc := NewService(store, audit, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	preset := db.ThemePresetTronDark
+	statusPalette := db.ThemeStatusPaletteLight
+	colors := map[string]string{"--color-primary": "#4dd8ff"}
+
+	err := svc.UpdateOwnTheme(context.Background(), actor, &preset, colors, &statusPalette)
+	if err != nil {
+		t.Fatalf("UpdateOwnTheme() error: %v", err)
+	}
+	if target.ThemePreset == nil || *target.ThemePreset != preset {
+		t.Errorf("ThemePreset = %v, want %q", target.ThemePreset, preset)
+	}
+	if target.ThemeStatusPalette == nil || *target.ThemeStatusPalette != statusPalette {
+		t.Errorf("ThemeStatusPalette = %v, want %q", target.ThemeStatusPalette, statusPalette)
+	}
+	if string(target.ThemeCustomColors) != `{"--color-primary":"#4dd8ff"}` {
+		t.Errorf("ThemeCustomColors = %s, want the single primary override", target.ThemeCustomColors)
+	}
+	if len(audit.calls) != 1 || audit.calls[0].action != "updated_own_theme" {
+		t.Errorf("audit calls = %+v, want one updated_own_theme call", audit.calls)
+	}
+}
+
+func TestService_UpdateOwnTheme_ClearsToSystemDefault(t *testing.T) {
+	priorPreset := db.ThemePresetMatrixDark
+	target := &db.User{ID: "user-1", Tier: db.TierReadOnly, ThemePreset: &priorPreset, ThemeCustomColors: []byte(`{}`)}
+	store := newFakeUserStore(target)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	err := svc.UpdateOwnTheme(context.Background(), actor, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("UpdateOwnTheme() error: %v", err)
+	}
+	if target.ThemePreset != nil {
+		t.Errorf("ThemePreset = %v, want nil (inherit system default)", *target.ThemePreset)
+	}
+}
+
+func TestService_UpdateOwnTheme_SuperAdminNotPermitted(t *testing.T) {
+	store := newFakeUserStore()
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{IsSuperAdmin: true}
+
+	err := svc.UpdateOwnTheme(context.Background(), actor, nil, nil, nil)
+	if !errors.Is(err, ErrNotPermitted) {
+		t.Errorf("UpdateOwnTheme() error = %v, want ErrNotPermitted", err)
+	}
+}
+
+func TestService_UpdateOwnTheme_UnknownPreset(t *testing.T) {
+	target := &db.User{ID: "user-1", Tier: db.TierReadOnly}
+	store := newFakeUserStore(target)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	bogus := db.ThemePreset("not-a-real-preset")
+	err := svc.UpdateOwnTheme(context.Background(), actor, &bogus, nil, nil)
+	if !errors.Is(err, ErrInvalidTheme) {
+		t.Errorf("UpdateOwnTheme() error = %v, want ErrInvalidTheme", err)
+	}
+}
+
+func TestService_UpdateOwnTheme_UnknownColorKey(t *testing.T) {
+	target := &db.User{ID: "user-1", Tier: db.TierReadOnly}
+	store := newFakeUserStore(target)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	err := svc.UpdateOwnTheme(context.Background(), actor, nil, map[string]string{"--color-status-failed": "#ff0000"}, nil)
+	if !errors.Is(err, ErrInvalidTheme) {
+		t.Errorf("UpdateOwnTheme() error = %v, want ErrInvalidTheme (status colors are locked)", err)
+	}
+}
+
+func TestService_UpdateOwnTheme_MalformedHex(t *testing.T) {
+	target := &db.User{ID: "user-1", Tier: db.TierReadOnly}
+	store := newFakeUserStore(target)
+	svc := NewService(store, &fakeAuditRecorder{}, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	for _, bad := range []string{"red", "#fff", "#gggggg", "#ffffff; } body { display:none"} {
+		err := svc.UpdateOwnTheme(context.Background(), actor, nil, map[string]string{"--color-primary": bad}, nil)
+		if !errors.Is(err, ErrInvalidTheme) {
+			t.Errorf("UpdateOwnTheme() with color %q error = %v, want ErrInvalidTheme", bad, err)
+		}
+	}
+}
+
+func TestService_UpdateOwnTheme_AuditFailure_Reverts(t *testing.T) {
+	priorPreset := db.ThemePresetCarbonDark
+	target := &db.User{ID: "user-1", Tier: db.TierReadOnly, ThemePreset: &priorPreset, ThemeCustomColors: []byte(`{}`)}
+	store := newFakeUserStore(target)
+	audit := &fakeAuditRecorder{recordErr: errors.New("database unreachable")}
+	svc := NewService(store, audit, testLogger())
+	actor := Actor{UserID: "user-1", Tier: db.TierReadOnly}
+
+	newPreset := db.ThemePresetAmethystDark
+	err := svc.UpdateOwnTheme(context.Background(), actor, &newPreset, nil, nil)
+	if err == nil {
+		t.Fatal("UpdateOwnTheme() succeeded despite an audit Record failure")
+	}
+	if target.ThemePreset == nil || *target.ThemePreset != priorPreset {
+		t.Errorf("ThemePreset = %v, want %q (reverted after the audit write failed)", target.ThemePreset, priorPreset)
+	}
+	if len(store.updateThemeCalls) != 2 {
+		t.Fatalf("UpdateTheme called %d times, want 2 (forward, then revert)", len(store.updateThemeCalls))
 	}
 }

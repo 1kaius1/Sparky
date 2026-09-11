@@ -379,9 +379,11 @@ func (f *fakeLocalAccountManager) ResetLocalAccountPassword(_ context.Context, a
 type fakeSelfAccountManager struct {
 	updateDisplayNameErr error
 	changePasswordErr    error
+	updateThemeErr       error
 
 	updateDisplayNameCalls []updateDisplayNameCall
 	changePasswordCalls    []changePasswordCall
+	updateThemeCalls       []updateThemeCall
 }
 
 type updateDisplayNameCall struct {
@@ -395,11 +397,26 @@ type changePasswordCall struct {
 	newPassword     string
 }
 
+type updateThemeCall struct {
+	actor         rbac.Actor
+	preset        *db.ThemePreset
+	customColors  map[string]string
+	statusPalette *db.ThemeStatusPalette
+}
+
 func (f *fakeSelfAccountManager) UpdateDisplayName(_ context.Context, actor rbac.Actor, displayName string) error {
 	if f.updateDisplayNameErr != nil {
 		return f.updateDisplayNameErr
 	}
 	f.updateDisplayNameCalls = append(f.updateDisplayNameCalls, updateDisplayNameCall{actor, displayName})
+	return nil
+}
+
+func (f *fakeSelfAccountManager) UpdateOwnTheme(_ context.Context, actor rbac.Actor, preset *db.ThemePreset, customColors map[string]string, statusPalette *db.ThemeStatusPalette) error {
+	if f.updateThemeErr != nil {
+		return f.updateThemeErr
+	}
+	f.updateThemeCalls = append(f.updateThemeCalls, updateThemeCall{actor, preset, customColors, statusPalette})
 	return nil
 }
 
@@ -415,14 +432,55 @@ func (f *fakeSelfAccountManager) ChangeOwnPassword(_ context.Context, actor rbac
 type fakeSettingsViewer struct {
 	metricsExport *db.MetricsExportConfig
 	auditSettings *db.AuditSettings
+	themeSettings *db.ThemeSettings
 	err           error
+
+	updateDefaultThemeErr   error
+	updateDefaultThemeCalls []updateDefaultThemeCall
 }
 
-func (f *fakeSettingsViewer) Get(context.Context, rbac.Actor) (*db.MetricsExportConfig, *db.AuditSettings, error) {
+type updateDefaultThemeCall struct {
+	actor         rbac.Actor
+	preset        db.ThemePreset
+	customColors  map[string]string
+	statusPalette *db.ThemeStatusPalette
+}
+
+func (f *fakeSettingsViewer) Get(context.Context, rbac.Actor) (*db.MetricsExportConfig, *db.AuditSettings, *db.ThemeSettings, error) {
 	if f.err != nil {
-		return nil, nil, f.err
+		return nil, nil, nil, f.err
 	}
-	return f.metricsExport, f.auditSettings, nil
+	themeSettings := f.themeSettings
+	if themeSettings == nil {
+		themeSettings = &db.ThemeSettings{DefaultTheme: db.ThemePresetCarbonDark, DefaultCustomColors: []byte(`{}`)}
+	}
+	return f.metricsExport, f.auditSettings, themeSettings, nil
+}
+
+func (f *fakeSettingsViewer) UpdateDefaultTheme(_ context.Context, actor rbac.Actor, preset db.ThemePreset, customColors map[string]string, statusPalette *db.ThemeStatusPalette) error {
+	if f.updateDefaultThemeErr != nil {
+		return f.updateDefaultThemeErr
+	}
+	f.updateDefaultThemeCalls = append(f.updateDefaultThemeCalls, updateDefaultThemeCall{actor, preset, customColors, statusPalette})
+	return nil
+}
+
+// fakeThemeSettingsReader implements themeSettingsReader for tests - the
+// ungated per-viewer theme-resolution read (render.go's resolveTheme),
+// distinct from fakeSettingsViewer's own Admin-gated Get.
+type fakeThemeSettingsReader struct {
+	settings *db.ThemeSettings
+	err      error
+}
+
+func (f *fakeThemeSettingsReader) Get(context.Context) (*db.ThemeSettings, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	if f.settings != nil {
+		return f.settings, nil
+	}
+	return &db.ThemeSettings{DefaultTheme: db.ThemePresetCarbonDark, DefaultCustomColors: []byte(`{}`)}, nil
 }
 
 // fakeMetricsLister implements metricsLister for tests.
@@ -594,7 +652,7 @@ func newTestDashboardAPIWithEngineTransfers(t *testing.T, nodeList *fakeNodeList
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
+	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, &fakeThemeSettingsReader{}, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

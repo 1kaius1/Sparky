@@ -57,8 +57,16 @@ func (a *API) resolveLoginMethod(r *http.Request) string {
 // existing JSON contract untouched for any other caller, same as
 // content negotiation elsewhere in HTTP (not a special-cased identity
 // source the way handleBreakGlassLogin's separate endpoint is).
+//
+// Also matches multipart/form-data (the Settings page's theme-file
+// upload form, internal/httpapi/settings.go's handleUploadDefaultTheme) -
+// a plain <form enctype="multipart/form-data"> is just as naively
+// cross-site-submittable as a urlencoded one, so RequireCSRF (csrf.go)
+// must not skip it the way it correctly skips the login JSON API branch.
 func isFormRequest(r *http.Request) bool {
-	return strings.HasPrefix(r.Header.Get("Content-Type"), "application/x-www-form-urlencoded")
+	contentType := r.Header.Get("Content-Type")
+	return strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
+		strings.HasPrefix(contentType, "multipart/form-data")
 }
 
 // handleLoginPage serves the HTML login form. A request that already

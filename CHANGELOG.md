@@ -1403,6 +1403,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests - sidebar navigation and `sse.js`'s own live refetch - are
   ignored, so a server blip during a refetch never spams toasts. Part of the
   "Level A + Tier 0" live-refresh work (PLANNING.md 2026-09-08 Decisions Log).
+- Per-user color themes: 8 built-in presets (4 light - `slate-light` (the
+  previous unnamed default look, unchanged), `linen-light`, `arctic-light`,
+  `sand-light` - and 4 dark - `carbon-dark` (the new system-wide shipped
+  default, neutral/unthemed), `matrix-dark`, `tron-dark`, `amethyst-dark`, the
+  latter three deliberately iconic), selectable at `/account` alongside a
+  Slack-style customization option: layer arbitrary `#RRGGBB` overrides for
+  15 whitelisted UI-chrome CSS variables on top of a chosen base preset.
+  Semantic status colors (online/offline/healthy/failed) are locked out of
+  that customization entirely - there are exactly two fixed status-color
+  palettes (`light`/`dark`), auto-selected from the active preset's family,
+  with an explicit override toggle for a customizing user independent of
+  their base preset. The system-wide default (used by any viewer with no
+  personal preference) is Admin-configurable on the Settings page, either by
+  picking a built-in preset or by uploading a small YAML file describing a
+  fully custom default theme (same base-preset-plus-overrides shape, applied
+  fleet-wide) - see SCHEMA.md Theme settings for the file format and
+  `internal/rbac/theme.go` for the color/preset whitelist. New migrations
+  `000026_create_theme_settings`/`000027_add_users_theme_columns`. New
+  dependency: `gopkg.in/yaml.v3`, for parsing the uploaded theme file.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a
@@ -1740,6 +1759,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sessions are never rechecked - they aren't AD-backed. See PLANNING.md's
   Decisions Log for the full design, including the options considered and
   why DN-based re-lookup was chosen over a binary `objectSid` LDAP filter.
+- `RequireCSRF` silently skipped enforcement entirely for a
+  `multipart/form-data` request - `isFormRequest` only recognized
+  `application/x-www-form-urlencoded`, so a plain `<form
+  enctype="multipart/form-data">` submission (just as naively
+  cross-site-forgeable as a urlencoded one) fell into the same
+  "not a form request" branch meant only for the login page's JSON API
+  client. Found while adding the Settings page's theme-file upload form,
+  the first multipart route in this codebase. `isFormRequest` now also
+  matches multipart, and `RequireCSRF`'s own form-parsing fallback calls
+  `ParseMultipartForm` for that content type instead of `ParseForm` (which
+  never reads a non-urlencoded body at all, leaving the real `csrf_token`
+  field permanently unreachable). The upload route also gets its own
+  request-size cap (`limitBody` middleware, ahead of `RequireCSRF` in the
+  chain, since `RequireCSRF` itself must parse the body to find the token).
 
 ---
 

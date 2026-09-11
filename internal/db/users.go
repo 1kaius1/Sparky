@@ -4,6 +4,7 @@ package db
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -55,6 +56,22 @@ type User struct {
 	// (FindByLocalUsername below returns it separately, only to the one
 	// caller that actually verifies it).
 	LocalUsername *string
+
+	// ThemePreset is nil when the user has never picked one - meaning they
+	// inherit the entire theme_settings default triple (preset, custom
+	// colors, status palette), not just a bare preset. See SCHEMA.md Users
+	// and internal/rbac/theme.go for validation.
+	ThemePreset *ThemePreset
+
+	// ThemeCustomColors is a sparse, whitelist-validated map of CSS
+	// variable name -> "#RRGGBB", opaque to this layer - see
+	// internal/rbac/theme.go. Empty ("{}") means no customization active.
+	ThemeCustomColors json.RawMessage
+
+	// ThemeStatusPalette is nil unless the user has explicitly overridden
+	// which status-color palette applies, independent of ThemePreset's own
+	// family - see SCHEMA.md Users.
+	ThemeStatusPalette *ThemeStatusPalette
 }
 
 // ErrUserNotFound is returned when a lookup or update finds no matching row.
@@ -92,12 +109,13 @@ func NewUserRepository(pool *pgxpool.Pool) *UserRepository {
 	return &UserRepository{pool: pool}
 }
 
-const userColumns = `id, ad_sid, entra_object_id, display_name, tier, created_at, last_login_at, elevated_by, elevated_at, ldap_dn, local_username`
+const userColumns = `id, ad_sid, entra_object_id, display_name, tier, created_at, last_login_at, elevated_by, elevated_at, ldap_dn, local_username, theme_preset, theme_custom_colors, theme_status_palette`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(&u.ID, &u.ADSID, &u.EntraObjectID, &u.DisplayName, &u.Tier,
-		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN, &u.LocalUsername)
+		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN, &u.LocalUsername,
+		&u.ThemePreset, &u.ThemeCustomColors, &u.ThemeStatusPalette)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -124,7 +142,8 @@ func (r *UserRepository) FindByLocalUsername(ctx context.Context, username strin
 
 	var u User
 	scanErr := row.Scan(&u.ID, &u.ADSID, &u.EntraObjectID, &u.DisplayName, &u.Tier,
-		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN, &u.LocalUsername, &passwordHash)
+		&u.CreatedAt, &u.LastLoginAt, &u.ElevatedBy, &u.ElevatedAt, &u.LDAPDN, &u.LocalUsername,
+		&u.ThemePreset, &u.ThemeCustomColors, &u.ThemeStatusPalette, &passwordHash)
 	if errors.Is(scanErr, pgx.ErrNoRows) {
 		return nil, "", ErrUserNotFound
 	}
@@ -199,6 +218,28 @@ func (r *UserRepository) UpdateLocalPassword(ctx context.Context, id, passwordHa
 	tag, err := r.pool.Exec(ctx, `UPDATE users SET local_password_hash = $1 WHERE id = $2`, passwordHash, id)
 	if err != nil {
 		return fmt.Errorf("update local password: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrUserNotFound
+	}
+	return nil
+}
+
+// UpdateTheme changes a user's theme preference - preset/statusPalette are
+// pointers so nil persists SQL NULL (inherit-system-default /
+// auto-derive-from-family respectively - see SCHEMA.md Users);
+// customColors is always a concrete json.RawMessage ("{}" clears any
+// prior customization). Validation (allowed preset/status values,
+// whitelisted color keys, hex format) happens in
+// internal/rbac.Service.UpdateOwnTheme, not here - same "validated at the
+// service layer, not the DB layer" precedent as model_profiles'
+// engine_params.
+func (r *UserRepository) UpdateTheme(ctx context.Context, id string, preset *ThemePreset, customColors json.RawMessage, statusPalette *ThemeStatusPalette) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE users SET theme_preset = $1, theme_custom_colors = $2, theme_status_palette = $3 WHERE id = $4`,
+		preset, customColors, statusPalette, id)
+	if err != nil {
+		return fmt.Errorf("update user theme: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrUserNotFound

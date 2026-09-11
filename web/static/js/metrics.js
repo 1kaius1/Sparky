@@ -6,7 +6,33 @@
   var charts = {}; // canvasId -> Chart instance, module-scoped so both
                     // initMetricsChart (full render) and
                     // sparkyMetricsLiveUpdate (in-place tick) can find them.
-  var colors = ["#2f5fda", "#1a8a5f", "#b98900", "#c0342c", "#7a3fd1", "#0f8a9e"];
+
+  // themeSeriesColors reads the active theme's own accent/status colors
+  // live, rather than a hardcoded palette - so chart series follow
+  // whichever of the 8 built-in presets (or a customized theme) is
+  // currently active. Called from buildDatasets below, itself only
+  // invoked on a full chart (re)build or a ~5s live-update tick - cheap
+  // enough not to need caching, unlike the crosshair plugin's own color
+  // (see crosshairColor below), which paints on every hover/frame.
+  function themeSeriesColors() {
+    var s = getComputedStyle(document.documentElement);
+    return [
+      s.getPropertyValue("--color-primary").trim(),
+      s.getPropertyValue("--color-status-running").trim(),
+      s.getPropertyValue("--color-status-starting").trim(),
+      s.getPropertyValue("--color-status-failed").trim(),
+      s.getPropertyValue("--color-chart-accent-1").trim(),
+      s.getPropertyValue("--color-chart-accent-2").trim()
+    ];
+  }
+
+  // crosshairColor is cached, not read live inside the crosshair plugin's
+  // afterDatasetsDraw (which fires on every hover/paint frame) - set once
+  // per initMetricsChart call instead, avoiding a getComputedStyle call
+  // per frame for a value that only ever changes when the active theme
+  // does. The literal below is only a placeholder until the first
+  // initMetricsChart call overwrites it.
+  var crosshairColor = "#667085";
 
   // formatTimeOfDay renders a point's real Unix-milliseconds x value as a
   // "HH:MM:SS" string in the viewer's own local timezone, via plain JS
@@ -41,10 +67,7 @@
       ctx.moveTo(x, area.top);
       ctx.lineTo(x, area.bottom);
       ctx.lineWidth = 1;
-      // Matches main.css's --color-text-muted - a CSS custom property
-      // isn't reachable from a bare canvas 2D context, so the value is
-      // duplicated here rather than read at runtime.
-      ctx.strokeStyle = "#667085";
+      ctx.strokeStyle = crosshairColor;
       ctx.stroke();
       ctx.restore();
     }
@@ -144,6 +167,7 @@
   }
 
   function buildDatasets(series, targetCount) {
+    var colors = themeSeriesColors();
     return series.map(function (s, i) {
       return {
         label: s.label,
@@ -174,6 +198,10 @@
     var el = document.getElementById(canvasId);
     if (!el) {
       return;
+    }
+    var mutedColor = getComputedStyle(document.documentElement).getPropertyValue("--color-text-muted").trim();
+    if (mutedColor) {
+      crosshairColor = mutedColor;
     }
     var targetCount = targetSlotCount(el);
     charts[canvasId] = new Chart(el, { type: "line", data: { datasets: buildDatasets(series, targetCount) }, options: baseOptions(yAxisLabel, yMax) });

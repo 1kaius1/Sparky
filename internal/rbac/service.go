@@ -4,6 +4,7 @@ package rbac
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -38,6 +39,7 @@ type userStore interface {
 	FindByLocalUsername(ctx context.Context, username string) (*db.User, string, error)
 	UpdateDisplayName(ctx context.Context, id, displayName string) error
 	UpdateLocalPassword(ctx context.Context, id, passwordHash string) error
+	UpdateTheme(ctx context.Context, id string, preset *db.ThemePreset, customColors json.RawMessage, statusPalette *db.ThemeStatusPalette) error
 }
 
 // auditRecorder is the subset of *audit.Recorder this package needs,
@@ -282,6 +284,65 @@ func (s *Service) ChangeOwnPassword(ctx context.Context, actor Actor, currentPas
 
 	if err := s.audit.Record(ctx, &actor.UserID, false, "changed_own_password", "user", actor.UserID, nil); err != nil {
 		return fmt.Errorf("record audit: %w", err)
+	}
+	return nil
+}
+
+// UpdateOwnTheme changes actor's own theme preference - self-service, any
+// tier (unlike UpdateDisplayName/ChangeOwnPassword, this is a preference,
+// not a local-account identity/credential action, so no LocalUsername
+// gate applies - see SCHEMA.md Users). preset == nil clears back to
+// "inherit the system default"; statusPalette == nil clears back to
+// "auto-derive from the resolved preset's family". Rejects a SuperAdmin
+// actor outright: the break-glass identity is not a Users row (SCHEMA.md
+// Break-glass credential), so there is nothing to persist a preference
+// to - a break-glass session always renders the system default theme.
+//
+// Follows ElevateTier's own revert-on-audit-failure pattern: capture the
+// actor's prior theme state before writing, and if the audit write itself
+// fails, best-effort revert the persisted change rather than leave an
+// unaudited theme change in place (CLAUDE.md Audit Logging: every
+// state-changing action must be audited, no exceptions).
+func (s *Service) UpdateOwnTheme(ctx context.Context, actor Actor, preset *db.ThemePreset, customColors map[string]string, statusPalette *db.ThemeStatusPalette) error {
+	if actor.IsSuperAdmin {
+		return ErrNotPermitted
+	}
+	if preset != nil && !ValidThemePreset(*preset) {
+		return fmt.Errorf("%w: unknown preset %q", ErrInvalidTheme, *preset)
+	}
+	if statusPalette != nil && !ValidThemeStatusPalette(*statusPalette) {
+		return fmt.Errorf("%w: unknown status palette %q", ErrInvalidTheme, *statusPalette)
+	}
+	colorsJSON, err := ValidateThemeCustomColors(customColors)
+	if err != nil {
+		return err
+	}
+
+	target, err := s.users.FindByID(ctx, actor.UserID)
+	if err != nil {
+		return fmt.Errorf("find actor user: %w", err)
+	}
+	fromPreset := target.ThemePreset
+	fromCustomColors := target.ThemeCustomColors
+	fromStatusPalette := target.ThemeStatusPalette
+
+	if err := s.users.UpdateTheme(ctx, actor.UserID, preset, colorsJSON, statusPalette); err != nil {
+		return fmt.Errorf("update theme: %w", err)
+	}
+
+	detail := map[string]any{"custom_color_count": len(customColors)}
+	if preset != nil {
+		detail["preset"] = string(*preset)
+	}
+	if statusPalette != nil {
+		detail["status_palette"] = string(*statusPalette)
+	}
+	if err := s.audit.Record(ctx, &actor.UserID, false, "updated_own_theme", "user", actor.UserID, detail); err != nil {
+		auditErr := fmt.Errorf("record audit: %w", err)
+		if revertErr := s.users.UpdateTheme(ctx, actor.UserID, fromPreset, fromCustomColors, fromStatusPalette); revertErr != nil {
+			s.logger.Printf("rbac: revert theme for user %s after audit failure: %v", actor.UserID, revertErr)
+		}
+		return auditErr
 	}
 	return nil
 }

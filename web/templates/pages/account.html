@@ -47,4 +47,75 @@ is nothing to edit on this page.</p>
   <p><button type="submit">Change password</button></p>
 </form>
 {{end}}
+
+{{if not .Data.IsSuperAdmin}}
+<h2>Theme</h2>
+{{if .Data.ThemeError}}
+<div class="form-error">{{.Data.ThemeError}}</div>
+{{end}}
+{{if .Data.ThemeSuccess}}
+<div class="form-success">Theme updated.</div>
+{{end}}
+<form method="post" action="/account/theme">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="theme_preset">Theme</label><br>
+    <select id="theme_preset" name="theme_preset">
+      <option value="">Site default</option>
+      <optgroup label="Light">
+        {{range .Data.AvailablePresets}}{{if eq .Family "light"}}<option value="{{.Value}}" {{if eq .Value $.Data.SelectedPreset}}selected{{end}}>{{.Label}}</option>
+        {{end}}{{end}}
+      </optgroup>
+      <optgroup label="Dark">
+        {{range .Data.AvailablePresets}}{{if eq .Family "dark"}}<option value="{{.Value}}" {{if eq .Value $.Data.SelectedPreset}}selected{{end}}>{{.Label}}</option>
+        {{end}}{{end}}
+      </optgroup>
+    </select>
+  </p>
+  <details {{if .Data.IsCustomizing}}open{{end}}>
+    <summary>Customize this theme</summary>
+    <p>
+      <label>
+        <input type="checkbox" name="customize" value="on" {{if .Data.IsCustomizing}}checked{{end}}>
+        Override individual colors on top of the theme selected above
+      </label>
+      <input type="hidden" name="customize" value="off">
+    </p>
+    {{range .Data.CustomColors}}
+    <p>
+      <label for="color_{{.Slug}}">{{.Label}}</label><br>
+      <input type="color" id="color_{{.Slug}}" name="color_{{.Slug}}"
+             data-css-var="{{.CSSVar}}" data-has-override="{{if .Value}}true{{else}}false{{end}}"
+             {{if .Value}}value="{{.Value}}"{{end}}>
+    </p>
+    {{end}}
+    <p>
+      Status colors (online/offline/failed indicators)<br>
+      <label><input type="radio" name="status_palette" value="" {{if eq .Data.StatusPalette ""}}checked{{end}}> Auto (from theme)</label>
+      <label><input type="radio" name="status_palette" value="light" {{if eq .Data.StatusPalette "light"}}checked{{end}}> Light</label>
+      <label><input type="radio" name="status_palette" value="dark" {{if eq .Data.StatusPalette "dark"}}checked{{end}}> Dark</label>
+    </p>
+  </details>
+  <p><button type="submit">Save theme</button></p>
+</form>
+<script>
+(function() {
+  // A color <input> always submits a concrete hex value - never "unset" -
+  // so any field without a stored override (data-has-override="false")
+  // is filled from the live computed CSS value here, rather than left at
+  // the browser's own black default, before the form can ever be
+  // submitted. See internal/httpapi's themeColorField doc comment.
+  var styles = getComputedStyle(document.documentElement);
+  document.querySelectorAll('[data-css-var]').forEach(function(input) {
+    if (input.getAttribute('data-has-override') === 'true') {
+      return;
+    }
+    var value = styles.getPropertyValue(input.getAttribute('data-css-var')).trim();
+    if (value) {
+      input.value = value;
+    }
+  });
+})();
+</script>
+{{end}}
 {{end}}

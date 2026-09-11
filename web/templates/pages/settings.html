@@ -60,4 +60,65 @@
     </tbody>
   </table>
 </section>
+
+<section class="panel">
+  <h2>Default theme</h2>
+  {{if .Data.ThemeError}}
+  <div class="form-error">{{.Data.ThemeError}}</div>
+  {{end}}
+  {{if .Data.ThemeSuccess}}
+  <div class="form-success">Default theme updated.</div>
+  {{end}}
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <td>Current default</td>
+        <td>{{.Data.DefaultTheme}}</td>
+      </tr>
+      <tr>
+        <td>Last updated by</td>
+        <td>{{if .Data.DefaultThemeUpdatedBy}}{{.Data.DefaultThemeUpdatedBy}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated at</td>
+        <td>{{.Data.DefaultThemeUpdatedAt}}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Choose a built-in theme</h3>
+  <form method="post" action="/settings/theme">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="default_theme">Default theme</label><br>
+      <select id="default_theme" name="default_theme">
+        <optgroup label="Light">
+          {{range .Data.AvailablePresets}}{{if eq .Family "light"}}<option value="{{.Value}}" {{if eq .Value $.Data.DefaultTheme}}selected{{end}}>{{.Label}}</option>
+          {{end}}{{end}}
+        </optgroup>
+        <optgroup label="Dark">
+          {{range .Data.AvailablePresets}}{{if eq .Family "dark"}}<option value="{{.Value}}" {{if eq .Value $.Data.DefaultTheme}}selected{{end}}>{{.Label}}</option>
+          {{end}}{{end}}
+        </optgroup>
+      </select>
+    </p>
+    <p><button type="submit">Save default theme</button></p>
+  </form>
+
+  <h3>Or upload a custom theme</h3>
+  <p>Upload a YAML file layering custom colors on top of a base preset. Expected shape:</p>
+  <pre>base_preset: carbon-dark   # required - one of the built-in presets above
+status_palette: dark       # optional - "light" or "dark"; omitted = auto from base_preset
+colors:                    # optional - only the keys you want to override
+  primary: "#5b8def"
+  sidebar_bg: "#0b0d12"</pre>
+  <form method="post" action="/settings/theme/upload" enctype="multipart/form-data">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="theme_file">Theme file (.yaml)</label><br>
+      <input type="file" id="theme_file" name="theme_file" accept=".yaml,.yml" required>
+    </p>
+    <p><button type="submit">Upload and apply</button></p>
+  </form>
+</section>
 {{end}}

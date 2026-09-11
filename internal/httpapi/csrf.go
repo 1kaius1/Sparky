@@ -8,6 +8,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"net/http"
+	"strings"
 )
 
 // csrfCookieName holds the double-submit CSRF token - see csrf.go's own
@@ -108,10 +109,17 @@ func (a *API) ensureCSRFToken(next http.Handler) http.Handler {
 // The submitted token is read from the X-CSRF-Token header first (what
 // base.html's hx-headers attribute sends for every htmx-driven write -
 // logout, tier-change, load, unload), falling back to the csrf_token form
-// field (what the four classic <form method="post"> writes send - login,
-// break-glass login, node registration, profile create/edit).
-// r.ParseForm() is safe to call even if a handler downstream also calls it
-// - Go's net/http caches the parsed form after the first call.
+// field (what the classic <form method="post"> writes send - login,
+// break-glass login, node registration, profile create/edit, the
+// Settings page's theme-file upload). r.ParseForm()/r.ParseMultipartForm()
+// are safe to call even if a handler downstream also calls them - Go's
+// net/http caches the parsed form after the first call. Multipart bodies
+// need ParseMultipartForm specifically, not ParseForm - the latter never
+// reads a non-urlencoded body at all, so calling only it here would leave
+// r.PostForm populated from the URL query alone and the real csrf_token
+// field (inside the multipart body) permanently unreachable via
+// PostFormValue, which only auto-parses multipart itself when r.PostForm
+// is still nil - already false by the time ParseForm has run once.
 func (a *API) RequireCSRF(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if !isFormRequest(r) {
@@ -127,7 +135,24 @@ func (a *API) RequireCSRF(next http.Handler) http.Handler {
 
 		submitted := r.Header.Get(csrfHeaderName)
 		if submitted == "" {
-			if err := r.ParseForm(); err != nil {
+			var parseErr error
+			if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
+				// multipartInMemoryLimit only bounds how much of the body
+				// this parse buffers in memory (vs. spilling to a temp
+				// file) - Go's own net/http.defaultMaxMemory default,
+				// inlined since that constant is unexported. It is not a
+				// request-size cap: the real hard limit on a multipart
+				// upload route comes from wrapping r.Body in
+				// http.MaxBytesReader ahead of this middleware (see
+				// router.go's limitBody, applied to
+				// POST /settings/theme/upload) - deliberately kept out of
+				// this generic, route-agnostic middleware.
+				const multipartInMemoryLimit = 32 << 20
+				parseErr = r.ParseMultipartForm(multipartInMemoryLimit)
+			} else {
+				parseErr = r.ParseForm()
+			}
+			if parseErr != nil {
 				writeError(w, r, http.StatusForbidden, "CSRF_INVALID", "missing or invalid CSRF token")
 				return
 			}
