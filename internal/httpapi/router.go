@@ -285,6 +285,11 @@ func (a *API) Router() http.Handler {
 	// left to a later phase - see PLANNING.md Known Issues.
 	r.Get("/", handleIndex)
 	r.With(a.RequireSession).Get("/dashboard", a.handleDashboard)
+	// The Dashboard's load-strip live-update fetch target
+	// (web/static/js/dashboard.js's sparkyDashboardLiveUpdate) - same
+	// Read-only/no-audit posture as /dashboard, mirroring
+	// /metrics/chart-data.
+	r.With(a.RequireSession).Get("/dashboard/live-data", a.handleDashboardLiveData)
 	r.With(a.RequireSession).Get("/nodes", a.handleNodes)
 	// The registration form's own RBAC gate (rbac.CanManageNodes) is
 	// checked directly in both handlers - GET to decide whether to show

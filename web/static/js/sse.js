@@ -85,25 +85,38 @@
     };
   }
 
-  // metricsUpdateTimer is a separate debounce timer from refreshTimer
-  // above, not a shared one - a topic-relevant transfer_progress /
-  // instance_result / instance_health event still triggers scheduleRefresh's
+  // liveUpdateTimer is a separate debounce timer from refreshTimer above,
+  // not a shared one - a topic-relevant transfer_progress/instance_result/
+  // instance_health/node_status event still triggers scheduleRefresh's
   // full-page htmx refetch, and could in principle land in the same window
-  // as a telemetry event; sharing one timer variable between two different
-  // actions (a full-page refetch vs. an in-place chart update) would let
-  // one silently cancel or starve the other.
-  var metricsUpdateTimer = null;
+  // as a telemetry event on a page that also has an in-place updater;
+  // sharing one timer variable between two different actions (a full-page
+  // refetch vs. an in-place redraw) would let one silently cancel or starve
+  // the other.
+  var liveUpdateTimer = null;
 
-  function scheduleMetricsLiveUpdate() {
-    if (metricsUpdateTimer !== null) {
+  // liveUpdaters are the in-place, per-page telemetry consumers -
+  // window.sparkyMetricsLiveUpdate (Metrics page charts) and
+  // window.sparkyDashboardLiveUpdate (Dashboard load strips). Each is
+  // defined globally (its script is loaded on every page) and self-scopes
+  // by checking for its own DOM anchor, so calling every one that exists
+  // on each tick is safe - the one whose page isn't showing no-ops.
+  function liveUpdaters() {
+    return [window.sparkyMetricsLiveUpdate, window.sparkyDashboardLiveUpdate].filter(function (fn) {
+      return typeof fn === "function";
+    });
+  }
+
+  function scheduleLiveUpdate() {
+    if (liveUpdateTimer !== null) {
       return;
     }
-    metricsUpdateTimer = window.setTimeout(function () {
-      metricsUpdateTimer = null;
+    liveUpdateTimer = window.setTimeout(function () {
+      liveUpdateTimer = null;
       if (document.visibilityState !== "visible") {
         return;
       }
-      window.sparkyMetricsLiveUpdate();
+      liveUpdaters().forEach(function (fn) { fn(); });
     }, refreshDebounceMs);
   }
 
@@ -149,16 +162,16 @@
     source.addEventListener("instance_result", refreshIfRelevant("instance_result"));
     source.addEventListener("instance_health", refreshIfRelevant("instance_health"));
     source.addEventListener("node_status", refreshIfRelevant("node_status"));
-    // The Metrics page's own live-update path (web/static/js/metrics.js)
-    // replaces just its chart data in place instead of a full-page refetch
-    // - see PLANNING.md's Decisions Log for why this page's live-update
-    // mechanism deliberately diverges. Falls back to scheduleRefresh when
-    // metrics.js hasn't defined sparkyMetricsLiveUpdate; the Metrics page
-    // itself carries no data-sse-topics marker, so that fallback only ever
-    // no-ops off-page anyway.
+    // A telemetry tick drives whichever pages have an in-place updater
+    // (Metrics charts, Dashboard load strips) rather than a full-page
+    // refetch - see PLANNING.md's Decisions Log for why those pages
+    // deliberately diverge. Falls back to scheduleRefresh only if neither
+    // in-place updater is defined at all (not expected - both scripts load
+    // globally - but keeps a page that lists telemetry-derived data
+    // self-updating if one is ever removed).
     source.addEventListener("telemetry", function () {
-      if (typeof window.sparkyMetricsLiveUpdate === "function") {
-        scheduleMetricsLiveUpdate();
+      if (liveUpdaters().length > 0) {
+        scheduleLiveUpdate();
       } else {
         scheduleRefresh();
       }
