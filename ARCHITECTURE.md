@@ -213,7 +213,13 @@ write path, everything else there having been read-only until this feature.
 #### HTTP/API + Dashboard
 REST/JSON for all actions, Server-Sent Events for live telemetry and transfer
 progress push to the dashboard. Frontend is server-rendered Go templates with htmx
-partial swaps - see Frontend section below.
+partial swaps - see Frontend section below. Two pages avoid a full-page htmx
+refetch on every ~5s telemetry tick and instead patch themselves in place from a
+small JSON endpoint: the Metrics page (`GET /metrics/chart-data`, chart data) and
+the Dashboard's "Running instances" load strips (`GET /dashboard/live-data`,
+per-instance recent GPU utilization/memory). Both are Read-only, unaudited, and
+driven by `web/static/js/sse.js`'s `telemetry` listener calling each page's own
+self-scoping updater.
 
 #### Agent-Communication Layer
 The only component that speaks the agent protocol (see Protocol below). Every other
