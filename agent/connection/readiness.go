@@ -240,6 +240,27 @@ type completionProbeResponse struct {
 	Choices []struct {
 		Message struct {
 			Content string `json:"content"`
+			// Reasoning/ReasoningContent hold a reasoning-tuned model's
+			// chain-of-thought (e.g. Qwen3's thinking mode, DeepSeek-R1-
+			// style models), separate from Content - a real-hardware
+			// finding, not part of the original design. With this probe's
+			// small max_tokens, a reasoning model can spend the entire
+			// budget on this preamble and never reach Content at all,
+			// which the original Content-only check read as "not ready,"
+			// looping until timeout despite the engine genuinely
+			// generating the whole time (confirmed against a real
+			// llama.cpp instance serving such a model). The two field
+			// names split across Sparky's three engine types and their
+			// own version history, not by engine alone: llama.cpp uses
+			// "reasoning_content" by default; current vLLM/Aphrodite use
+			// "reasoning", having renamed it from "reasoning_content"
+			// (vLLM's own docs warn about exactly this silent-empty-field
+			// trap for anyone still checking the old name) - and Sparky's
+			// engine_version pinning can point a profile at an older vLLM
+			// build still on the pre-rename name. Checking both covers
+			// every case without needing to key behavior off engineType.
+			Reasoning        string `json:"reasoning"`
+			ReasoningContent string `json:"reasoning_content"`
 		} `json:"message"`
 	} `json:"choices"`
 	Error json.RawMessage `json:"error"`
@@ -247,13 +268,14 @@ type completionProbeResponse struct {
 
 // completionProbeOK sends one real, minimal chat-completion request and
 // reports whether a structurally valid answer came back - HTTP 200, no
-// top-level "error" field, at least one choice with non-empty content.
-// Deliberately not checking the content against any particular expected
-// value - see readinessProbePrompt's own doc comment for why that can't
-// generalize across arbitrary models. temperature: 0 and a small
-// max_tokens keep this cheap: the goal is proving the forward pass works
-// at all (catches a corrupted quantization, a first-request CUDA OOM),
-// not exercising real generation quality.
+// top-level "error" field, at least one choice with non-empty text in
+// Content or either reasoning field (see completionProbeResponse's own
+// doc comment). Deliberately not checking the content against any
+// particular expected value - see readinessProbePrompt's own doc comment
+// for why that can't generalize across arbitrary models. temperature: 0
+// and a small max_tokens keep this cheap: the goal is proving the forward
+// pass works at all (catches a corrupted quantization, a first-request
+// CUDA OOM), not exercising real generation quality.
 func completionProbeOK(ctx context.Context, client *http.Client, url, modelPath string) bool {
 	reqBody := completionProbeRequest{
 		Model:       modelPath,
@@ -291,7 +313,10 @@ func completionProbeOK(ctx context.Context, client *http.Client, url, modelPath 
 	if len(probeResp.Choices) == 0 {
 		return false
 	}
-	return strings.TrimSpace(probeResp.Choices[0].Message.Content) != ""
+	msg := probeResp.Choices[0].Message
+	return strings.TrimSpace(msg.Content) != "" ||
+		strings.TrimSpace(msg.Reasoning) != "" ||
+		strings.TrimSpace(msg.ReasoningContent) != ""
 }
 
 // readMetrics best-effort reads url (a Prometheus-format /metrics
