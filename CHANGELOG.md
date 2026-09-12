@@ -1718,6 +1718,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   other series. Chart labels now render in the viewer's own local
   timezone rather than the server's - a deliberate, acknowledged behavior
   change.
+- The load-time readiness check (`agent/connection.Conn.waitForReady`) no
+  longer reports a genuinely healthy reasoning-tuned model (e.g. Qwen3's
+  thinking mode) as failed. Its completion probe used a small `max_tokens`
+  and only checked the response's `content` field for non-empty text; a
+  reasoning model can spend that entire budget on its chain-of-thought
+  preamble, which llama.cpp/vLLM/Aphrodite surface in a separate field
+  (`reasoning_content` or, on current vLLM/Aphrodite, `reasoning`) rather
+  than `content` - so the probe looped until timeout and reported the
+  instance failed even though it was correctly generating the whole time.
+  Found via the first real llama.cpp launch through Sparky end to end.
+  Non-empty text in `content`, `reasoning`, or `reasoning_content` now all
+  count as ready.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

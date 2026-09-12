@@ -357,6 +357,18 @@ Polls, up to `SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS`:
    structurally (a well-formed, non-empty, non-error response), not against any
    particular "known good" content - a profile can name any model, so there is
    no way to know in advance what a "correct" answer to any prompt looks like.
+   "Non-empty" accepts text in the response message's `content` field or either
+   of two reasoning-tuned-model fields, `reasoning`/`reasoning_content` -
+   confirmed against real hardware that a reasoning model (e.g. Qwen3's
+   thinking mode) can spend this probe's whole small `max_tokens` budget on
+   its chain-of-thought preamble and never reach `content` at all, which a
+   `content`-only check reads as "not ready," looping until timeout despite
+   the engine genuinely generating the whole time. The two field names split
+   by engine and by version, not by engine alone: llama.cpp uses
+   `reasoning_content` by default; current vLLM/Aphrodite use `reasoning`,
+   having renamed it from `reasoning_content` - and an older pinned
+   `engine_version` (`SCHEMA.md` Model profiles) can still be on the
+   pre-rename name.
 
 A load that never becomes reachable before the timeout elapses is reported
 failed, timeout or not - "gave up waiting" is still an honest failure to

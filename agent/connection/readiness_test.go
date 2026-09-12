@@ -32,6 +32,89 @@ func TestWaitForReady_Success_OnceCompletionProbeSucceeds(t *testing.T) {
 	}
 }
 
+// newFakeReasoningEngineServer builds a fake engine whose completions
+// response carries empty Content and all its real text in the given
+// reasoning field name ("reasoning_content" - llama.cpp's default - or
+// "reasoning" - current vLLM/Aphrodite) - reproducing the real response
+// shape a reasoning-tuned model returns under a small max_tokens budget
+// (see completionProbeResponse's own doc comment).
+func newFakeReasoningEngineServer(t *testing.T, reasoningField string) (srv *httptest.Server, port int) {
+	t.Helper()
+	srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Write([]byte(`{"object":"list","data":[]}`))
+		case "/v1/chat/completions":
+			w.Write([]byte(`{"choices":[{"message":{"content":"","` + reasoningField + `":"thinking it over"}}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse fake engine server URL: %v", err)
+	}
+	port, err = strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse fake engine server port: %v", err)
+	}
+	return srv, port
+}
+
+func TestWaitForReady_Success_EmptyContentButReasoningContentPresent(t *testing.T) {
+	// llama.cpp's default field name - confirmed against a real instance
+	// serving a reasoning-tuned model that spent its entire probe token
+	// budget on the chain-of-thought preamble.
+	_, port := newFakeReasoningEngineServer(t, "reasoning_content")
+	rt := &fakeRuntimeBackend{isRunningResult: true}
+	conn := newTestConnForReadiness(Config{InstanceStartupTimeout: fastReadinessTimeout()}, rt)
+
+	if err := conn.waitForReady(context.Background(), "instance-1", "llamacpp", port, "/models/test-org/test-model"); err != nil {
+		t.Fatalf("waitForReady() error: %v, want success from non-empty reasoning_content alone", err)
+	}
+}
+
+func TestWaitForReady_Success_EmptyContentButReasoningPresent(t *testing.T) {
+	// Current vLLM/Aphrodite field name, renamed from reasoning_content.
+	_, port := newFakeReasoningEngineServer(t, "reasoning")
+	rt := &fakeRuntimeBackend{isRunningResult: true}
+	conn := newTestConnForReadiness(Config{InstanceStartupTimeout: fastReadinessTimeout()}, rt)
+
+	if err := conn.waitForReady(context.Background(), "instance-1", "vllm", port, "/models/test-org/test-model"); err != nil {
+		t.Fatalf("waitForReady() error: %v, want success from non-empty reasoning alone", err)
+	}
+}
+
+func TestWaitForReady_AllContentFieldsEmpty_TimesOut(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			w.Write([]byte(`{"object":"list","data":[]}`))
+		case "/v1/chat/completions":
+			w.Write([]byte(`{"choices":[{"message":{"content":""}}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+	port := portFromURL(t, srv.URL)
+
+	rt := &fakeRuntimeBackend{isRunningResult: true}
+	conn := newTestConnForReadiness(Config{InstanceStartupTimeout: fastReadinessTimeout()}, rt)
+
+	err := conn.waitForReady(context.Background(), "instance-1", "vllm", port, "/models/test-org/test-model")
+	if err == nil {
+		t.Fatal("waitForReady() succeeded despite content and both reasoning fields being empty")
+	}
+	if !strings.Contains(err.Error(), "did not become ready") {
+		t.Errorf("error = %q, want a timeout message", err.Error())
+	}
+}
+
 func TestWaitForReady_ProcessExitsBeforeReady_FailsFast(t *testing.T) {
 	rt := &fakeRuntimeBackend{isRunningResult: false} // never running - exited immediately
 	conn := newTestConnForReadiness(Config{InstanceStartupTimeout: 5 * time.Minute}, rt)
