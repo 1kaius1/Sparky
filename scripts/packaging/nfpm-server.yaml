@@ -1,0 +1,86 @@
+# nfpm config for sparky-server - see CLAUDE.md Build and Run and
+# scripts/build_packages.sh, which invokes this twice per architecture
+# (--packager deb, --packager rpm) with ARCH/VERSION set in the environment.
+#
+# preinstall/postinstall/preremove/postremove are a single set of scripts
+# nfpm embeds into both deb's preinst/postinst/prerm/postrm and rpm's
+# %pre/%post/%preun/%postun - one implementation, both formats.
+#
+# contents[].src paths are relative to nfpm's own working directory at
+# invocation time, and do NOT support ${VAR} expansion the way top-level
+# fields like arch/version do (both confirmed empirically for
+# scripts/packaging/nfpm.yaml, the sparky-agent equivalent this config
+# mirrors). scripts/build_packages.sh always invokes nfpm from the repo
+# root, so every src below is repo-root-relative, and stages the per-arch
+# binary at a fixed non-arch-suffixed path (dist/build/sparky-server) before
+# each invocation rather than trying to reference
+# dist/build/sparky-server-linux-${ARCH} directly here.
+
+name: sparky-server
+arch: ${ARCH}
+platform: linux
+version: ${VERSION}
+maintainer: Sparky <noreply@sparky.internal>
+description: |
+  Central server for Sparky - gives AD-authenticated developers self-service
+  control over loading and tuning LLM inference engines across a fleet of
+  GPU compute nodes, with tiered permissions, full audit logging, and live
+  and historical hardware telemetry. See
+  https://github.com/1kaius1/Sparky/blob/main/CLAUDE.md
+vendor: Sparky
+homepage: https://github.com/1kaius1/Sparky
+license: AGPL-3.0-or-later
+section: net
+priority: optional
+
+depends:
+  - systemd
+
+contents:
+  - src: dist/build/sparky-server
+    dst: /opt/sparky/bin/sparky-server
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: deploy/systemd/sparky-server.service
+    dst: /usr/lib/systemd/system/sparky-server.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  - src: .env.example
+    dst: /opt/sparky/share/sparky-server/secrets.env.template
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  - src: scripts/packaging/lib/server-common.sh
+    dst: /opt/sparky/share/sparky-server/server-common.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: scripts/packaging/purge_rpm_server.sh
+    dst: /opt/sparky/share/sparky-server/purge_rpm_server.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  # Not on any distro's default $PATH - same reasoning as sparky-agent's own
+  # symlink (scripts/packaging/lib/agent-common.sh's doc comment, PLANNING.md
+  # Decisions Log).
+  - src: /opt/sparky/bin/sparky-server
+    dst: /usr/local/bin/sparky-server
+    type: symlink
+
+scripts:
+  preinstall: scripts/packaging/preinstall_server.sh
+  postinstall: scripts/packaging/postinstall_server.sh
+  preremove: scripts/packaging/preremove_server.sh
+  postremove: scripts/packaging/postremove_server.sh

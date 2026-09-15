@@ -1435,6 +1435,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `internal/rbac/theme.go` for the color/preset whitelist. New migrations
   `000026_create_theme_settings`/`000027_add_users_theme_columns`. New
   dependency: `gopkg.in/yaml.v3`, for parsing the uploaded theme file.
+- Packaged bare-metal deployment for `sparky-server`, mirroring
+  `sparky-agent`'s existing three-install-method story: `.deb`/`.rpm`
+  packages and a tarball (`scripts/build_packages.sh`, `scripts/packaging/
+  nfpm-server.yaml`, `scripts/install_server.sh`/`uninstall_server.sh`), a
+  new systemd unit (`deploy/systemd/sparky-server.service`), and a dedicated
+  unprivileged `sparky` service account. See ARCHITECTURE.md Deployment
+  Model and CLAUDE.md Build and Run for the full install sequence -
+  `createdb`/`migrate`/`sparky-server setup` remain separate manual steps
+  after any install method completes.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

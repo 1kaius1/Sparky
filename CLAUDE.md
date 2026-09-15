@@ -193,14 +193,19 @@ sparky/
   - static/
 - migrations/
 - deploy/
-  - systemd/            # sparky-agent.service - see docs/AGENT.md
+  - systemd/            # sparky-agent.service, sparky-server.service
   - secrets.env.template # sparky-agent config template - see docs/AGENT.md
   - helm/
 - scripts/
   - install_agent.sh    # sparky-agent tarball installer - agent-only, see docs/AGENT.md
   - uninstall_agent.sh
-  - build_packages.sh   # builds the .deb/.rpm/tarball artifacts via nfpm - maintainer-facing
-  - packaging/           # nfpm config, scriptlets, shared install logic - see docs/AGENT.md
+  - install_server.sh   # sparky-server tarball installer - server-only, see Bare-metal
+                         # deployment (systemd) above
+  - uninstall_server.sh
+  - build_packages.sh   # builds .deb/.rpm/tarball artifacts for both binaries via nfpm -
+                         # maintainer-facing
+  - packaging/           # nfpm configs, scriptlets, shared install logic for both binaries -
+                        # see docs/AGENT.md (agent) and Bare-metal deployment (systemd) above (server)
 - tests/
 - docs/
   - AGENT.md
@@ -317,6 +322,80 @@ go run ./cmd/sparky-server set-superadmin-password
 go run ./cmd/sparky-server
 go run ./cmd/sparky-agent --config <path>   # see docs/AGENT.md
 ```
+
+### Bare-metal deployment (systemd)
+
+For running `sparky-server` persistently (survives reboots and crashes)
+rather than as a foreground `go run` dev process. Three install methods, all
+producing the same end state (binary, systemd unit, `sparky` service account,
+an empty `/etc/sparky-server/secrets.env` to fill in) - built by
+`scripts/build_packages.sh` via [nfpm](https://nfpm.goreleaser.com) into
+`dist/`, mirroring `sparky-agent`'s own packaged install story (see
+`docs/AGENT.md` Install (bare metal)) but for the central app. All three land
+the binary at `/opt/sparky/bin/sparky-server`, with a
+`/usr/local/bin/sparky-server` symlink for convenience.
+
+**.deb** (Debian/Ubuntu):
+
+```bash
+sudo apt install ./sparky-server_<version>_<arch>.deb
+```
+
+**.rpm** (RHEL/Fedora/Rocky/Alma):
+
+```bash
+sudo dnf install ./sparky-server-<version>-1.<arch>.rpm
+```
+
+RPM has no equivalent of `apt purge` - a copy of `purge_rpm_server.sh` is left
+behind at `/usr/local/sbin/sparky-server-purge.sh` after `dnf remove`, for the
+same reasoning `docs/AGENT.md`'s own RPM purge note documents:
+
+```bash
+sudo dnf remove sparky-server
+sudo /usr/local/sbin/sparky-server-purge.sh   # optional - removes the sparky account + /etc/sparky-server
+```
+
+**Tarball** (any systemd-based distro):
+
+```bash
+tar xzf sparky-server-<version>-linux-<arch>.tar.gz
+cd sparky-server-<version>-linux-<arch>
+sudo ./install_server.sh
+```
+
+Not package-manager-owned, so the systemd unit installs to
+`/etc/systemd/system/sparky-server.service` instead of the `.deb`/`.rpm`
+packages' `/usr/lib/systemd/system/sparky-server.service`. `sudo
+./uninstall_server.sh [--purge]` reverses it.
+
+All three methods create the `sparky` service account and materialize
+`/etc/sparky-server/secrets.env` from `.env.example` (only if it doesn't
+already exist - an upgrade never overwrites an already-configured secrets
+file), enable the systemd unit, but deliberately do **not** start it on a
+fresh install - an unconfigured `secrets.env` would just crash-loop, the same
+reasoning `docs/AGENT.md`'s own install methods document. None of the three
+run any database step automatically either: `createdb`, `migrate`, and
+`sparky-server setup` (all documented above under Database Setup and First
+Run) remain separate manual steps after any install completes, since they
+need a reachable database and interactive break-glass credential entry an
+unattended package install can't provide. Once `secrets.env` is filled in and
+`createdb`/`migrate` (above) have run against it:
+
+```bash
+sudo systemctl start sparky-server   # serves 503 SETUP_REQUIRED until setup below runs
+sudo -u sparky sh -c 'set -a && . /etc/sparky-server/secrets.env && set +a && /opt/sparky/bin/sparky-server setup'
+```
+
+`setup` is invoked directly as the `sparky` account rather than through
+systemd, so its own process needs the same environment `secrets.env` gives
+the running service - sourcing the file achieves that without needing a
+second copy of its values. The service itself does not need restarting
+afterward; per First Run above, it picks up setup's completion on its very
+next request.
+
+Only the owning service account and root can read `secrets.env` - see
+`ARCHITECTURE.md` Security Considerations.
 
 ### Frontend
 
