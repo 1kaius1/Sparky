@@ -21,6 +21,7 @@ if ! command -v nfpm >/dev/null 2>&1; then
 fi
 
 version=$(cat VERSION)
+gopath=$(go env GOPATH)
 
 rm -rf dist
 mkdir -p dist/build
@@ -64,6 +65,25 @@ for arch in amd64 arm64; do
     # build above - see nfpm-server.yaml's own doc comment.
     cp "dist/build/sparky-server-linux-$arch" dist/build/sparky-server
 
+    echo "==> building migrate linux/$arch (bundled for the optional local-database flow)"
+    # `go install` cross-compiling honors GOOS/GOARCH like `go build`, but its
+    # output location depends on whether the target matches the build host's
+    # own: a genuine cross-build lands at $GOPATH/bin/<goos>_<goarch>/migrate,
+    # while a same-arch build lands at the unqualified $GOPATH/bin/migrate
+    # (confirmed empirically, not assumed) - so check both rather than assume
+    # one. This never touches this repo's own go.mod/go.sum: `go install
+    # pkg@version` runs outside module mode entirely.
+    GOOS=linux GOARCH="$arch" go install -tags 'postgres' github.com/golang-migrate/migrate/v4/cmd/migrate@latest
+    if [ -f "${gopath}/bin/linux_${arch}/migrate" ]; then
+        cp "${gopath}/bin/linux_${arch}/migrate" "dist/build/migrate-linux-$arch"
+    elif [ -f "${gopath}/bin/migrate" ]; then
+        cp "${gopath}/bin/migrate" "dist/build/migrate-linux-$arch"
+    else
+        echo "build_packages.sh: could not locate a freshly-installed migrate binary for linux/$arch" >&2
+        exit 1
+    fi
+    cp "dist/build/migrate-linux-$arch" dist/build/migrate
+
     echo "==> packaging sparky-server .deb ($arch)"
     ARCH="$arch" VERSION="$version" nfpm pkg --config scripts/packaging/nfpm-server.yaml --packager deb --target dist/
 
@@ -75,12 +95,17 @@ for arch in amd64 arm64; do
     rm -rf "$server_tarball_root"
     mkdir -p "$server_tarball_root/bin" "$server_tarball_root/lib"
     cp "dist/build/sparky-server-linux-$arch" "$server_tarball_root/bin/sparky-server"
+    cp "dist/build/migrate-linux-$arch" "$server_tarball_root/migrate"
+    cp -r migrations "$server_tarball_root/migrations"
     cp scripts/packaging/lib/server-common.sh "$server_tarball_root/lib/server-common.sh"
+    cp scripts/packaging/lib/server-db-setup.sh "$server_tarball_root/lib/server-db-setup.sh"
     cp scripts/install_server.sh "$server_tarball_root/install_server.sh"
     cp scripts/uninstall_server.sh "$server_tarball_root/uninstall_server.sh"
     cp deploy/systemd/sparky-server.service "$server_tarball_root/sparky-server.service"
+    cp deploy/systemd/sparky-local-postgres.service "$server_tarball_root/sparky-local-postgres.service"
     cp .env.example "$server_tarball_root/secrets.env.template"
-    chmod +x "$server_tarball_root/bin/sparky-server" "$server_tarball_root/lib/server-common.sh" \
+    chmod +x "$server_tarball_root/bin/sparky-server" "$server_tarball_root/migrate" \
+        "$server_tarball_root/lib/server-common.sh" "$server_tarball_root/lib/server-db-setup.sh" \
         "$server_tarball_root/install_server.sh" "$server_tarball_root/uninstall_server.sh"
 
     tar -C dist/build -czf "dist/sparky-server-$version-linux-$arch.tar.gz" "server-tarball-$arch"

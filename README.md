@@ -81,6 +81,12 @@ sudo systemctl start sparky-server   # serves 503 SETUP_REQUIRED until setup bel
 sudo -u sparky sh -c 'set -a && . /etc/sparky-server/secrets.env && set +a && /opt/sparky/bin/sparky-server setup'
 ```
 
+No separate Postgres to stand up first? Each install method can also
+provision one for you (a persistent podman container, or a native
+`postgresql-server` package) and wire `DATABASE_URL` + run migrations
+automatically - see `CLAUDE.md` Bare-metal deployment (systemd), Optional
+local database.
+
 **Node agent** - install via `.deb`, `.rpm`, or a tarball (see `docs/AGENT.md`
 Build and Install for all three and full configuration details):
 

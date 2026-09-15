@@ -1444,6 +1444,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Model and CLAUDE.md Build and Run for the full install sequence -
   `createdb`/`migrate`/`sparky-server setup` remain separate manual steps
   after any install method completes.
+- Optional local database provisioning for the `sparky-server` bare-metal
+  installers above (`--db=podman`/`--db=native` for the tarball,
+  `SPARKY_INSTALL_LOCAL_DB=podman`/`native` for `.deb`/`.rpm`): a persistent,
+  systemd-managed Postgres container (new `deploy/systemd/sparky-local-postgres.service`)
+  or the distro's own `postgresql-server` package, either way with a
+  randomly-generated password, `DATABASE_URL` written into
+  `/etc/sparky-server/secrets.env` automatically, and migrations applied
+  immediately using a `migrate` binary and `migrations/` copy now bundled
+  into the package itself (`scripts/packaging/lib/server-db-setup.sh`) - no
+  separately-installed `migrate` CLI needed on the target host. Opt-in only;
+  never touches `sparky-server setup` itself, and never torn down by
+  `--purge` since it may hold real data.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

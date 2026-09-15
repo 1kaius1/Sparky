@@ -65,6 +65,40 @@ contents:
       owner: root
       group: root
 
+  - src: scripts/packaging/lib/server-db-setup.sh
+    dst: /opt/sparky/share/sparky-server/server-db-setup.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: deploy/systemd/sparky-local-postgres.service
+    dst: /opt/sparky/share/sparky-server/sparky-local-postgres.service
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
+  # Bundled so the optional local-database flow (server-db-setup.sh) can
+  # migrate a freshly-provisioned database with nothing beyond this package
+  # already installed on the target host - no separately-installed migrate
+  # CLI or Go toolchain required. Built per-architecture the same way the
+  # sparky-server binary itself is - see scripts/build_packages.sh.
+  - src: dist/build/migrate
+    dst: /opt/sparky/share/sparky-server/migrate
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
+  - src: migrations
+    dst: /opt/sparky/share/sparky-server/migrations
+    type: tree
+    file_info:
+      mode: 0644
+      owner: root
+      group: root
+
   - src: scripts/packaging/purge_rpm_server.sh
     dst: /opt/sparky/share/sparky-server/purge_rpm_server.sh
     file_info:

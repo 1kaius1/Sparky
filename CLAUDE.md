@@ -193,7 +193,7 @@ sparky/
   - static/
 - migrations/
 - deploy/
-  - systemd/            # sparky-agent.service, sparky-server.service
+  - systemd/            # sparky-agent.service, sparky-server.service, sparky-local-postgres.service
   - secrets.env.template # sparky-agent config template - see docs/AGENT.md
   - helm/
 - scripts/
@@ -375,12 +375,61 @@ already exist - an upgrade never overwrites an already-configured secrets
 file), enable the systemd unit, but deliberately do **not** start it on a
 fresh install - an unconfigured `secrets.env` would just crash-loop, the same
 reasoning `docs/AGENT.md`'s own install methods document. None of the three
-run any database step automatically either: `createdb`, `migrate`, and
-`sparky-server setup` (all documented above under Database Setup and First
-Run) remain separate manual steps after any install completes, since they
-need a reachable database and interactive break-glass credential entry an
-unattended package install can't provide. Once `secrets.env` is filled in and
-`createdb`/`migrate` (above) have run against it:
+run `sparky-server setup` automatically: it's the interactive SuperAdmin
+break-glass credential prompt (`ARCHITECTURE.md` Security Considerations
+explains why this stays CLI-only, human-driven), so it's never appropriate to
+automate regardless of how the database gets set up. By default the database
+itself is also a separate manual step (`createdb`, `migrate`, above) - but
+see Optional local database below for a way to skip that.
+
+#### Optional local database
+
+Each install method can also stand up a dedicated local Postgres and wire
+`DATABASE_URL` into `secrets.env` for you - useful for a single personal
+server where running a separate database host is overkill. Two methods,
+picked per-host based on what's actually allowed there (a locked-down
+office machine under change control vs. a homelab box where anything goes):
+
+- **`podman`** - a persistent, systemd-managed Postgres container
+  (`sparky-local-postgres.service`, a named volume, bound to `127.0.0.1`
+  only). No OS package installed - only a container.
+- **`native`** - installs the distro's own `postgresql`/`postgresql-server`
+  package and creates a dedicated `sparky` role and database on it.
+
+Either way: a random password is generated (never hardcoded, never reused
+between installs), `DATABASE_URL` is written into `/etc/sparky-server/secrets.env`
+automatically, and migrations run immediately afterward using a `migrate`
+binary and copy of `migrations/` bundled into the package itself - no
+separately-installed `migrate` CLI or Go toolchain needed on the target host.
+This never touches `sparky-server setup` - that stays manual regardless, per
+above. Skipped entirely (and harmless to invoke) if `DATABASE_URL` in
+`secrets.env` is already something other than the `.env.example` placeholder,
+so it's always safe to opt in even on an upgrade.
+
+**Tarball**: pass `--db=podman` or `--db=native` to `install_server.sh`, or
+omit it and answer the interactive prompt (only shown when run from a real
+terminal):
+
+```bash
+sudo ./install_server.sh --db=podman
+```
+
+**.deb/.rpm**: postinstall scripts run unattended, so there's no prompt -
+set `SPARKY_INSTALL_LOCAL_DB` before installing instead:
+
+```bash
+sudo SPARKY_INSTALL_LOCAL_DB=podman apt install ./sparky-server_<version>_<arch>.deb
+sudo SPARKY_INSTALL_LOCAL_DB=native dnf install ./sparky-server-<version>-1.<arch>.rpm
+```
+
+Neither the podman container nor a native install is ever torn down by
+`uninstall_server.sh --purge` or the package's own purge path - it's a real
+database that may hold real data, and removing it is never implied by
+removing the `sparky-server` package. Tearing it down, if ever wanted, is a
+separate, deliberate, manual step.
+
+Once `secrets.env` has a real `DATABASE_URL` (by either path) and migrations
+have run:
 
 ```bash
 sudo systemctl start sparky-server   # serves 503 SETUP_REQUIRED until setup below runs
