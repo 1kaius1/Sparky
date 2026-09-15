@@ -5,6 +5,8 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -24,7 +26,7 @@ func writeFile(t *testing.T, contents string) string {
 
 func newTestCollector(t *testing.T, run commandRunner, procStat, procMeminfo string) *Collector {
 	t.Helper()
-	c := &Collector{runCommand: run}
+	c := &Collector{runCommand: run, logger: log.New(io.Discard, "", 0)}
 	if procStat != "" {
 		c.procStatPath = writeFile(t, procStat)
 	}
@@ -104,13 +106,26 @@ func TestCollector_Read_MultipleGPUs_PerGPU(t *testing.T) {
 	}
 }
 
+// TestCollector_Read_NvidiaSMIFails covers a *real* nvidia-smi invocation
+// error other than "not found" (e.g. permission denied, a query genuinely
+// failing) - unlike the not-found case (see
+// TestCollector_Read_NvidiaSMINotFound_SkipsGPUGracefully), this is a real,
+// possibly-transient problem on a node that's supposed to have a working
+// GPU, so it must not be silently absorbed the same way - but it also must
+// not take CPU/memory telemetry down with it (see Read's own doc comment).
 func TestCollector_Read_NvidiaSMIFails(t *testing.T) {
 	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
-	c := newTestCollector(t, fakeNvidiaSMI("", errors.New("executable file not found")), procStat, sampleMeminfo)
+	c := newTestCollector(t, fakeNvidiaSMI("", errors.New("permission denied")), procStat, sampleMeminfo)
 
-	_, err := c.Read(context.Background())
-	if err == nil {
-		t.Fatal("Read() succeeded despite nvidia-smi failing")
+	reading, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error: %v, want a successful reading with GPUs empty", err)
+	}
+	if len(reading.GPUs) != 0 {
+		t.Errorf("len(GPUs) = %d, want 0", len(reading.GPUs))
+	}
+	if reading.SystemMemoryTotalMB == 0 {
+		t.Error("SystemMemoryTotalMB = 0, want a real value despite the GPU failure")
 	}
 }
 
@@ -118,9 +133,52 @@ func TestCollector_Read_NvidiaSMIEmptyOutput(t *testing.T) {
 	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
 	c := newTestCollector(t, fakeNvidiaSMI("", nil), procStat, sampleMeminfo)
 
-	_, err := c.Read(context.Background())
-	if err == nil {
-		t.Fatal("Read() succeeded despite nvidia-smi reporting no GPUs")
+	reading, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("Read() error: %v, want a successful reading with GPUs empty", err)
+	}
+	if len(reading.GPUs) != 0 {
+		t.Errorf("len(GPUs) = %d, want 0", len(reading.GPUs))
+	}
+	if reading.SystemMemoryTotalMB == 0 {
+		t.Error("SystemMemoryTotalMB = 0, want a real value despite the GPU failure")
+	}
+}
+
+// TestCollector_Read_NvidiaSMINotFound_SkipsGPUGracefully covers the actual
+// reported bug: a CPU-only node with no nvidia-smi at all. Read must
+// succeed with real CPU/memory numbers and no GPUs, and - unlike the
+// "other error" cases above - the not-found detection must be permanent:
+// a second Read must not invoke the command runner again at all, matching
+// the one-time-log, never-spawn-again behavior described in readGPU.
+func TestCollector_Read_NvidiaSMINotFound_SkipsGPUGracefully(t *testing.T) {
+	procStat := "cpu  0 0 0 0 0 0 0 0 0 0\n"
+	calls := 0
+	run := func(ctx context.Context, name string, args ...string) ([]byte, error) {
+		calls++
+		return nil, &exec.Error{Name: "nvidia-smi", Err: exec.ErrNotFound}
+	}
+	c := newTestCollector(t, run, procStat, sampleMeminfo)
+
+	reading, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("first Read() error: %v", err)
+	}
+	if len(reading.GPUs) != 0 {
+		t.Errorf("len(GPUs) = %d, want 0", len(reading.GPUs))
+	}
+	if reading.SystemMemoryTotalMB == 0 {
+		t.Error("SystemMemoryTotalMB = 0, want a real value")
+	}
+	if calls != 1 {
+		t.Fatalf("command runner invoked %d times on first Read(), want 1", calls)
+	}
+
+	if _, err := c.Read(context.Background()); err != nil {
+		t.Fatalf("second Read() error: %v", err)
+	}
+	if calls != 1 {
+		t.Errorf("command runner invoked %d times total after second Read(), want 1 (nvidia-smi should never be re-attempted)", calls)
 	}
 }
 
@@ -171,7 +229,7 @@ func TestCollector_Read_RealHardware(t *testing.T) {
 		t.Skip("no nvidia-smi binary available")
 	}
 
-	c := NewCollector()
+	c := NewCollector(log.New(io.Discard, "", 0))
 
 	first, err := c.Read(context.Background())
 	if err != nil {

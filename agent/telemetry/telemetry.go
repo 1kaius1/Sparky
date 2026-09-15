@@ -10,7 +10,9 @@ package telemetry
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 	"os"
 	"os/exec"
 	"strconv"
@@ -66,17 +68,26 @@ type Collector struct {
 	runCommand      commandRunner
 	procStatPath    string
 	procMeminfoPath string
+	logger          *log.Logger
 
 	prevCPU *cpuSample
+
+	// gpuUnavailable is set once readGPU confirms nvidia-smi isn't present
+	// on this node (see readGPU) - a CPU-only node's permanent, expected
+	// state, not a per-tick failure. Once set, readGPU short-circuits
+	// without spawning a process or logging again.
+	gpuUnavailable bool
 }
 
 // NewCollector constructs a Collector that reads real nvidia-smi output
-// and the real /proc.
-func NewCollector() *Collector {
+// and the real /proc. logger is used only for the one-time "no GPU on this
+// node" notice - see readGPU.
+func NewCollector(logger *log.Logger) *Collector {
 	return &Collector{
 		runCommand:      runCommand,
 		procStatPath:    "/proc/stat",
 		procMeminfoPath: "/proc/meminfo",
+		logger:          logger,
 	}
 }
 
@@ -85,18 +96,29 @@ func NewCollector() *Collector {
 // rate, not an instantaneous value (/proc/stat exposes cumulative
 // counters since boot), so a first reading has no prior sample to compute
 // a delta against; every subsequent call reports a real value.
+//
+// GPU telemetry is best-effort and never fails the reading as a whole - a
+// node can legitimately have no GPU at all (see readGPU), and even a real,
+// ongoing GPU query problem shouldn't take real CPU/memory numbers down
+// with it. Only a /proc read failure (memory or CPU) is treated as fatal -
+// that's a genuine local problem, not an expected node configuration.
 func (c *Collector) Read(ctx context.Context) (Reading, error) {
 	memUsedMB, memTotalMB, err := c.readMemory()
 	if err != nil {
 		return Reading{}, fmt.Errorf("read memory telemetry: %w", err)
 	}
-	gpus, err := c.readGPU(ctx, memTotalMB)
-	if err != nil {
-		return Reading{}, fmt.Errorf("read GPU telemetry: %w", err)
-	}
 	cpuUtil, err := c.readCPU()
 	if err != nil {
 		return Reading{}, fmt.Errorf("read CPU telemetry: %w", err)
+	}
+	gpus, err := c.readGPU(ctx, memTotalMB)
+	if err != nil {
+		// Not the "no GPU on this node" case - readGPU already absorbs
+		// that one silently (after its own one-time notice). This is a
+		// real, possibly-transient problem worth surfacing every tick,
+		// same as before this method stopped letting it block CPU/memory.
+		c.logger.Printf("agent telemetry: read GPU telemetry: %v", err)
+		gpus = nil
 	}
 
 	return Reading{
@@ -134,8 +156,22 @@ func (c *Collector) Read(ctx context.Context) (Reading, error) {
 // approximation. An N/A memory.used falls back to summing real
 // per-process usage instead - see sumComputeAppsMemory.
 func (c *Collector) readGPU(ctx context.Context, systemMemTotalMB float64) ([]GPUReading, error) {
+	if c.gpuUnavailable {
+		return nil, nil
+	}
+
 	out, err := c.runCommand(ctx, "nvidia-smi", "--query-gpu=index,utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits")
 	if err != nil {
+		if errors.Is(err, exec.ErrNotFound) {
+			// A CPU-only node's permanent, expected state - not a
+			// per-tick failure. Logged once here, then never again:
+			// every later Read short-circuits above before this
+			// invocation, or the resulting per-tick log noise, ever
+			// happens again.
+			c.gpuUnavailable = true
+			c.logger.Printf("agent telemetry: nvidia-smi not found - no GPU telemetry on this node, continuing with CPU/memory telemetry only")
+			return nil, nil
+		}
 		return nil, fmt.Errorf("run nvidia-smi: %w", err)
 	}
 

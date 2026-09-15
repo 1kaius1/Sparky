@@ -258,7 +258,10 @@ that generalizes to any Linux box with an NVIDIA GPU without modification.
 physical GPU it lists, not an aggregated value across all of them - NVIDIA-only by
 design, since Sparky's engine adapters are CUDA-first and could never schedule
 inference onto a non-NVIDIA GPU anyway. CPU and system memory stay node-level,
-regardless of GPU count.
+regardless of GPU count - including a node with no GPU at all (a CPU-only
+inference engine): `nvidia-smi` not being present is detected once and logged
+once, not treated as a per-tick failure, and never blocks CPU/memory telemetry
+from being collected and sent.
 
 #### Transfer Executor & Local Store Manager
 Executes downloads and rsync replications, writing to node-local storage
