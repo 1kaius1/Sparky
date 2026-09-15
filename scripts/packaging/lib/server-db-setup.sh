@@ -178,6 +178,20 @@ setup_local_database() {
     method="$1"
     share_dir="$2"
 
+    # install_server.sh and postinstall_server.sh both already require root
+    # before they ever get here, but this function is also meant to be
+    # callable directly (CLAUDE.md's "already installed" invocation) with no
+    # such guard upstream - checked explicitly rather than letting a non-root
+    # invocation fail confusingly partway through ("cannot stat" on a later
+    # install step, or podman silently talking to a *different*
+    # rootless per-user podman instance than the one systemd's own rootful
+    # unit uses, so a container it never sees looks like it "never becomes
+    # ready").
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "sparky-server: setup_local_database must be run as root (sudo) - both the podman and native paths create system-level state (/etc/sparky-server, a systemd unit, and either a rootful podman container or an OS package)" >&2
+        return 1
+    fi
+
     if ! db_url_is_placeholder; then
         echo "sparky-server: DATABASE_URL in /etc/sparky-server/secrets.env is already configured - skipping local database setup"
         return 0

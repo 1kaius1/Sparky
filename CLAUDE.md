@@ -422,6 +422,20 @@ sudo SPARKY_INSTALL_LOCAL_DB=podman apt install ./sparky-server_<version>_<arch>
 sudo SPARKY_INSTALL_LOCAL_DB=native dnf install ./sparky-server-<version>-1.<arch>.rpm
 ```
 
+**Already installed and want this now?** All three install methods place
+`server-db-setup.sh` at the same path, so call it directly rather than
+reinstalling - same idempotency/placeholder-only guards apply:
+
+```bash
+sudo bash -c '. /opt/sparky/share/sparky-server/server-db-setup.sh && setup_local_database podman /opt/sparky/share/sparky-server'
+```
+
+(substitute `native` for `podman` as needed). Use `bash`, not `sh`/`dash`, for
+this one-liner - `sh -c` has been seen to fail on at least one real target
+where `bash -c` runs cleanly. `setup_local_database` itself now also refuses
+to run at all unless it's actually root (rather than failing confusingly
+partway through), in case `sudo` gets dropped while adapting this command.
+
 Neither the podman container nor a native install is ever torn down by
 `uninstall_server.sh --purge` or the package's own purge path - it's a real
 database that may hold real data, and removing it is never implied by
