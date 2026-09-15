@@ -3,9 +3,9 @@
 #
 # sparky-server tarball installer - see CLAUDE.md Build and Run. Run from
 # inside the extracted tarball (expects bin/sparky-server,
-# lib/server-common.sh, lib/server-db-setup.sh, sparky-server.service,
-# sparky-local-postgres.service, secrets.env.template, migrate,
-# migrations/, and uninstall_server.sh alongside this script - see
+# lib/server-common.sh, lib/server-db-setup.sh, lib/run-with-secrets-env.sh,
+# sparky-server.service, sparky-local-postgres.service, secrets.env.template,
+# migrate, migrations/, and uninstall_server.sh alongside this script - see
 # scripts/build_packages.sh for how the tarball is assembled).
 #
 # Unlike the .deb/.rpm packages, this path is not tracked by any package
@@ -67,6 +67,7 @@ install -m 0755 -o root -g root "$script_dir/lib/server-db-setup.sh" /opt/sparky
 install -m 0644 -o root -g root "$script_dir/secrets.env.template" /opt/sparky/share/sparky-server/secrets.env.template
 install -m 0644 -o root -g root "$script_dir/sparky-local-postgres.service" /opt/sparky/share/sparky-server/sparky-local-postgres.service
 install -m 0755 -o root -g root "$script_dir/uninstall_server.sh" /opt/sparky/share/sparky-server/uninstall_server.sh
+install -m 0755 -o root -g root "$script_dir/run-with-secrets-env.sh" /opt/sparky/share/sparky-server/run-with-secrets-env.sh
 install -m 0755 -o root -g root "$script_dir/migrate" /opt/sparky/share/sparky-server/migrate
 rm -rf /opt/sparky/share/sparky-server/migrations
 cp -r "$script_dir/migrations" /opt/sparky/share/sparky-server/migrations
@@ -105,7 +106,7 @@ if systemctl is-active --quiet sparky-server 2>/dev/null; then
     echo "sparky-server upgraded and restarted."
 elif [ "$db_method" != "none" ]; then
     echo "sparky-server installed but not started."
-    echo "Database ready - run: sudo -u sparky sh -c 'set -a && . /etc/sparky-server/secrets.env && set +a && /opt/sparky/bin/sparky-server setup'"
+    echo "Database ready - run: sudo -u sparky /opt/sparky/share/sparky-server/run-with-secrets-env.sh /opt/sparky/bin/sparky-server setup"
     echo "then: sudo systemctl start sparky-server"
 else
     echo "sparky-server installed but not started."

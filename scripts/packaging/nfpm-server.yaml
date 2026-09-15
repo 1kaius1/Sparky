@@ -72,6 +72,13 @@ contents:
       owner: root
       group: root
 
+  - src: scripts/packaging/lib/run-with-secrets-env.sh
+    dst: /opt/sparky/share/sparky-server/run-with-secrets-env.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
   - src: deploy/systemd/sparky-local-postgres.service
     dst: /opt/sparky/share/sparky-server/sparky-local-postgres.service
     file_info:

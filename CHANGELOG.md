@@ -1751,6 +1751,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Found via the first real llama.cpp launch through Sparky end to end.
   Non-empty text in `content`, `reasoning`, or `reasoning_content` now all
   count as ready.
+- `sparky-server setup`'s documented invocation (`sudo -u sparky sh -c 'set
+  -a && . /etc/sparky-server/secrets.env && set +a && ...'`) failed with
+  "command not found" on any `secrets.env` value containing an unquoted
+  space, e.g. `.env.example`'s own example `LDAP_BIND_DN` -
+  `/etc/sparky-server/secrets.env` is written in systemd's
+  `EnvironmentFile=` format, not shell syntax, so `.`/`source`-ing it
+  directly broke on exactly the kind of value that format is meant to
+  support unquoted. Found during real bare-metal verification. New bundled
+  `run-with-secrets-env.sh` (`scripts/packaging/lib/`) parses the file
+  itself (reading each line with `IFS="="` rather than word-splitting) and
+  execs the given command with the environment loaded correctly -
+  `setup_local_database` also now refuses to run unless actually invoked as
+  root, rather than failing confusingly partway through when `sudo` is
+  accidentally dropped.
 
 ### Security
 - CSRF protection on every state-changing endpoint (`/login`,

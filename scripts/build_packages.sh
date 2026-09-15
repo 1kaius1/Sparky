@@ -99,6 +99,7 @@ for arch in amd64 arm64; do
     cp -r migrations "$server_tarball_root/migrations"
     cp scripts/packaging/lib/server-common.sh "$server_tarball_root/lib/server-common.sh"
     cp scripts/packaging/lib/server-db-setup.sh "$server_tarball_root/lib/server-db-setup.sh"
+    cp scripts/packaging/lib/run-with-secrets-env.sh "$server_tarball_root/lib/run-with-secrets-env.sh"
     cp scripts/install_server.sh "$server_tarball_root/install_server.sh"
     cp scripts/uninstall_server.sh "$server_tarball_root/uninstall_server.sh"
     cp deploy/systemd/sparky-server.service "$server_tarball_root/sparky-server.service"
@@ -106,6 +107,7 @@ for arch in amd64 arm64; do
     cp .env.example "$server_tarball_root/secrets.env.template"
     chmod +x "$server_tarball_root/bin/sparky-server" "$server_tarball_root/migrate" \
         "$server_tarball_root/lib/server-common.sh" "$server_tarball_root/lib/server-db-setup.sh" \
+        "$server_tarball_root/lib/run-with-secrets-env.sh" \
         "$server_tarball_root/install_server.sh" "$server_tarball_root/uninstall_server.sh"
 
     tar -C dist/build -czf "dist/sparky-server-$version-linux-$arch.tar.gz" "server-tarball-$arch"

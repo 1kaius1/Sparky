@@ -78,7 +78,7 @@ tar xzf sparky-server-<version>-linux-<arch>.tar.gz && cd sparky-server-<version
 createdb sparky
 migrate -path migrations/ -database "${DATABASE_URL}" up
 sudo systemctl start sparky-server   # serves 503 SETUP_REQUIRED until setup below runs
-sudo -u sparky sh -c 'set -a && . /etc/sparky-server/secrets.env && set +a && /opt/sparky/bin/sparky-server setup'
+sudo -u sparky /opt/sparky/share/sparky-server/run-with-secrets-env.sh /opt/sparky/bin/sparky-server setup
 ```
 
 No separate Postgres to stand up first? Each install method can also

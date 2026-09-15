@@ -447,13 +447,21 @@ have run:
 
 ```bash
 sudo systemctl start sparky-server   # serves 503 SETUP_REQUIRED until setup below runs
-sudo -u sparky sh -c 'set -a && . /etc/sparky-server/secrets.env && set +a && /opt/sparky/bin/sparky-server setup'
+sudo -u sparky /opt/sparky/share/sparky-server/run-with-secrets-env.sh /opt/sparky/bin/sparky-server setup
 ```
 
 `setup` is invoked directly as the `sparky` account rather than through
 systemd, so its own process needs the same environment `secrets.env` gives
-the running service - sourcing the file achieves that without needing a
-second copy of its values. The service itself does not need restarting
+the running service - `run-with-secrets-env.sh` (bundled by every install
+method) achieves that without needing a second copy of its values. It
+exists specifically because `secrets.env` is written in systemd's
+`EnvironmentFile=` format, not shell syntax - `.`/`source`-ing it directly
+(this file's own earlier documented approach) breaks on any value
+containing an unquoted space, such as `.env.example`'s own example
+`LDAP_BIND_DN` - systemd's parser takes the whole rest of the line as the
+value regardless of spaces, but a real shell sourcing the same file
+word-splits it instead, turning part of the value into a second "command"
+the shell then fails to find. The service itself does not need restarting
 afterward; per First Run above, it picks up setup's completion on its very
 next request.
 

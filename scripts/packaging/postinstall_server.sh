@@ -50,7 +50,7 @@ if systemctl is-active --quiet sparky-server 2>/dev/null; then
     systemctl restart sparky-server
 elif [ -n "${SPARKY_INSTALL_LOCAL_DB:-}" ]; then
     echo "sparky-server installed but not started."
-    echo "Database ready - run: sudo -u sparky sh -c 'set -a && . /etc/sparky-server/secrets.env && set +a && /opt/sparky/bin/sparky-server setup'"
+    echo "Database ready - run: sudo -u sparky /opt/sparky/share/sparky-server/run-with-secrets-env.sh /opt/sparky/bin/sparky-server setup"
     echo "then: sudo systemctl start sparky-server"
 else
     echo "sparky-server installed but not started."
