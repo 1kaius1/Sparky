@@ -1,0 +1,30 @@
+# Sparky central server systemd unit - see CLAUDE.md Build and Run.
+#
+# Installed at /usr/lib/systemd/system/sparky-server.service by the .deb/.rpm
+# packages (package-manager-owned path), or at /etc/systemd/system/sparky-server.service
+# by scripts/install_server.sh (the tarball path, not package-manager-owned) -
+# see scripts/packaging/nfpm-server.yaml and scripts/install_server.sh.
+
+[Unit]
+Description=Sparky central server
+Documentation=https://github.com/1kaius1/Sparky/blob/main/CLAUDE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sparky
+Group=sparky
+EnvironmentFile=/etc/sparky-server/secrets.env
+ExecStart=/opt/sparky/bin/sparky-server
+Restart=on-failure
+RestartSec=5s
+
+# Modest hardening only, same reasoning as sparky-agent.service: not
+# ProtectSystem=strict/ReadWritePaths=, since this project's own convention
+# is never to assume operator-configured paths at packaging time.
+NoNewPrivileges=true
+ProtectHome=true
+
+[Install]
+WantedBy=multi-user.target
