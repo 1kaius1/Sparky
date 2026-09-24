@@ -93,17 +93,18 @@ type fakeInventoryStore struct {
 
 type upsertCall struct {
 	nodeID, modelRef, quantization string
+	format                         db.ModelFormat
 	status                         db.InventoryStatus
 	sizeBytes                      int64
 	placedVia                      string
 }
 
-func (f *fakeInventoryStore) Upsert(_ context.Context, nodeID, modelRef, quantization string, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error) {
+func (f *fakeInventoryStore) Upsert(_ context.Context, nodeID, modelRef, quantization string, format db.ModelFormat, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error) {
 	if f.upsertErr != nil {
 		return nil, f.upsertErr
 	}
-	f.calls = append(f.calls, upsertCall{nodeID, modelRef, quantization, status, sizeBytes, placedVia})
-	return &db.NodeModelInventory{NodeID: nodeID, ModelRef: modelRef, Quantization: quantization, Status: status, SizeBytes: sizeBytes, PlacedVia: placedVia}, nil
+	f.calls = append(f.calls, upsertCall{nodeID, modelRef, quantization, format, status, sizeBytes, placedVia})
+	return &db.NodeModelInventory{NodeID: nodeID, ModelRef: modelRef, Quantization: quantization, Format: format, Status: status, SizeBytes: sizeBytes, PlacedVia: placedVia}, nil
 }
 
 // fakeOverrideStore implements overrideStore for tests.
@@ -463,6 +464,40 @@ func TestService_HandleTransferProgress_Completed_UpsertsInventory(t *testing.T)
 	got := inventory.calls[0]
 	if got.nodeID != "node-1" || got.modelRef != "meta-llama/Llama-3-8B" || got.status != db.InventoryStatusPresent || got.sizeBytes != 4096 || got.placedVia != "transfer-1" {
 		t.Errorf("inventory.Upsert call = %+v, want nodeID=node-1 modelRef=meta-llama/Llama-3-8B status=present sizeBytes=4096 placedVia=transfer-1", got)
+	}
+	if got.format != db.ModelFormatSafetensors {
+		t.Errorf("inventory.Upsert format = %q, want %q for a transfer with no quantization set", got.format, db.ModelFormatSafetensors)
+	}
+}
+
+// TestService_HandleTransferProgress_Completed_QuantizedInfersGGUFFormat
+// covers the other half of the stopgap quantization-presence heuristic
+// (see the comment above the Upsert call in service.go) - a non-empty
+// quantization infers format=gguf, the same convention
+// migrations/000030_add_model_format.up.sql uses to backfill historical
+// rows.
+func TestService_HandleTransferProgress_Completed_QuantizedInfersGGUFFormat(t *testing.T) {
+	quant := "Q4_K_M"
+	transferStore := &fakeTransferStore{
+		findByIDResult: &db.ModelTransfer{ID: "transfer-1", DestNodeID: "node-1", ModelRef: "TheBloke/test-GGUF", Quantization: &quant},
+	}
+	inventory := &fakeInventoryStore{}
+	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	env := newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
+		TransferID: "transfer-1", BytesTransferred: 2048, BytesTotal: 2048, Status: string(db.TransferStatusCompleted),
+	})
+	svc.HandleTransferProgress("node-1", env)
+
+	if len(inventory.calls) != 1 {
+		t.Fatalf("inventory.Upsert called %d times, want 1", len(inventory.calls))
+	}
+	got := inventory.calls[0]
+	if got.quantization != quant {
+		t.Errorf("inventory.Upsert quantization = %q, want %q", got.quantization, quant)
+	}
+	if got.format != db.ModelFormatGGUF {
+		t.Errorf("inventory.Upsert format = %q, want %q for a transfer with quantization set", got.format, db.ModelFormatGGUF)
 	}
 }
 

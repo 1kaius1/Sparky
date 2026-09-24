@@ -239,3 +239,116 @@ func TestNodeRepository_SetAgentStatus(t *testing.T) {
 		t.Errorf("LastHeartbeatAt changed to %v on a bumpHeartbeat=false call, want it unchanged from %v", offline.LastHeartbeatAt, firstHeartbeat)
 	}
 }
+
+func TestNodeRepository_Create_SSHFieldsNilByDefault(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	ctx := context.Background()
+
+	// A freshly-registered node has no SSH identity or reported interfaces
+	// yet - both are only populated once an upgraded agent connects and
+	// reports them (a later PR).
+	n, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-6.local", "10.0.0.12",
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, n.ID)
+	})
+
+	if n.SSHPublicKey != nil {
+		t.Errorf("SSHPublicKey = %v, want nil for a freshly registered node", *n.SSHPublicKey)
+	}
+	if n.SSHHostPublicKey != nil {
+		t.Errorf("SSHHostPublicKey = %v, want nil for a freshly registered node", *n.SSHHostPublicKey)
+	}
+	if n.DefaultTransferInterface != nil {
+		t.Errorf("DefaultTransferInterface = %v, want nil (meaning \"Fastest\") for a freshly registered node", *n.DefaultTransferInterface)
+	}
+}
+
+func TestNodeRepository_UpdateSSHIdentity(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	ctx := context.Background()
+
+	created, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-7.local", "10.0.0.13",
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, created.ID)
+	})
+
+	clientKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 client"
+	hostKey := "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5 host"
+	if err := nodes.UpdateSSHIdentity(ctx, created.ID, &clientKey, &hostKey); err != nil {
+		t.Fatalf("UpdateSSHIdentity() error: %v", err)
+	}
+
+	got, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.SSHPublicKey == nil || *got.SSHPublicKey != clientKey {
+		t.Errorf("SSHPublicKey = %v, want %q", got.SSHPublicKey, clientKey)
+	}
+	if got.SSHHostPublicKey == nil || *got.SSHHostPublicKey != hostKey {
+		t.Errorf("SSHHostPublicKey = %v, want %q", got.SSHHostPublicKey, hostKey)
+	}
+
+	// A node whose host has no sshd at all (destination-only) reports no
+	// host key - confirm nil round-trips correctly, not just non-nil
+	// values.
+	if err := nodes.UpdateSSHIdentity(ctx, created.ID, &clientKey, nil); err != nil {
+		t.Fatalf("second UpdateSSHIdentity() error: %v", err)
+	}
+	got2, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got2.SSHHostPublicKey != nil {
+		t.Errorf("SSHHostPublicKey = %v, want nil after clearing it", *got2.SSHHostPublicKey)
+	}
+}
+
+func TestNodeRepository_SetDefaultTransferInterface(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	ctx := context.Background()
+
+	created, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-8.local", "10.0.0.14",
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, created.ID)
+	})
+
+	iface := "eth1"
+	if err := nodes.SetDefaultTransferInterface(ctx, created.ID, &iface); err != nil {
+		t.Fatalf("SetDefaultTransferInterface() error: %v", err)
+	}
+	got, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.DefaultTransferInterface == nil || *got.DefaultTransferInterface != iface {
+		t.Errorf("DefaultTransferInterface = %v, want %q", got.DefaultTransferInterface, iface)
+	}
+
+	// nil clears it back to "Fastest".
+	if err := nodes.SetDefaultTransferInterface(ctx, created.ID, nil); err != nil {
+		t.Fatalf("second SetDefaultTransferInterface() error: %v", err)
+	}
+	got2, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got2.DefaultTransferInterface != nil {
+		t.Errorf("DefaultTransferInterface = %v, want nil after clearing it back to \"Fastest\"", *got2.DefaultTransferInterface)
+	}
+}

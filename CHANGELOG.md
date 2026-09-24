@@ -1456,6 +1456,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   separately-installed `migrate` CLI needed on the target host. Opt-in only;
   never touches `sparky-server setup` itself, and never torn down by
   `--purge` since it may hold real data.
+- Schema groundwork for the Models redesign (Inventory + Profiles +
+  peer-to-peer transfer, `PLANNING.md` Decisions Log) - PR 1 of 10.
+  Migrations `000028`-`000031`: SSH-identity and default-transfer-interface
+  columns on `nodes`; a new `node_network_interfaces` table; a new
+  `model_format` enum (`safetensors`/`gguf`) added to both `model_profiles`
+  and `node_model_inventory`, backfilled from each row's existing
+  quantization; `node_model_inventory`'s primary key extended to include
+  `format`; a `source_interface` column on `model_transfers`. Historical
+  empty-quantization rows on `node_model_inventory` are relabeled to the
+  literal sentinel `'UNKNOWN'` rather than a guessed value - real Hugging
+  Face repos commonly carry no reliable precision label at all, so guessing
+  one (e.g. defaulting to `FP16`) was rejected as worse than admitting it's
+  unknown. No user-visible behavior change yet - this is the schema layer
+  only; the UI/orchestration PRs land later in the same sequence.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

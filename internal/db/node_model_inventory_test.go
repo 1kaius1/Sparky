@@ -19,7 +19,7 @@ func TestNodeModelInventoryRepository_Upsert_InsertsNewRow(t *testing.T) {
 	transfer := createTestTransfer(t, transfers, node.ID, nil)
 	modelRef := "test-org/test-model"
 
-	inv, err := inventory.Upsert(ctx, node.ID, modelRef, "", InventoryStatusPresent, 1024, transfer.ID)
+	inv, err := inventory.Upsert(ctx, node.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusPresent, 1024, transfer.ID)
 	if err != nil {
 		t.Fatalf("Upsert() error: %v", err)
 	}
@@ -39,6 +39,9 @@ func TestNodeModelInventoryRepository_Upsert_InsertsNewRow(t *testing.T) {
 	if inv.Quantization != "" {
 		t.Errorf("Quantization = %q, want empty", inv.Quantization)
 	}
+	if inv.Format != ModelFormatSafetensors {
+		t.Errorf("Format = %q, want %q", inv.Format, ModelFormatSafetensors)
+	}
 }
 
 func TestNodeModelInventoryRepository_Upsert_ReplacesExistingRow(t *testing.T) {
@@ -53,17 +56,17 @@ func TestNodeModelInventoryRepository_Upsert_ReplacesExistingRow(t *testing.T) {
 	secondTransfer := createTestTransfer(t, transfers, node.ID, nil)
 	modelRef := "test-org/test-model"
 
-	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "", InventoryStatusPresent, 1024, firstTransfer.ID); err != nil {
+	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusPresent, 1024, firstTransfer.ID); err != nil {
 		t.Fatalf("first Upsert() error: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef)
 	})
 
-	// Re-placing the same model+quantization via a second transfer must
-	// replace the row in place, not insert a second one - (node_id,
-	// model_ref, quantization) is the composite primary key.
-	updated, err := inventory.Upsert(ctx, node.ID, modelRef, "", InventoryStatusStale, 2048, secondTransfer.ID)
+	// Re-placing the same model+quantization+format via a second transfer
+	// must replace the row in place, not insert a second one - (node_id,
+	// model_ref, quantization, format) is the composite primary key.
+	updated, err := inventory.Upsert(ctx, node.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusStale, 2048, secondTransfer.ID)
 	if err != nil {
 		t.Fatalf("second Upsert() error: %v", err)
 	}
@@ -104,13 +107,13 @@ func TestNodeModelInventoryRepository_Upsert_DistinctQuantizationsCoexist(t *tes
 	transferB := createTestTransfer(t, transfers, node.ID, nil)
 	modelRef := "test-org/multi-quant-model"
 
-	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "Q4_K_M", InventoryStatusPresent, 1024, transferA.ID); err != nil {
+	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "Q4_K_M", ModelFormatGGUF, InventoryStatusPresent, 1024, transferA.ID); err != nil {
 		t.Fatalf("Upsert(Q4_K_M) error: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef)
 	})
-	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "Q5_K_M", InventoryStatusPresent, 2048, transferB.ID); err != nil {
+	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "Q5_K_M", ModelFormatGGUF, InventoryStatusPresent, 2048, transferB.ID); err != nil {
 		t.Fatalf("Upsert(Q5_K_M) error: %v", err)
 	}
 
@@ -122,7 +125,7 @@ func TestNodeModelInventoryRepository_Upsert_DistinctQuantizationsCoexist(t *tes
 		t.Fatalf("ListByNode() returned %d entries, want 2 (distinct quantizations must not collide)", len(entries))
 	}
 
-	q4, err := inventory.Get(ctx, node.ID, modelRef, "Q4_K_M")
+	q4, err := inventory.Get(ctx, node.ID, modelRef, "Q4_K_M", ModelFormatGGUF)
 	if err != nil {
 		t.Fatalf("Get(Q4_K_M) error: %v", err)
 	}
@@ -130,12 +133,65 @@ func TestNodeModelInventoryRepository_Upsert_DistinctQuantizationsCoexist(t *tes
 		t.Errorf("Get(Q4_K_M).SizeBytes = %d, want 1024 (unaffected by the Q5_K_M upsert)", q4.SizeBytes)
 	}
 
-	q5, err := inventory.Get(ctx, node.ID, modelRef, "Q5_K_M")
+	q5, err := inventory.Get(ctx, node.ID, modelRef, "Q5_K_M", ModelFormatGGUF)
 	if err != nil {
 		t.Fatalf("Get(Q5_K_M) error: %v", err)
 	}
 	if q5.SizeBytes != 2048 {
 		t.Errorf("Get(Q5_K_M).SizeBytes = %d, want 2048", q5.SizeBytes)
+	}
+}
+
+// TestNodeModelInventoryRepository_Upsert_DistinctFormatsCoexist mirrors
+// the quantization test above, but for format - the newer half of the
+// composite key. A GGUF entry and a safetensors entry sharing the same
+// model_ref and quantization string (unusual, but not impossible - two
+// unrelated repos could coincidentally share both) must not collide either.
+func TestNodeModelInventoryRepository_Upsert_DistinctFormatsCoexist(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	inventory := NewNodeModelInventoryRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	transferA := createTestTransfer(t, transfers, node.ID, nil)
+	transferB := createTestTransfer(t, transfers, node.ID, nil)
+	modelRef := "test-org/same-ref-different-format"
+	quantization := "FP16"
+
+	if _, err := inventory.Upsert(ctx, node.ID, modelRef, quantization, ModelFormatSafetensors, InventoryStatusPresent, 1024, transferA.ID); err != nil {
+		t.Fatalf("Upsert(safetensors) error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef)
+	})
+	if _, err := inventory.Upsert(ctx, node.ID, modelRef, quantization, ModelFormatGGUF, InventoryStatusPresent, 2048, transferB.ID); err != nil {
+		t.Fatalf("Upsert(gguf) error: %v", err)
+	}
+
+	entries, err := inventory.ListByNode(ctx, node.ID)
+	if err != nil {
+		t.Fatalf("ListByNode() error: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("ListByNode() returned %d entries, want 2 (distinct formats must not collide)", len(entries))
+	}
+
+	st, err := inventory.Get(ctx, node.ID, modelRef, quantization, ModelFormatSafetensors)
+	if err != nil {
+		t.Fatalf("Get(safetensors) error: %v", err)
+	}
+	if st.SizeBytes != 1024 {
+		t.Errorf("Get(safetensors).SizeBytes = %d, want 1024", st.SizeBytes)
+	}
+
+	gg, err := inventory.Get(ctx, node.ID, modelRef, quantization, ModelFormatGGUF)
+	if err != nil {
+		t.Fatalf("Get(gguf) error: %v", err)
+	}
+	if gg.SizeBytes != 2048 {
+		t.Errorf("Get(gguf).SizeBytes = %d, want 2048", gg.SizeBytes)
 	}
 }
 
@@ -146,7 +202,7 @@ func TestNodeModelInventoryRepository_Get_NotFound(t *testing.T) {
 
 	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
 
-	_, err := inventory.Get(context.Background(), node.ID, "no-such/model", "")
+	_, err := inventory.Get(context.Background(), node.ID, "no-such/model", "", ModelFormatSafetensors)
 	if err != ErrNodeModelInventoryNotFound {
 		t.Errorf("Get() error = %v, want ErrNodeModelInventoryNotFound", err)
 	}
@@ -166,13 +222,13 @@ func TestNodeModelInventoryRepository_ListByNode(t *testing.T) {
 	modelA := "test-org/model-a"
 	modelB := "test-org/model-b"
 
-	if _, err := inventory.Upsert(ctx, node.ID, modelA, "", InventoryStatusPresent, 1024, transferA.ID); err != nil {
+	if _, err := inventory.Upsert(ctx, node.ID, modelA, "", ModelFormatSafetensors, InventoryStatusPresent, 1024, transferA.ID); err != nil {
 		t.Fatalf("Upsert(modelA) error: %v", err)
 	}
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelA)
 	})
-	if _, err := inventory.Upsert(ctx, node.ID, modelB, "", InventoryStatusPresent, 2048, transferB.ID); err != nil {
+	if _, err := inventory.Upsert(ctx, node.ID, modelB, "", ModelFormatSafetensors, InventoryStatusPresent, 2048, transferB.ID); err != nil {
 		t.Fatalf("Upsert(modelB) error: %v", err)
 	}
 	t.Cleanup(func() {
@@ -185,5 +241,58 @@ func TestNodeModelInventoryRepository_ListByNode(t *testing.T) {
 	}
 	if len(got) != 2 {
 		t.Errorf("ListByNode() returned %d entries, want 2", len(got))
+	}
+}
+
+// TestNodeModelInventoryRepository_List confirms the cross-node read path
+// the Inventory page (internal/inventory) needs - previously this table
+// had no way to read across every node at once, only ListByNode's
+// per-node scope.
+func TestNodeModelInventoryRepository_List(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	inventory := NewNodeModelInventoryRepository(pool)
+	ctx := context.Background()
+
+	nodeA := createTestNode(t, nodes, fmt.Sprintf("node-a-%s", t.Name()))
+	nodeB := createTestNode(t, nodes, fmt.Sprintf("node-b-%s", t.Name()))
+	transferA := createTestTransfer(t, transfers, nodeA.ID, nil)
+	transferB := createTestTransfer(t, transfers, nodeB.ID, nil)
+
+	modelRef := fmt.Sprintf("test-org/list-model-%s", t.Name())
+
+	if _, err := inventory.Upsert(ctx, nodeA.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusPresent, 1024, transferA.ID); err != nil {
+		t.Fatalf("Upsert(nodeA) error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, nodeA.ID, modelRef)
+	})
+	if _, err := inventory.Upsert(ctx, nodeB.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusPresent, 2048, transferB.ID); err != nil {
+		t.Fatalf("Upsert(nodeB) error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, nodeB.ID, modelRef)
+	})
+
+	got, err := inventory.List(ctx)
+	if err != nil {
+		t.Fatalf("List() error: %v", err)
+	}
+
+	var foundA, foundB bool
+	for _, inv := range got {
+		if inv.ModelRef != modelRef {
+			continue
+		}
+		if inv.NodeID == nodeA.ID {
+			foundA = true
+		}
+		if inv.NodeID == nodeB.ID {
+			foundB = true
+		}
+	}
+	if !foundA || !foundB {
+		t.Errorf("List() missing one or both of the two entries just created across different nodes")
 	}
 }

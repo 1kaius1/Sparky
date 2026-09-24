@@ -56,6 +56,12 @@ type ModelTransfer struct {
 	RequestedAt      time.Time
 	CompletedAt      *time.Time
 	ErrorMessage     *string
+	// SourceInterface names which of the source node's reported
+	// interfaces a peer_node transfer actually used - nil means either
+	// "internet-sourced (not applicable)" or "peer_node but Fastest
+	// auto-selection was used", the same NULL-means-default convention
+	// Quantization already carries.
+	SourceInterface *string
 }
 
 // ErrModelTransferNotFound is returned when a lookup finds no matching row.
@@ -75,12 +81,12 @@ func NewModelTransferRepository(pool *pgxpool.Pool) *ModelTransferRepository {
 }
 
 const modelTransferColumns = `id, dest_node_id, model_ref, source_type, source_node_id, status,
-	bytes_transferred, bytes_total, quantization, requested_by, requested_at, completed_at, error_message`
+	bytes_transferred, bytes_total, quantization, requested_by, requested_at, completed_at, error_message, source_interface`
 
 func scanModelTransfer(row pgx.Row) (*ModelTransfer, error) {
 	var t ModelTransfer
 	err := row.Scan(&t.ID, &t.DestNodeID, &t.ModelRef, &t.SourceType, &t.SourceNodeID, &t.Status,
-		&t.BytesTransferred, &t.BytesTotal, &t.Quantization, &t.RequestedBy, &t.RequestedAt, &t.CompletedAt, &t.ErrorMessage)
+		&t.BytesTransferred, &t.BytesTotal, &t.Quantization, &t.RequestedBy, &t.RequestedAt, &t.CompletedAt, &t.ErrorMessage, &t.SourceInterface)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrModelTransferNotFound
 	}
@@ -126,6 +132,21 @@ func (r *ModelTransferRepository) UpdateProgress(ctx context.Context, id string,
 		bytesTransferred, bytesTotal, id)
 	if err != nil {
 		return fmt.Errorf("update model transfer progress for %s: %w", id, err)
+	}
+	return nil
+}
+
+// SetSourceInterface records which of the source node's interfaces a
+// peer_node transfer resolved to use - see ModelTransfer's own
+// SourceInterface doc comment. Not yet called by anything -
+// internal/transfers' real peer_node orchestration (a later PR) is what
+// resolves an interface in the first place.
+func (r *ModelTransferRepository) SetSourceInterface(ctx context.Context, id string, interfaceName *string) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE model_transfers SET source_interface = $1 WHERE id = $2`,
+		interfaceName, id)
+	if err != nil {
+		return fmt.Errorf("set source interface for model transfer %s: %w", id, err)
 	}
 	return nil
 }

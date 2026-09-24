@@ -27,7 +27,7 @@ type transferStore interface {
 // inventoryStore is the subset of *db.NodeModelInventoryRepository this
 // package needs.
 type inventoryStore interface {
-	Upsert(ctx context.Context, nodeID, modelRef, quantization string, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error)
+	Upsert(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error)
 }
 
 // overrideStore is the subset of *db.PermissionOverrideRepository this
@@ -243,7 +243,17 @@ func (s *Service) HandleTransferProgress(nodeID string, env agentproto.Envelope)
 	if t.Quantization != nil {
 		quantization = *t.Quantization
 	}
-	if _, err := s.inventory.Upsert(ctx, nodeID, t.ModelRef, quantization, db.InventoryStatusPresent, progress.BytesTotal, t.ID); err != nil {
+	// Same convention-based inference migrations/000030_add_model_format.up.sql
+	// uses to backfill historical rows: a non-empty quantization is only
+	// ever meaningful for a GGUF file today. This is a stopgap, not the
+	// real answer - a later PR (agent/modelinspect) determines format by
+	// inspecting the downloaded file itself instead of guessing from
+	// whether a quantization string happens to be present.
+	format := db.ModelFormatSafetensors
+	if quantization != "" {
+		format = db.ModelFormatGGUF
+	}
+	if _, err := s.inventory.Upsert(ctx, nodeID, t.ModelRef, quantization, format, db.InventoryStatusPresent, progress.BytesTotal, t.ID); err != nil {
 		s.logger.Printf("transfers: upsert inventory for node %s model %s: %v", nodeID, t.ModelRef, err)
 	}
 }

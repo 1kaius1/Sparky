@@ -134,6 +134,45 @@ func TestModelTransferRepository_Create_WithQuantization(t *testing.T) {
 	}
 }
 
+func TestModelTransferRepository_SetSourceInterface(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	ctx := context.Background()
+
+	dest := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	created := createTestTransfer(t, transfers, dest.ID, nil)
+
+	if created.SourceInterface != nil {
+		t.Errorf("SourceInterface = %v, want nil before any SetSourceInterface call", *created.SourceInterface)
+	}
+
+	iface := "eth1"
+	if err := transfers.SetSourceInterface(ctx, created.ID, &iface); err != nil {
+		t.Fatalf("SetSourceInterface() error: %v", err)
+	}
+	got, err := transfers.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.SourceInterface == nil || *got.SourceInterface != iface {
+		t.Errorf("SourceInterface = %v, want %q", got.SourceInterface, iface)
+	}
+
+	// nil means "Fastest was used" - confirm it round-trips too, not just
+	// a real interface name.
+	if err := transfers.SetSourceInterface(ctx, created.ID, nil); err != nil {
+		t.Fatalf("second SetSourceInterface() error: %v", err)
+	}
+	got2, err := transfers.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got2.SourceInterface != nil {
+		t.Errorf("SourceInterface = %v, want nil after clearing it", *got2.SourceInterface)
+	}
+}
+
 func TestModelTransferRepository_FindByID(t *testing.T) {
 	pool := newTestPool(t)
 	nodes := NewNodeRepository(pool)
