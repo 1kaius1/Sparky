@@ -112,6 +112,89 @@ const (
 	// instances' health_status/last_health_check_at, unpopulated by
 	// anything before this.
 	TypeInstanceHealth MessageType = "instance_health"
+
+	// TypeReportInterfaces is sent by an agent, unprompted, shortly after a
+	// successful handshake - and again in answer to TypeRescanInterfaces -
+	// naming every network interface it has and each one's reported link
+	// speed, for peer-to-peer model transfer's network-path selection (see
+	// SCHEMA.md Node network interfaces). Not polled on an interval like
+	// telemetry - interfaces rarely change, unlike GPU/CPU utilization.
+	TypeReportInterfaces MessageType = "report_interfaces"
+
+	// TypeRescanInterfaces is sent by the central app to an agent, asking
+	// it to re-enumerate and report its interfaces again via
+	// TypeReportInterfaces - backs the transfer-initiation UI's "Rescan"
+	// action, refreshing a node's list on demand rather than waiting for
+	// its next reconnect.
+	TypeRescanInterfaces MessageType = "rescan_interfaces"
+
+	// TypeAuthorizePeerPull is sent by the central app to the SOURCE
+	// agent of a peer-to-peer model transfer, asking it to temporarily
+	// trust the DESTINATION agent's SSH public key for exactly this
+	// transfer - see ARCHITECTURE.md Security Considerations' scoped
+	// exception to the zero-inbound-network-exposure hard constraint. The
+	// source resolves ModelRef/Quantization/Format to its own local path
+	// itself (the same "only the agent knows its own storage layout"
+	// reasoning StartTransfer/LoadInstance already document) - never a
+	// wire-supplied path. Answered via TypePeerAuthorizeResult.
+	TypeAuthorizePeerPull MessageType = "authorize_peer_pull"
+
+	// TypePeerAuthorizeResult is the source agent's async reply to
+	// TypeAuthorizePeerPull.
+	TypePeerAuthorizeResult MessageType = "peer_authorize_result"
+
+	// TypeStartPeerTransfer is sent by the central app to the DESTINATION
+	// agent of a peer-to-peer model transfer - the pull side - only after
+	// the source agent has answered TypeAuthorizePeerPull with Accepted
+	// true. Progress/completion are reported back via the existing
+	// TypeTransferProgress, exactly as they already are for an internet
+	// download - SCHEMA.md's own Model transfers table is explicitly
+	// "unified... since both are the same shape of thing," so this
+	// protocol doesn't invent a parallel progress message type.
+	TypeStartPeerTransfer MessageType = "start_peer_transfer"
+
+	// TypeRevokePeerPull is sent by the central app to the SOURCE agent of
+	// a peer-to-peer transfer once it reaches a terminal status
+	// (completed/failed/cancelled), asking it to remove that transfer's
+	// ephemeral SSH authorization immediately rather than waiting for its
+	// own self-expiry. Best-effort - the source agent also self-expires
+	// every grant it makes and sweeps clean at startup, so a lost or
+	// never-acknowledged revoke is never the only thing standing between a
+	// stale grant and cleanup.
+	TypeRevokePeerPull MessageType = "revoke_peer_pull"
+
+	// TypeCheckPeerConnectivity is sent by the central app to a
+	// prospective DESTINATION agent, backing the transfer-initiation UI's
+	// "Check Destination" action - the transfer's own submit control stays
+	// disabled until this passes. Deliberately lightweight: a raw TCP dial
+	// to the source's chosen interface, no SSH authentication attempted at
+	// all - proving the network path is open is what matters here, and
+	// this never consumes a real TypeAuthorizePeerPull grant just to check
+	// reachability. Answered via TypeConnectivityCheckResult.
+	TypeCheckPeerConnectivity MessageType = "check_peer_connectivity"
+
+	// TypeConnectivityCheckResult is a prospective destination agent's
+	// async reply to TypeCheckPeerConnectivity.
+	TypeConnectivityCheckResult MessageType = "connectivity_check_result"
+
+	// TypeCancelTransfer is sent by the central app to whichever agent is
+	// actually doing the work for a transfer - the destination, for
+	// either an internet download or a peer pull, since it's the one
+	// running the download/rsync process. No reply message of its own -
+	// the cancellation's effect is observed through the transfer's own
+	// TypeTransferProgress/TypeInstanceResult-style status reporting
+	// reaching a terminal state, not a dedicated acknowledgment.
+	TypeCancelTransfer MessageType = "cancel_transfer"
+
+	// TypeDeleteModel is sent by the central app to the node whose
+	// inventory entry is being removed. Resolves ModelRef/Quantization/
+	// Format to its own local path itself, same never-trust-a-wire-
+	// supplied-path discipline as TypeAuthorizePeerPull. Answered via
+	// TypeDeleteModelResult.
+	TypeDeleteModel MessageType = "delete_model"
+
+	// TypeDeleteModelResult is the agent's async reply to TypeDeleteModel.
+	TypeDeleteModelResult MessageType = "delete_model_result"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -150,9 +233,23 @@ func (e Envelope) DecodePayload(v any) error {
 }
 
 // Hello is TypeHello's payload - the agent's connect-time handshake.
+// SSHPublicKey/SSHHostPublicKey are both optional (omitempty) so an
+// already-upgraded central app can still accept a not-yet-upgraded agent
+// that doesn't send them, and so an agent whose `sparky-agent setup` step
+// hasn't produced a keypair yet (or whose host has no sshd) can still
+// connect and do everything except participate in peer-to-peer model
+// transfer - graceful degradation, not a hard requirement. SSHPublicKey is
+// this node's own client identity (agent/provision, generated once, the
+// private key never leaves the node - see SCHEMA.md Nodes'
+// ssh_public_key). SSHHostPublicKey is this node's own system sshd host
+// key (OS-managed, not generated by Sparky), reported so a peer pulling a
+// model from this node can pin trust for that one connection instead of
+// blind trust-on-first-use.
 type Hello struct {
-	NodeName    string `json:"node_name"`
-	BearerToken string `json:"bearer_token"`
+	NodeName         string `json:"node_name"`
+	BearerToken      string `json:"bearer_token"`
+	SSHPublicKey     string `json:"ssh_public_key,omitempty"`
+	SSHHostPublicKey string `json:"ssh_host_public_key,omitempty"`
 }
 
 // HelloAck is TypeHelloAck's payload - the central app's handshake result.
@@ -384,4 +481,128 @@ type Telemetry struct {
 	CPUUtilizationPct   float64        `json:"cpu_utilization_pct"`
 	SystemMemoryUsedMB  float64        `json:"system_memory_used_mb"`
 	SystemMemoryTotalMB float64        `json:"system_memory_total_mb"`
+}
+
+// NetworkInterface is one of an agent's reported interfaces - see
+// SCHEMA.md Node network interfaces, which this mirrors field-for-field.
+// LinkSpeedMbps is nil (omitted from the wire, not sent as 0) when the
+// agent couldn't determine a link speed (a virtual interface, or a driver
+// that doesn't expose one) - "unknown," not zero, so "Fastest"
+// auto-selection never treats an unmeasured interface as slower than
+// everything else by default; it is simply not a candidate.
+type NetworkInterface struct {
+	Name          string `json:"name"`
+	IPAddress     string `json:"ip_address"`
+	LinkSpeedMbps *int   `json:"link_speed_mbps,omitempty"`
+}
+
+// ReportInterfaces is TypeReportInterfaces' payload.
+type ReportInterfaces struct {
+	Interfaces []NetworkInterface `json:"interfaces"`
+}
+
+// RescanInterfaces is TypeRescanInterfaces' payload - deliberately empty;
+// the agent to rescan is already implied by which connection this arrives
+// on, and RequestID (Envelope, not this struct) is what lets the agent's
+// TypeReportInterfaces reply be correlated back to this specific request.
+type RescanInterfaces struct{}
+
+// AuthorizePeerPull is TypeAuthorizePeerPull's payload. ModelRef/
+// Quantization/Format let the source agent resolve its own local path
+// itself - see TypeAuthorizePeerPull's own doc comment. Format is a plain
+// string, not internal/db.ModelFormat, for the same reason as
+// TransferProgress.Status: this package has no dependency on internal/db;
+// its real values are "safetensors"/"gguf". DestPublicKey/DestIPAddress
+// scope the grant to exactly one peer.
+type AuthorizePeerPull struct {
+	TransferID    string `json:"transfer_id"`
+	DestPublicKey string `json:"dest_public_key"`
+	DestIPAddress string `json:"dest_ip_address"`
+	ModelRef      string `json:"model_ref"`
+	Quantization  string `json:"quantization,omitempty"`
+	Format        string `json:"format"`
+}
+
+// PeerAuthorizeResult is TypeAuthorizePeerPull's response payload, sent by
+// the source agent. Accepted false covers a source-side failure to grant
+// (the resolved local path doesn't exist, or writing the SSH authorization
+// failed) - reported clearly instead of only surfacing later as an opaque
+// connection failure on the destination side.
+type PeerAuthorizeResult struct {
+	TransferID string `json:"transfer_id"`
+	Accepted   bool   `json:"accepted"`
+	Reason     string `json:"reason,omitempty"`
+}
+
+// StartPeerTransfer is TypeStartPeerTransfer's payload - sent only after
+// the source has already accepted via PeerAuthorizeResult. SourceHost is
+// the IP address of the specific interface selected for this transfer
+// (the source node's configured default, or an explicit per-transfer
+// override - see SCHEMA.md Nodes' default_transfer_interface and Model
+// transfers' source_interface), resolved server-side since only the
+// central app has visibility across every node's reported interfaces to
+// make that choice. SourceHostPublicKey lets the destination pin trust for
+// this one connection instead of blind trust-on-first-use. ModelRef/
+// Quantization/Format mirror AuthorizePeerPull's - the destination
+// resolves its own local destination path itself, the same pattern.
+type StartPeerTransfer struct {
+	TransferID          string `json:"transfer_id"`
+	SourceNodeID        string `json:"source_node_id"`
+	SourceHost          string `json:"source_host"`
+	SourceSSHPort       int    `json:"source_ssh_port"`
+	SourceHostPublicKey string `json:"source_host_public_key"`
+	ModelRef            string `json:"model_ref"`
+	Quantization        string `json:"quantization,omitempty"`
+	Format              string `json:"format"`
+}
+
+// RevokePeerPull is TypeRevokePeerPull's payload.
+type RevokePeerPull struct {
+	TransferID string `json:"transfer_id"`
+}
+
+// CheckPeerConnectivity is TypeCheckPeerConnectivity's payload. CheckID
+// (not TransferID - no transfer exists yet at check time) correlates the
+// destination's TypeConnectivityCheckResult reply back to this specific
+// check, the same role TransferID plays for an in-progress transfer.
+type CheckPeerConnectivity struct {
+	CheckID       string `json:"check_id"`
+	SourceHost    string `json:"source_host"`
+	SourceSSHPort int    `json:"source_ssh_port"`
+}
+
+// ConnectivityCheckResult is TypeCheckPeerConnectivity's response payload.
+// LatencyMs is meaningful only when Reachable is true; Reason only when
+// Reachable is false.
+type ConnectivityCheckResult struct {
+	CheckID   string `json:"check_id"`
+	Reachable bool   `json:"reachable"`
+	LatencyMs int64  `json:"latency_ms,omitempty"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+// CancelTransfer is TypeCancelTransfer's payload - see its own doc comment
+// for why there is no dedicated reply message.
+type CancelTransfer struct {
+	TransferID string `json:"transfer_id"`
+}
+
+// DeleteModel is TypeDeleteModel's payload. Format is a plain string, not
+// internal/db.ModelFormat, for the same reason as AuthorizePeerPull's own
+// Format field.
+type DeleteModel struct {
+	ModelRef     string `json:"model_ref"`
+	Quantization string `json:"quantization,omitempty"`
+	Format       string `json:"format"`
+}
+
+// DeleteModelResult is TypeDeleteModel's response payload. Success false
+// covers, for example, the resolved local path not existing, or the
+// filesystem removal itself failing (permissions, a busy mount).
+type DeleteModelResult struct {
+	ModelRef     string `json:"model_ref"`
+	Quantization string `json:"quantization,omitempty"`
+	Format       string `json:"format"`
+	Success      bool   `json:"success"`
+	Reason       string `json:"reason,omitempty"`
 }

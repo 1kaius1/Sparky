@@ -1470,6 +1470,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one (e.g. defaulting to `FP16`) was rejected as worse than admitting it's
   unknown. No user-visible behavior change yet - this is the schema layer
   only; the UI/orchestration PRs land later in the same sequence.
+- `agentproto` additions for the Models redesign (`PLANNING.md` Decisions
+  Log) - PR 2 of 10. `Hello` gains optional `SSHPublicKey`/`SSHHostPublicKey`
+  fields (omitted from the wire when unset, so an already-upgraded central
+  app still accepts a not-yet-upgraded agent). New message types and payload
+  structs for interface reporting (`TypeReportInterfaces`/
+  `TypeRescanInterfaces`), peer-to-peer transfer authorization and initiation
+  (`TypeAuthorizePeerPull`/`TypePeerAuthorizeResult`/`TypeStartPeerTransfer`/
+  `TypeRevokePeerPull`), destination connectivity checking
+  (`TypeCheckPeerConnectivity`/`TypeConnectivityCheckResult`), transfer
+  cancellation (`TypeCancelTransfer`), and inventory deletion
+  (`TypeDeleteModel`/`TypeDeleteModelResult`). Pure vocabulary - no dispatch
+  wiring, no behavior change; the agent/server implementations land in later
+  PRs in the same sequence.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a
