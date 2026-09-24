@@ -95,6 +95,13 @@ func TestProfileRepository_Create(t *testing.T) {
 	if p.UpdatedBy != nil {
 		t.Errorf("UpdatedBy = %v, want nil for a freshly created profile", p.UpdatedBy)
 	}
+	// Create doesn't take a format parameter yet (a later PR) - every
+	// profile created today gets the column's transitional default. See
+	// migrations/000030_add_model_format.up.sql's own doc comment for why
+	// this default exists at all.
+	if p.Format != ModelFormatSafetensors {
+		t.Errorf("Format = %q, want the column default %q (Create doesn't set it explicitly yet)", p.Format, ModelFormatSafetensors)
+	}
 }
 
 func TestProfileRepository_Create_SuperAdmin_NilCreatedBy(t *testing.T) {

@@ -50,14 +50,20 @@ type Profile struct {
 	RequiredMemoryGB         *float64
 	EngineVersion            *string
 	Quantization             *string
-	Image                    *string
-	Topology                 ProfileTopology
-	TargetNodeID             *string
-	Port                     int
-	CreatedBy                *string
-	CreatedAt                time.Time
-	UpdatedBy                *string
-	UpdatedAt                time.Time
+	// Format mirrors the model_format Postgres enum - see ModelFormat
+	// (internal/db/node_model_inventory.go). Not yet settable via
+	// Create/Update (migrations/000030_add_model_format.up.sql's
+	// DEFAULT 'safetensors' covers every row created before the Go layer
+	// threads a real value through - see PLANNING.md's Decisions Log).
+	Format       ModelFormat
+	Image        *string
+	Topology     ProfileTopology
+	TargetNodeID *string
+	Port         int
+	CreatedBy    *string
+	CreatedAt    time.Time
+	UpdatedBy    *string
+	UpdatedAt    time.Time
 }
 
 // ErrProfileNotFound is returned when a lookup, update, or delete finds
@@ -78,12 +84,12 @@ func NewProfileRepository(pool *pgxpool.Pool) *ProfileRepository {
 }
 
 const profileColumns = `id, name, model_ref, engine_type, engine_params, requires_full_gpu_residency,
-	required_memory_gb, engine_version, quantization, image, topology, target_node_id, port, created_by, created_at, updated_by, updated_at`
+	required_memory_gb, engine_version, quantization, format, image, topology, target_node_id, port, created_by, created_at, updated_by, updated_at`
 
 func scanProfile(row pgx.Row) (*Profile, error) {
 	var p Profile
 	err := row.Scan(&p.ID, &p.Name, &p.ModelRef, &p.EngineType, &p.EngineParams, &p.RequiresFullGPUResidency,
-		&p.RequiredMemoryGB, &p.EngineVersion, &p.Quantization, &p.Image, &p.Topology, &p.TargetNodeID, &p.Port, &p.CreatedBy, &p.CreatedAt, &p.UpdatedBy, &p.UpdatedAt)
+		&p.RequiredMemoryGB, &p.EngineVersion, &p.Quantization, &p.Format, &p.Image, &p.Topology, &p.TargetNodeID, &p.Port, &p.CreatedBy, &p.CreatedAt, &p.UpdatedBy, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProfileNotFound
 	}
