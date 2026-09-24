@@ -1,0 +1,61 @@
+{{define "content"}}
+<div data-sse-topics="transfer_progress" hidden></div>
+<h1>Inventory</h1>
+
+<p>
+  {{if eq .Data.View "simple"}}Simple{{else}}<a href="/inventory?view=simple" hx-get="/inventory?view=simple" hx-target="#main-content" hx-push-url="true">Simple</a>{{end}}
+  |
+  {{if eq .Data.View "advanced"}}Advanced{{else}}<a href="/inventory?view=advanced" hx-get="/inventory?view=advanced" hx-target="#main-content" hx-push-url="true">Advanced</a>{{end}}
+</p>
+
+<p><a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true">View transfer history</a></p>
+
+{{if eq .Data.View "simple"}}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Model</th>
+      <th>Quantizations</th>
+      <th>Size</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.SimpleRows}}
+    <tr>
+      <td>{{.ModelRef}}</td>
+      <td>{{.Quantizations}}</td>
+      <td>{{.Size}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="3" class="empty">No models downloaded yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+{{range .Data.AdvancedGroups}}
+<h2>{{.ModelRef}} - {{.Quantization}} ({{.Format}})</h2>
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Node</th>
+      <th>Status</th>
+      <th>Size</th>
+      <th>Placed at</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Entries}}
+    <tr>
+      <td>{{.NodeName}}</td>
+      <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
+      <td>{{.Size}}</td>
+      <td>{{.PlacedAt}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p class="empty">No models downloaded yet.</p>
+{{end}}
+{{end}}
+{{end}}

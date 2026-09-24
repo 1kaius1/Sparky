@@ -26,6 +26,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/engines"
 	"github.com/1kaius1/Sparky/internal/events"
 	"github.com/1kaius1/Sparky/internal/httpapi"
+	"github.com/1kaius1/Sparky/internal/inventory"
 	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/metrics"
 	"github.com/1kaius1/Sparky/internal/nodes"
@@ -140,6 +141,12 @@ func main() {
 	// Decisions Log entry).
 	engineProvisionService := engineprovision.NewService(engineTransferRepo, engineInventoryRepo, agentRegistry, auditRecorder, logger)
 
+	// inventoryService backs the Inventory page's unguarded ListGrouped/
+	// ListGroupedSimple reads (PLANNING.md's Models redesign) - the first
+	// read path node_model_inventory has ever had; internal/transfers'
+	// own inventoryRepo dependency above remains the only write path.
+	inventoryService := inventory.NewService(inventoryRepo)
+
 	// rbacService backs both the Users & permissions page's RBAC-gated
 	// roster read (ListUsers) and, as of Dashboard UI Phase 8, its
 	// tier-change form's own write (ElevateTier) - the same value is
@@ -220,7 +227,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
