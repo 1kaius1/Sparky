@@ -307,6 +307,8 @@ go run ./cmd/sparky-server setup
 
 ### SuperAdmin Break-Glass Credential
 
+**Development**
+
 ```bash
 go run ./cmd/sparky-server set-superadmin-password
 # Interactive - prompts for a new password (with confirmation), no echo.
@@ -314,6 +316,14 @@ go run ./cmd/sparky-server set-superadmin-password
 # enough trust to reset it, which is the point of a break-glass credential.
 # Never available through the web UI - see SCHEMA.md Break-glass credential
 # and ARCHITECTURE.md Security Considerations.
+```
+
+**Production (systemd deployment)**
+
+```bash
+sudo -u sparky /opt/sparky/share/sparky-server/run-with-secrets-env.sh /opt/sparky/bin/sparky-server set-superadmin-password
+# Same interactive behavior as development, but runs as the sparky service account
+# with the full environment from /etc/sparky-server/secrets.env
 ```
 
 ### Backend
