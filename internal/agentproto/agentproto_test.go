@@ -3,6 +3,7 @@
 package agentproto
 
 import (
+	"bytes"
 	"encoding/json"
 	"reflect"
 	"testing"
@@ -508,5 +509,334 @@ func TestEnvelope_RoundTrip_InstanceHealth_Unhealthy_NoDetail(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("InstanceHealth = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_Hello_WithSSHIdentity(t *testing.T) {
+	want := Hello{
+		NodeName:         "spark-01",
+		BearerToken:      "s3cr3t",
+		SSHPublicKey:     "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... sparky-node",
+		SSHHostPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... sshd-host",
+	}
+
+	env, err := NewEnvelope(TypeHello, "req-1", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got Hello
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("Hello = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_Hello_SSHFields_OmittedFromWire(t *testing.T) {
+	// A not-yet-upgraded agent (or one whose sparky-agent setup step hasn't
+	// produced a keypair yet) sends neither field - confirms omitempty
+	// actually keeps them off the wire rather than sending empty strings.
+	env, err := NewEnvelope(TypeHello, "req-1", Hello{NodeName: "n", BearerToken: "t"})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+
+	var asMap map[string]any
+	if err := json.Unmarshal(raw, &asMap); err != nil {
+		t.Fatalf("Unmarshal() error: %v", err)
+	}
+	payload, ok := asMap["payload"].(map[string]any)
+	if !ok {
+		t.Fatalf("payload is not a JSON object: %v", asMap["payload"])
+	}
+	for _, field := range []string{"ssh_public_key", "ssh_host_public_key"} {
+		if _, ok := payload[field]; ok {
+			t.Errorf("wire JSON has %q set despite an empty value: %s", field, raw)
+		}
+	}
+}
+
+func TestEnvelope_RoundTrip_ReportInterfaces(t *testing.T) {
+	speed := 10000
+	want := ReportInterfaces{
+		Interfaces: []NetworkInterface{
+			{Name: "eth0", IPAddress: "10.0.0.5", LinkSpeedMbps: &speed},
+			{Name: "eth1", IPAddress: "10.0.1.5"},
+		},
+	}
+
+	env, err := NewEnvelope(TypeReportInterfaces, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got ReportInterfaces
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ReportInterfaces = %+v, want %+v", got, want)
+	}
+	if got.Interfaces[1].LinkSpeedMbps != nil {
+		t.Errorf("Interfaces[1].LinkSpeedMbps = %v, want nil (unknown link speed)", *got.Interfaces[1].LinkSpeedMbps)
+	}
+}
+
+func TestEnvelope_NetworkInterface_LinkSpeedMbps_OmittedWhenNil(t *testing.T) {
+	env, err := NewEnvelope(TypeReportInterfaces, "", ReportInterfaces{
+		Interfaces: []NetworkInterface{{Name: "eth0", IPAddress: "10.0.0.5"}},
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatalf("Marshal() error: %v", err)
+	}
+	if bytes.Contains(raw, []byte("link_speed_mbps")) {
+		t.Errorf("wire JSON has link_speed_mbps set despite a nil value: %s", raw)
+	}
+}
+
+func TestEnvelope_RoundTrip_RescanInterfaces(t *testing.T) {
+	env, err := NewEnvelope(TypeRescanInterfaces, "req-6", RescanInterfaces{})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got RescanInterfaces
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != (RescanInterfaces{}) {
+		t.Errorf("RescanInterfaces = %+v, want zero value", got)
+	}
+}
+
+func TestEnvelope_RoundTrip_AuthorizePeerPull(t *testing.T) {
+	want := AuthorizePeerPull{
+		TransferID:    "xfer-1",
+		DestPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... dest-node",
+		DestIPAddress: "10.0.0.7",
+		ModelRef:      "meta-llama/Llama-3-8B",
+		Quantization:  "Q4_K_M",
+		Format:        "gguf",
+	}
+
+	env, err := NewEnvelope(TypeAuthorizePeerPull, "req-7", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got AuthorizePeerPull
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("AuthorizePeerPull = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_PeerAuthorizeResult(t *testing.T) {
+	want := PeerAuthorizeResult{TransferID: "xfer-1", Accepted: true}
+
+	env, err := NewEnvelope(TypePeerAuthorizeResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got PeerAuthorizeResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("PeerAuthorizeResult = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_PeerAuthorizeResult_Rejected(t *testing.T) {
+	want := PeerAuthorizeResult{TransferID: "xfer-1", Accepted: false, Reason: "model not present locally"}
+
+	env, err := NewEnvelope(TypePeerAuthorizeResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got PeerAuthorizeResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("PeerAuthorizeResult = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_StartPeerTransfer(t *testing.T) {
+	want := StartPeerTransfer{
+		TransferID:          "xfer-1",
+		SourceNodeID:        "node-1",
+		SourceHost:          "10.0.0.5",
+		SourceSSHPort:       22,
+		SourceHostPublicKey: "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI... source-sshd",
+		ModelRef:            "meta-llama/Llama-3-8B",
+		Quantization:        "Q4_K_M",
+		Format:              "gguf",
+	}
+
+	env, err := NewEnvelope(TypeStartPeerTransfer, "req-8", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got StartPeerTransfer
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("StartPeerTransfer = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_RevokePeerPull(t *testing.T) {
+	want := RevokePeerPull{TransferID: "xfer-1"}
+
+	env, err := NewEnvelope(TypeRevokePeerPull, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got RevokePeerPull
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("RevokePeerPull = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_CheckPeerConnectivity(t *testing.T) {
+	want := CheckPeerConnectivity{CheckID: "check-1", SourceHost: "10.0.0.5", SourceSSHPort: 22}
+
+	env, err := NewEnvelope(TypeCheckPeerConnectivity, "req-9", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got CheckPeerConnectivity
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("CheckPeerConnectivity = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_ConnectivityCheckResult(t *testing.T) {
+	want := ConnectivityCheckResult{CheckID: "check-1", Reachable: true, LatencyMs: 4}
+
+	env, err := NewEnvelope(TypeConnectivityCheckResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got ConnectivityCheckResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("ConnectivityCheckResult = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_ConnectivityCheckResult_Unreachable(t *testing.T) {
+	want := ConnectivityCheckResult{CheckID: "check-1", Reachable: false, Reason: "dial tcp: connection refused"}
+
+	env, err := NewEnvelope(TypeConnectivityCheckResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got ConnectivityCheckResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("ConnectivityCheckResult = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_CancelTransfer(t *testing.T) {
+	want := CancelTransfer{TransferID: "xfer-1"}
+
+	env, err := NewEnvelope(TypeCancelTransfer, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got CancelTransfer
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("CancelTransfer = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_DeleteModel(t *testing.T) {
+	want := DeleteModel{ModelRef: "meta-llama/Llama-3-8B", Quantization: "Q4_K_M", Format: "gguf"}
+
+	env, err := NewEnvelope(TypeDeleteModel, "req-10", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got DeleteModel
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("DeleteModel = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_DeleteModelResult(t *testing.T) {
+	want := DeleteModelResult{ModelRef: "meta-llama/Llama-3-8B", Quantization: "Q4_K_M", Format: "gguf", Success: true}
+
+	env, err := NewEnvelope(TypeDeleteModelResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got DeleteModelResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("DeleteModelResult = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_DeleteModelResult_Failed(t *testing.T) {
+	want := DeleteModelResult{ModelRef: "meta-llama/Llama-3-8B", Success: false, Reason: "path does not exist"}
+
+	env, err := NewEnvelope(TypeDeleteModelResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got DeleteModelResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if got != want {
+		t.Errorf("DeleteModelResult = %+v, want %+v", got, want)
 	}
 }
