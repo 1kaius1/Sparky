@@ -404,14 +404,22 @@ Service Layer -> Agent-Communication Layer -> WebSocket message (JSON, request I
 Three supported targets, one binary each, sharing the same environment-variable
 configuration surface:
 
-- **Bare metal**: no packaged installer for the central app itself - a dedicated
-  purpose-built host, a built binary run directly (`go run ./cmd/sparky-server` or
-  a compiled artifact - see `CLAUDE.md` Build and Run), Postgres installed locally
-  or pointed at a remote instance via config. The node agent has its own
-  independent packaged install path - `.deb`/`.rpm` (built via `nfpm`) or a
-  tarball with `install_agent.sh` - see `docs/AGENT.md` Build and Install. These
-  are deliberately separate install stories, not a shared one: agents and the
-  central app never run on the same host anyway (see below)
+- **Bare metal**: a packaged installer for the central app itself, mirroring the
+  node agent's own install story - `.deb`/`.rpm` (built via `nfpm`) or a tarball
+  with `install_server.sh` - see `CLAUDE.md` Build and Run for the full sequence.
+  A dedicated `sparky` service account runs the process under systemd
+  (`deploy/systemd/sparky-server.service`); Postgres is installed locally or
+  pointed at a remote instance via config, unaffected by this packaging.
+  Package installation only provisions the OS-level pieces (binary, unit,
+  service account, an unfilled `secrets.env`) - `createdb`/`migrate`/
+  `sparky-server setup` remain separate manual steps afterward, since those
+  need a reachable database and interactive break-glass credential entry that
+  an unattended package install can't provide. The node agent's own
+  independent packaged install path - `.deb`/`.rpm` or a tarball with
+  `install_agent.sh` - see `docs/AGENT.md` Build and Install - stays a
+  separate build/package, not a shared one: agents and the central app never
+  run on the same host anyway (see below), so nothing is gained by unifying
+  them beyond the already-shared `/opt/sparky` prefix and nfpm tooling
 - **Podman**: preferred runtime for compute nodes using the Docker/Podman backend
   (`SCHEMA.md` Nodes' `runtime_backend`); Docker-Engine-API compatibility means the
   agent's container-management code does not fork per runtime

@@ -1,0 +1,33 @@
+# Optional local Postgres for sparky-server, podman-managed - see CLAUDE.md
+# Build and Run, Bare-metal deployment (systemd). Only installed when the
+# "podman" local-database option is chosen at install time
+# (scripts/packaging/lib/server-db-setup.sh) - most installs never see this
+# file. Credentials come from /etc/sparky-server/local-postgres.env
+# (0600, root-owned) via --env-file rather than -e on the command line, so
+# the password never appears in `ps`/process-argv output.
+#
+# Type=simple (not Type=forking): `podman run` without -d stays attached to
+# the process systemd itself supervises - the standard pattern for a single
+# rootful container run directly under a unit, without needing
+# `podman generate systemd`'s own --new/--files choreography.
+
+[Unit]
+Description=Sparky local Postgres (podman-managed, optional)
+Documentation=https://github.com/1kaius1/Sparky/blob/main/CLAUDE.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/podman rm -f sparky-postgres
+ExecStart=/usr/bin/podman run --rm --name sparky-postgres \
+  --env-file /etc/sparky-server/local-postgres.env \
+  -v sparky-postgres-data:/var/lib/postgresql/data \
+  -p 127.0.0.1:5432:5432 \
+  docker.io/library/postgres:16
+ExecStop=/usr/bin/podman stop -t 30 sparky-postgres
+Restart=always
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

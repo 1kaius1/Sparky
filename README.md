@@ -65,14 +65,27 @@ model.
 
 ### Bare metal (Debian/Ubuntu or RHEL/Fedora)
 
-**Central app** - no packaged installer yet; build and run the binary directly,
-then complete first-run setup (see `CLAUDE.md` Build and Run for the full
-sequence):
+**Central app** - install via `.deb`, `.rpm`, or a tarball (see `CLAUDE.md`
+Build and Run, Bare-metal deployment (systemd), for all three and full
+configuration details), then complete database setup and first run:
 
 ```bash
-go run ./cmd/sparky-server setup
-go run ./cmd/sparky-server
+sudo apt install ./sparky-server_<version>_<arch>.deb      # Debian/Ubuntu
+sudo dnf install ./sparky-server-<version>-1.<arch>.rpm     # RHEL/Fedora/Rocky/Alma
+tar xzf sparky-server-<version>-linux-<arch>.tar.gz && cd sparky-server-<version>-linux-<arch> && sudo ./install_server.sh
+
+# fill in /etc/sparky-server/secrets.env, then:
+createdb sparky
+migrate -path migrations/ -database "${DATABASE_URL}" up
+sudo systemctl start sparky-server   # serves 503 SETUP_REQUIRED until setup below runs
+sudo -u sparky /opt/sparky/share/sparky-server/run-with-secrets-env.sh /opt/sparky/bin/sparky-server setup
 ```
+
+No separate Postgres to stand up first? Each install method can also
+provision one for you (a persistent podman container, or a native
+`postgresql-server` package) and wire `DATABASE_URL` + run migrations
+automatically - see `CLAUDE.md` Bare-metal deployment (systemd), Optional
+local database.
 
 **Node agent** - install via `.deb`, `.rpm`, or a tarball (see `docs/AGENT.md`
 Build and Install for all three and full configuration details):
