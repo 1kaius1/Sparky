@@ -1483,6 +1483,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`TypeDeleteModel`/`TypeDeleteModelResult`). Pure vocabulary - no dispatch
   wiring, no behavior change; the agent/server implementations land in later
   PRs in the same sequence.
+- New Inventory page (`GET /inventory`) - PR 3 of 10 in the Models redesign
+  (`PLANNING.md` Decisions Log). `node_model_inventory` (SCHEMA.md Node model
+  inventory) has been write-only since it was created - `internal/transfers`
+  upserts into it, but nothing has ever read it back. New `internal/inventory`
+  package (`ListGrouped`/`ListGroupedSimple`/`ListByNode`/`Get`) is that
+  missing read side, unguarded by RBAC same as the Nodes/Model transfers
+  pages' own Read-only floor. The page has a Simple/Advanced toggle
+  (`?view=simple`/`?view=advanced`, plain links, no client JS): Advanced
+  groups by model + quantization + format with one row per node (status,
+  size on disk, placed-at); Simple collapses to one row per model, listing
+  every known quantization and the total size across every placement.
+  Sidebar's Models group is now Inventory (listed first) and Profiles -
+  Model transfers is un-navved, not deleted; `GET /transfers` still works,
+  reachable via a "View transfer history" link on the Inventory page. No
+  add/remove actions yet - those land in later PRs in the same sequence.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

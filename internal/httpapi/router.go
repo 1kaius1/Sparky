@@ -54,6 +54,7 @@ type API struct {
 	engineProvisioner    engineProvisioner
 	engineTransfers      engineTransferLister
 	engineInventory      engineInventoryLister
+	inventory            inventoryLister
 	templates            map[string]*template.Template
 	static               http.Handler
 	logger               *log.Logger
@@ -119,7 +120,11 @@ type API struct {
 // read-only list via engineprovision.Service.ListNodeEngineInventory, also
 // unguarded at the Read-only floor - answers "what's installed right now"
 // (SCHEMA.md Node engine inventory) rather than engineTransfersSvc's "what
-// provisioning runs have happened"; transferInitiatorSvc backs the Model
+// provisioning runs have happened"; inventorySvc backs the Inventory page's
+// read-only Simple/Advanced views via inventory.Service.ListGrouped/
+// ListGroupedSimple, also unguarded at the Read-only floor - the first
+// read path SCHEMA.md's Node model inventory table has ever had (PLANNING.md's
+// Models redesign); transferInitiatorSvc backs the Model
 // transfers page's download-initiation form via
 // transfers.Service.InitiateTransfer/CanInitiateTransfer, gated by
 // rbac.CanManageModelStore (Admin/SuperAdmin always, PowerDev only with the
@@ -148,7 +153,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -196,6 +201,7 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		engineProvisioner:      engineProvisionerSvc,
 		engineTransfers:        engineTransfersSvc,
 		engineInventory:        engineInventorySvc,
+		inventory:              inventorySvc,
 		templates:              templates,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
@@ -291,6 +297,10 @@ func (a *API) Router() http.Handler {
 	// /metrics/chart-data.
 	r.With(a.RequireSession).Get("/dashboard/live-data", a.handleDashboardLiveData)
 	r.With(a.RequireSession).Get("/nodes", a.handleNodes)
+	// Simple/Advanced is a plain link-based ?view= query param (PLANNING.md's
+	// Models redesign decision 14) - no client JS needed, same server-
+	// rendered-htmx-swap convention as every other page here.
+	r.With(a.RequireSession).Get("/inventory", a.handleInventory)
 	// The registration form's own RBAC gate (rbac.CanManageNodes) is
 	// checked directly in both handlers - GET to decide whether to show
 	// the form at all, POST (via nodes.Service.RegisterNode) as the real

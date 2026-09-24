@@ -18,6 +18,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/engineprovision"
 	"github.com/1kaius1/Sparky/internal/events"
+	"github.com/1kaius1/Sparky/internal/inventory"
 	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
@@ -229,6 +230,28 @@ func (f *fakeEngineInventoryLister) ListNodeEngineInventory(context.Context) ([]
 		return nil, f.err
 	}
 	return f.entries, nil
+}
+
+// fakeInventoryLister implements inventoryLister for tests.
+type fakeInventoryLister struct {
+	groups    []inventory.Group
+	groupsErr error
+	simple    []inventory.SimpleRow
+	simpleErr error
+}
+
+func (f *fakeInventoryLister) ListGrouped(context.Context) ([]inventory.Group, error) {
+	if f.groupsErr != nil {
+		return nil, f.groupsErr
+	}
+	return f.groups, nil
+}
+
+func (f *fakeInventoryLister) ListGroupedSimple(context.Context) ([]inventory.SimpleRow, error) {
+	if f.simpleErr != nil {
+		return nil, f.simpleErr
+	}
+	return f.simple, nil
 }
 
 // fakeEngineProvisioner implements engineProvisioner for tests, recording
@@ -636,7 +659,7 @@ func newTestDashboardAPIWithEvents(t *testing.T, nodeList *fakeNodeLister, regis
 	return newTestDashboardAPIWithEngineTransfers(t, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{})
 }
 
-// newTestDashboardAPIWithEngineTransfers is the true innermost test
+// newTestDashboardAPIWithEngineTransfers is the innermost test
 // constructor, adding control over engineProvisioner/engineTransferLister/
 // engineInventoryLister (the Engines side: the Engine transfers page and the
 // Engine inventory page) on top of newTestDashboardAPIWithEvents'
@@ -649,10 +672,20 @@ func newTestDashboardAPIWithEvents(t *testing.T, nodeList *fakeNodeLister, regis
 // independently controllable.
 func newTestDashboardAPIWithEngineTransfers(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker, engineProvisionerFake *fakeEngineProvisioner, engineTransfersFake *fakeEngineTransferLister, engineInventoryFake *fakeEngineInventoryLister) *API {
 	t.Helper()
+	return newTestDashboardAPIWithInventory(t, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, users, auditLog, roster, elevator, settingsSvc, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, &fakeInventoryLister{})
+}
+
+// newTestDashboardAPIWithInventory is the true innermost test constructor,
+// adding control over inventoryLister (the Inventory page) on top of
+// newTestDashboardAPIWithEngineTransfers' parameters - same "kept
+// separate rather than widening an existing signature" reasoning as that
+// function's own doc comment.
+func newTestDashboardAPIWithInventory(t *testing.T, nodeList *fakeNodeLister, registrar *fakeNodeRegistrar, profileList *fakeProfileLister, profileEditorFake *fakeProfileEditor, instances *fakeInstanceLister, launcher *fakeInstanceLauncher, transfers *fakeTransferLister, users *fakeUserLister, auditLog *fakeAuditLister, roster *fakeUserRoster, elevator *fakeUserElevator, settingsSvc *fakeSettingsViewer, metricsSvc *fakeMetricsLister, eventsSrc *events.Broker, engineProvisionerFake *fakeEngineProvisioner, engineTransfersFake *fakeEngineTransferLister, engineInventoryFake *fakeEngineInventoryLister, inventoryFake *fakeInventoryLister) *API {
+	t.Helper()
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, &fakeThemeSettingsReader{}, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, testLogger())
+	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, &fakeThemeSettingsReader{}, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, inventoryFake, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -702,8 +735,8 @@ func TestHandleDashboard_SidebarShowsGroupedNav(t *testing.T) {
 	for _, want := range []string{
 		"<summary>Models</summary>",
 		"<summary>Engines</summary>",
+		`href="/inventory"`,
 		`href="/profiles"`,
-		`href="/transfers"`,
 		`href="/engine-inventory"`,
 		`href="/engine-transfers"`,
 	} {
@@ -711,10 +744,17 @@ func TestHandleDashboard_SidebarShowsGroupedNav(t *testing.T) {
 			t.Errorf("response does not contain %q: %s", want, body)
 		}
 	}
-	// The sublinks read "Profiles"/"Transfers"/"Inventory"/"Transfers" - the
+	// Models' sidebar group is Inventory + Profiles as of the Models
+	// redesign (PLANNING.md Decisions Log) - Transfers is un-navved,
+	// reachable only via the Inventory page's own "View transfer history"
+	// link, not deleted (GET /transfers still routes).
+	if strings.Contains(body, `href="/transfers"`) {
+		t.Error("sidebar should no longer link directly to /transfers - Models' group is Inventory + Profiles")
+	}
+	// The sublinks read "Inventory"/"Profiles"/"Inventory"/"Transfers" - the
 	// parent group supplies the context, not the link text.
 	if strings.Contains(body, ">Model profiles<") || strings.Contains(body, ">Model transfers<") {
-		t.Error("sidebar sublinks should read the short form (Profiles/Transfers), not the old standalone labels")
+		t.Error("sidebar sublinks should read the short form (Inventory/Profiles), not the old standalone labels")
 	}
 }
 
