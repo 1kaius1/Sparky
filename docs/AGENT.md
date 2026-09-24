@@ -424,6 +424,9 @@ loop:
   and writes the result back.
 - **Telemetry goroutine**: polls `nvidia-smi` and `/proc` on `SPARKY_TELEMETRY_POLL_INTERVAL`
   and pushes readings over the same connection - does not wait on the command loop.
+  A node with no `nvidia-smi` at all (a CPU-only inference engine, no NVIDIA GPU)
+  reports CPU/memory telemetry only - detected and logged once on the first poll,
+  never repeated on every subsequent tick.
 - **Instance health-check goroutine**: re-checks every instance the load-time
   readiness check has confirmed running, once per
   `SPARKY_HEALTH_CHECK_INTERVAL_SECONDS`, pushing an `instance_health` message

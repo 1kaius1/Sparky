@@ -1751,6 +1751,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Found via the first real llama.cpp launch through Sparky end to end.
   Non-empty text in `content`, `reasoning`, or `reasoning_content` now all
   count as ready.
+- `sparky-agent`'s telemetry collector no longer reports total failure on a
+  CPU-only node (no NVIDIA GPU). `Collector.Read` previously called
+  `readMemory`, then `readGPU`, then `readCPU`, returning immediately on any
+  GPU error - so a missing `nvidia-smi` meant no telemetry was ever sent at
+  all, not even CPU/memory, on top of logging "nvidia-smi not found" every
+  `SPARKY_TELEMETRY_POLL_INTERVAL` tick forever. `readGPU` now detects
+  `exec.ErrNotFound` specifically, logs it once, and short-circuits on every
+  later call (no repeated process spawn); `Read` collects CPU/memory before
+  GPU and no longer lets any GPU error - not-found or otherwise - block
+  them.
 - `sparky-server setup`'s documented invocation (`sudo -u sparky sh -c 'set
   -a && . /etc/sparky-server/secrets.env && set +a && ...'`) failed with
   "command not found" on any `secrets.env` value containing an unquoted

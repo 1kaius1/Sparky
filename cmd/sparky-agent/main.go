@@ -78,7 +78,7 @@ func main() {
 		TelemetryPollInterval:       telemetryPollInterval,
 		InstanceStartupTimeout:      time.Duration(cfg.InstanceStartupTimeoutSecs) * time.Second,
 		InstanceHealthCheckInterval: time.Duration(cfg.HealthCheckIntervalSecs) * time.Second,
-	}, runtimeBackend, transfer.New(), enginetransfer.New(), telemetry.NewCollector(), logger)
+	}, runtimeBackend, transfer.New(), enginetransfer.New(), telemetry.NewCollector(logger), logger)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()
