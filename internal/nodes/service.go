@@ -9,6 +9,7 @@ import (
 	"log"
 	"net"
 	"regexp"
+	"sort"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/auth"
@@ -285,4 +286,79 @@ func (s *Service) SetDefaultTransferInterface(ctx context.Context, actor rbac.Ac
 		return fmt.Errorf("record audit: %w", err)
 	}
 	return nil
+}
+
+// ErrNoInterfaces is returned by ResolveTransferSource when the node has
+// reported no usable network interface at all.
+var ErrNoInterfaces = errors.New("node has reported no network interfaces")
+
+// TransferSource is the interface a peer transfer will pull from - Name is
+// the reported interface name, IPAddress what the destination dials.
+type TransferSource struct {
+	Name      string
+	IPAddress string
+}
+
+// ResolveTransferSource picks which of a node's reported interfaces a
+// peer-to-peer transfer pulls from. Precedence: an explicit per-transfer
+// override (must be a currently reported interface, else
+// ErrUnknownInterface - never silently substituted), then the node's
+// configured default_transfer_interface if it is still reported, then
+// "Fastest": the highest reported link speed (ties broken by name so the
+// choice is deterministic). An interface with an unknown speed is never a
+// Fastest candidate - unless no interface reports a speed at all, in
+// which case the first by name is used rather than failing the transfer
+// outright (e.g. a Wi-Fi-only lab node). No benchmarking is done.
+func (s *Service) ResolveTransferSource(ctx context.Context, nodeID, override string) (TransferSource, error) {
+	node, err := s.nodes.FindByID(ctx, nodeID)
+	if err != nil {
+		return TransferSource{}, err
+	}
+	ifaces, err := s.interfaces.ListByNode(ctx, nodeID)
+	if err != nil {
+		return TransferSource{}, fmt.Errorf("list interfaces for node %s: %w", nodeID, err)
+	}
+	if len(ifaces) == 0 {
+		return TransferSource{}, ErrNoInterfaces
+	}
+	sorted := append([]*db.NodeNetworkInterface(nil), ifaces...)
+	sort.Slice(sorted, func(i, j int) bool { return sorted[i].InterfaceName < sorted[j].InterfaceName })
+
+	find := func(name string) *db.NodeNetworkInterface {
+		for _, i := range sorted {
+			if i.InterfaceName == name {
+				return i
+			}
+		}
+		return nil
+	}
+	pick := func(i *db.NodeNetworkInterface) TransferSource {
+		return TransferSource{Name: i.InterfaceName, IPAddress: i.IPAddress}
+	}
+
+	if override != "" {
+		if i := find(override); i != nil {
+			return pick(i), nil
+		}
+		return TransferSource{}, ErrUnknownInterface
+	}
+	if node.DefaultTransferInterface != nil {
+		if i := find(*node.DefaultTransferInterface); i != nil {
+			return pick(i), nil
+		}
+	}
+
+	var fastest *db.NodeNetworkInterface
+	for _, i := range sorted {
+		if i.LinkSpeedMbps == nil {
+			continue
+		}
+		if fastest == nil || *i.LinkSpeedMbps > *fastest.LinkSpeedMbps {
+			fastest = i
+		}
+	}
+	if fastest == nil {
+		fastest = sorted[0]
+	}
+	return pick(fastest), nil
 }

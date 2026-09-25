@@ -11,6 +11,8 @@ package transfers
 import (
 	"errors"
 	"fmt"
+
+	"github.com/1kaius1/Sparky/internal/db"
 )
 
 // ErrInvalidTransfer is returned when InitiateTransferParams fails
@@ -24,14 +26,39 @@ var ErrInvalidTransfer = errors.New("invalid model transfer")
 // never leaves behind a queued transfer nothing will ever pick up.
 var ErrDestNodeOffline = errors.New("destination node is not connected")
 
-// InitiateTransferParams is the input to Service.InitiateTransfer. v0.1.0
-// only initiates internet-sourced (Hugging Face) downloads - see
-// PLANNING.md's Model transfers milestone item ("no peer replication yet")
-// - so Service always constructs a db.TransferSourceInternet row; there is
-// no source-node field to set here yet.
+// ErrSourceNodeOffline is ErrDestNodeOffline's counterpart for a peer
+// transfer's source - both ends must be connected, since the source has to
+// authorize the pull before it can start.
+var ErrSourceNodeOffline = errors.New("source node is not connected")
+
+// ErrSourceNotPresent is returned when the source node has no present
+// inventory entry for the requested model/quantization/format.
+var ErrSourceNotPresent = errors.New("source node does not have that model")
+
+// ErrPeerNotReady is returned, wrapped with a specific reason, when a peer
+// transfer's prerequisites are missing (a node with no SSH identity
+// reported yet, no usable interface, ...).
+var ErrPeerNotReady = errors.New("peer transfer prerequisites not met")
+
+// InitiateTransferParams is the input to Service.InitiateTransfer. An
+// empty SourceType means db.TransferSourceInternet (a Hugging Face
+// download, the original behavior); db.TransferSourcePeerNode pulls a copy
+// another node already has, over rsync-over-SSH.
 type InitiateTransferParams struct {
 	DestNodeID string
 	ModelRef   string
+
+	// SourceType selects internet (empty/default) or peer_node. The three
+	// fields below apply only to peer_node.
+	SourceType   db.TransferSourceType
+	SourceNodeID string
+	// Format is required for peer_node - with Quantization it identifies
+	// exactly which of the source's inventory entries is being copied.
+	Format db.ModelFormat
+	// SourceInterface optionally overrides which of the source node's
+	// reported interfaces is pulled from; empty means the node's default,
+	// else "Fastest" - see nodes.Service.ResolveTransferSource.
+	SourceInterface string
 
 	// Quantization restricts the download to just the one .gguf file
 	// matching this value, instead of every file in the repo - empty
@@ -50,6 +77,21 @@ func (p InitiateTransferParams) validate() error {
 	}
 	if p.ModelRef == "" {
 		return fmt.Errorf("%w: model_ref is required", ErrInvalidTransfer)
+	}
+	switch p.SourceType {
+	case "", db.TransferSourceInternet:
+	case db.TransferSourcePeerNode:
+		if p.SourceNodeID == "" {
+			return fmt.Errorf("%w: source_node_id is required for a peer transfer", ErrInvalidTransfer)
+		}
+		if p.SourceNodeID == p.DestNodeID {
+			return fmt.Errorf("%w: source and destination must be different nodes", ErrInvalidTransfer)
+		}
+		if p.Format != db.ModelFormatSafetensors && p.Format != db.ModelFormatGGUF {
+			return fmt.Errorf("%w: format must be safetensors or gguf for a peer transfer", ErrInvalidTransfer)
+		}
+	default:
+		return fmt.Errorf("%w: unknown source_type %q", ErrInvalidTransfer, p.SourceType)
 	}
 	return nil
 }

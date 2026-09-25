@@ -54,6 +54,11 @@ func runSetup(logger *log.Logger) {
 	}
 	fmt.Println("SSH identity for peer-to-peer model transfer (/opt/sparky/serviceloop/.ssh): OK")
 
+	if err := p.EnsurePeerAccess(ctx); err != nil {
+		logger.Fatalf("setup: %v", err)
+	}
+	fmt.Println("peer-transfer account, grant directory and sshd drop-in (sparky-peer): OK")
+
 	fmt.Println()
 	fmt.Println("Setup complete.")
 }

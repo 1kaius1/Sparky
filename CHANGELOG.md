@@ -1532,6 +1532,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and can be a transfer source), and the tarball installer checks for both. Central app must be
   deployed before upgraded agents (an old central app rejects the extended
   `hello`).
+- Peer-to-peer model transfer core - PR 6 of 10 in the Models redesign; the
+  scoped exception to "zero inbound network exposure", documented in full in
+  `ARCHITECTURE.md` Security Considerations and security-reviewed before merge.
+  The central app can now move a model between two nodes (`InitiateTransfer`
+  with `source_type = peer_node`; the initiation UI is a later PR): both nodes
+  must be connected, the source must have a present inventory entry, and both
+  must have reported their SSH material. The source agent authorizes the
+  destination's key for that one transfer through a grant file that sshd turns
+  into a restricted authorized_keys line on demand (`restrict`, `from=`, forced
+  command); the destination then pulls with `rsync` over `ssh`, pinning the
+  source's host key. New `sparky-peer` account and an sshd `Match User`
+  drop-in installed by `sparky-agent setup`; two new agent subcommands sshd
+  invokes (`peer-authkeys`, `peer-serve`); new `SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS`.
+  A grant is single-use, expires (default 2h), and is revoked when the transfer
+  ends. Also: a destination-side "Check Destination" reachability check
+  (service level only), source-interface resolution (per-transfer override,
+  then node default, then fastest link), and a peer transfer's inventory entry
+  reuses the source's exact format via new `model_transfers.format`
+  (migration `000032`). Hardening found on the way: only a transfer's own
+  destination node may report progress on it (previously any connected node
+  could), and the security review's finding - model file names from
+  third-party repos are refused if they could be parsed as rsync options.
+  Packages now also depend on `rsync`; uninstall removes the drop-in.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

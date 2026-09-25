@@ -425,3 +425,43 @@ func TestService_SetDefaultTransferInterface_UnknownNode(t *testing.T) {
 		t.Errorf("error = %v, want ErrNodeNotFound", err)
 	}
 }
+
+func TestService_ResolveTransferSource(t *testing.T) {
+	i := func(v int) *int { return &v }
+	def := "eth1"
+	gone := "removed0"
+	ifaces := []*db.NodeNetworkInterface{
+		{InterfaceName: "eth1", IPAddress: "10.0.1.5", LinkSpeedMbps: i(1000)},
+		{InterfaceName: "eth0", IPAddress: "10.0.0.5", LinkSpeedMbps: i(10000)},
+		{InterfaceName: "wlan0", IPAddress: "10.0.2.5"},
+	}
+	tests := []struct {
+		name     string
+		node     *db.Node
+		ifaces   []*db.NodeNetworkInterface
+		override string
+		want     string
+		wantErr  error
+	}{
+		{"override wins", &db.Node{ID: "n", DefaultTransferInterface: &def}, ifaces, "wlan0", "wlan0", nil},
+		{"unknown override is an error, not a fallback", &db.Node{ID: "n"}, ifaces, "nope", "", ErrUnknownInterface},
+		{"node default", &db.Node{ID: "n", DefaultTransferInterface: &def}, ifaces, "", "eth1", nil},
+		{"stale default falls to fastest", &db.Node{ID: "n", DefaultTransferInterface: &gone}, ifaces, "", "eth0", nil},
+		{"fastest ignores unknown speed", &db.Node{ID: "n"}, ifaces, "", "eth0", nil},
+		{"tie broken by name", &db.Node{ID: "n"}, []*db.NodeNetworkInterface{{InterfaceName: "b", IPAddress: "1.1.1.2", LinkSpeedMbps: i(1000)}, {InterfaceName: "a", IPAddress: "1.1.1.1", LinkSpeedMbps: i(1000)}}, "", "a", nil},
+		{"no speeds anywhere uses first by name", &db.Node{ID: "n"}, []*db.NodeNetworkInterface{{InterfaceName: "wlp3s0", IPAddress: "1.1.1.2"}, {InterfaceName: "wifi0", IPAddress: "1.1.1.1"}}, "", "wifi0", nil},
+		{"none reported", &db.Node{ID: "n"}, nil, "", "", ErrNoInterfaces},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			svc := newIfaceService(&fakeInterfaceStore{listed: tt.ifaces}, &fakeDispatcher{}, &fakeNodeStore{findResult: tt.node}, &fakeAuditRecorder{})
+			got, err := svc.ResolveTransferSource(context.Background(), "n", tt.override)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("error = %v, want %v", err, tt.wantErr)
+			}
+			if err == nil && got.Name != tt.want {
+				t.Errorf("picked %q, want %q", got.Name, tt.want)
+			}
+		})
+	}
+}

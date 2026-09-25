@@ -36,6 +36,62 @@ func runCommand(ctx context.Context, name string, args ...string) error {
 // running process regardless of whether the directory exists there.
 const serviceloopHome = "/opt/sparky/serviceloop"
 
+const (
+	// PeerUser is the dedicated account a peer's pull authenticates as -
+	// deliberately not serviceloop (whose shell is nologin, which sshd
+	// cannot run a forced command through, and which owns model storage,
+	// engines and this node's own private key). Duplicates
+	// agent/peertransfer.PeerUser; provision has no dependency on it.
+	PeerUser = "sparky-peer"
+
+	// PeerHome is the account's (empty, root-owned) home directory. It must
+	// exist: sshd changes into the user's home before running the forced
+	// command, and a missing one prints "Could not chdir to home directory"
+	// into every failed transfer's error message. Nothing is ever stored
+	// there.
+	PeerHome = "/var/lib/sparky-peer"
+
+	// PeerGrantDir is where per-transfer grants live - see
+	// agent/peertransfer, whose GrantDir this must equal.
+	PeerGrantDir = serviceloopHome + "/peer-grants"
+
+	// PeerUsedDir holds used-grant markers - see agent/peertransfer.UsedDir.
+	PeerUsedDir = serviceloopHome + "/peer-used"
+
+	// SSHDDropInPath is the sshd config drop-in scoping every peer-transfer
+	// setting to PeerUser.
+	SSHDDropInPath = "/etc/ssh/sshd_config.d/50-sparky-peer.conf"
+)
+
+// sshdDropIn is the complete drop-in. Everything is inside one Match User
+// block, so it cannot change any other account's login. The account
+// authenticates by public key only, with keys supplied on demand by
+// `sparky-agent peer-authkeys` (no authorized_keys file exists for it at
+// all), and gets no tty, no forwarding of any kind, and no user rc. The
+// per-key forced command and from= restriction are added by
+// peer-authkeys itself, per transfer. ForceCommand is deliberately not
+// set here: it would override the per-transfer forced command.
+const sshdDropIn = `# Managed by sparky-agent setup - do not edit; changes are overwritten.
+# Scopes peer-to-peer model transfer to a dedicated account. See
+# ARCHITECTURE.md Security Considerations.
+Match User sparky-peer
+    AuthorizedKeysFile none
+    AuthorizedKeysCommand /opt/sparky/bin/sparky-agent peer-authkeys %u
+    AuthorizedKeysCommandUser serviceloop
+    AuthenticationMethods publickey
+    PubkeyAuthentication yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AllowTcpForwarding no
+    AllowStreamLocalForwarding no
+    AllowAgentForwarding no
+    X11Forwarding no
+    GatewayPorts no
+    PermitTunnel no
+    PermitTTY no
+    PermitUserRC no
+`
+
 // DefaultSSHKeyPath is where EnsureSSHKeypair puts this node's own SSH
 // client identity, and the default for SPARKY_SSH_KEY_PATH. Under
 // serviceloopHome rather than a real /home directory for the same
@@ -55,11 +111,17 @@ const DefaultSSHHostKeyPath = "/etc/ssh/ssh_host_ed25519_key.pub"
 type Provisioner struct {
 	run        runner
 	sshKeyPath string
+	// grantDir / sshdDropIn are the peer-transfer grant directory and the
+	// sshd drop-in path; fields (not constants) so tests can point them at
+	// a temp dir.
+	grantDir   string
+	usedDir    string
+	sshdDropIn string
 }
 
 // New constructs a Provisioner that shells out for real.
 func New() *Provisioner {
-	return &Provisioner{run: runCommand, sshKeyPath: DefaultSSHKeyPath}
+	return &Provisioner{run: runCommand, sshKeyPath: DefaultSSHKeyPath, grantDir: PeerGrantDir, usedDir: PeerUsedDir, sshdDropIn: SSHDDropInPath}
 }
 
 // EnsureServiceloopUser creates the serviceloop system account if it
@@ -158,4 +220,68 @@ func ReadSSHPublicKey(path string) string {
 		}
 	}
 	return ""
+}
+
+// EnsurePeerAccess prepares this node to be the source of a peer-to-peer
+// model transfer: the dedicated sparky-peer account (its own group, real
+// /bin/sh so sshd can run a forced command, an empty root-owned home,
+// locked password),
+// membership of serviceloop's group so it can read downloaded models, the
+// grant directory (serviceloop-owned, group sparky-peer, setgid, so the
+// agent writes grants that peer-serve can read but not modify), the used-
+// marker directory (see PeerUsedDir), and the
+// sshd drop-in. The drop-in is validated with `sshd -t` and rolled back if
+// sshd rejects it - setup must never leave a host with a broken sshd.
+// Idempotent. Must run after EnsureServiceloopUser and
+// EnsureModelStorageDir.
+func (p *Provisioner) EnsurePeerAccess(ctx context.Context) error {
+	if err := p.run(ctx, "install", "-d", "-o", "root", "-g", "root", "-m", "0755", PeerHome); err != nil {
+		return fmt.Errorf("create %s: %w", PeerHome, err)
+	}
+	if err := p.run(ctx, "id", "-u", PeerUser); err != nil {
+		if err := p.run(ctx, "useradd", "--system", "--user-group", "--no-create-home", "--home-dir", PeerHome, "--shell", "/bin/sh", PeerUser); err != nil {
+			return fmt.Errorf("useradd %s: %w", PeerUser, err)
+		}
+	}
+	if err := p.run(ctx, "usermod", "-aG", "serviceloop", PeerUser); err != nil {
+		return fmt.Errorf("join %s to group serviceloop: %w", PeerUser, err)
+	}
+	if err := p.run(ctx, "install", "-d", "-o", "serviceloop", "-g", PeerUser, "-m", "2750", p.grantDir); err != nil {
+		return fmt.Errorf("create %s: %w", p.grantDir, err)
+	}
+	// Owned by PeerUser so peer-serve can record a grant as used, group
+	// serviceloop (setgid, group-writable) so the agent can read and clear
+	// the markers. PeerUser can add markers here but has no write access
+	// to the grant directory itself.
+	if err := p.run(ctx, "install", "-d", "-o", PeerUser, "-g", "serviceloop", "-m", "2770", p.usedDir); err != nil {
+		return fmt.Errorf("create %s: %w", p.usedDir, err)
+	}
+
+	dir := filepath.Dir(p.sshdDropIn)
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		return fmt.Errorf("%s does not exist - this host's sshd_config has no Include for a drop-in directory; add the contents of the sparky drop-in to sshd_config by hand (see docs/AGENT.md)", dir)
+	}
+	previous, readErr := os.ReadFile(p.sshdDropIn)
+	if readErr == nil && string(previous) == sshdDropIn {
+		return nil
+	}
+	if err := os.WriteFile(p.sshdDropIn, []byte(sshdDropIn), 0o644); err != nil {
+		return fmt.Errorf("write %s: %w", p.sshdDropIn, err)
+	}
+	if err := p.run(ctx, "sshd", "-t"); err != nil {
+		// Roll back to exactly what was there before.
+		if readErr == nil {
+			_ = os.WriteFile(p.sshdDropIn, previous, 0o644)
+		} else {
+			_ = os.Remove(p.sshdDropIn)
+		}
+		return fmt.Errorf("sshd rejected the peer-transfer configuration (rolled back): %w", err)
+	}
+	// Best-effort: the unit is "ssh" on Debian-family, "sshd" on RHEL-family.
+	// If neither reloads (no systemd, e.g. a container), the config still
+	// takes effect at sshd's next start.
+	if err := p.run(ctx, "systemctl", "reload", "sshd"); err != nil {
+		_ = p.run(ctx, "systemctl", "reload", "ssh")
+	}
+	return nil
 }

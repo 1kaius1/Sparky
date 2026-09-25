@@ -331,3 +331,28 @@ func TestModelTransferRepository_List(t *testing.T) {
 		t.Errorf("List() = %d transfers, missing one or both of the two just created (across different dest nodes)", len(got))
 	}
 }
+
+func TestModelTransferRepository_SetFormat(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	ctx := context.Background()
+
+	dest := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	created := createTestTransfer(t, transfers, dest.ID, nil)
+	if created.Format != nil {
+		t.Errorf("Format = %v, want nil before any SetFormat call", *created.Format)
+	}
+
+	format := ModelFormatGGUF
+	if err := transfers.SetFormat(ctx, created.ID, &format); err != nil {
+		t.Fatalf("SetFormat() error: %v", err)
+	}
+	got, err := transfers.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.Format == nil || *got.Format != ModelFormatGGUF {
+		t.Errorf("Format = %v, want gguf", got.Format)
+	}
+}

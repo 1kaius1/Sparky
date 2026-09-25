@@ -29,6 +29,9 @@ type fakeTransferStore struct {
 
 	listResult []*db.ModelTransfer
 	listErr    error
+
+	sourceInterfaceCalls []*string
+	formatCalls          []*db.ModelFormat
 }
 
 type progressCall struct {
@@ -75,6 +78,16 @@ func (f *fakeTransferStore) UpdateProgress(_ context.Context, id string, bytesTr
 
 func (f *fakeTransferStore) SetStatus(_ context.Context, id string, status db.TransferStatus, errorMessage *string) error {
 	f.statusCalls = append(f.statusCalls, statusCall{id, status, errorMessage})
+	return nil
+}
+
+func (f *fakeTransferStore) SetSourceInterface(_ context.Context, _ string, name *string) error {
+	f.sourceInterfaceCalls = append(f.sourceInterfaceCalls, name)
+	return nil
+}
+
+func (f *fakeTransferStore) SetFormat(_ context.Context, _ string, format *db.ModelFormat) error {
+	f.formatCalls = append(f.formatCalls, format)
 	return nil
 }
 
@@ -129,12 +142,20 @@ func (f *fakeOverrideStore) Get(_ context.Context, userID string, capability db.
 // coder/websocket connection.
 type fakeDispatcher struct {
 	connected bool
-	sendErr   error
-	sent      []agentproto.Envelope
-	sentTo    []string
+	// connectedNodes, if non-nil, overrides connected per node ID - peer
+	// tests need the source and destination to differ.
+	connectedNodes map[string]bool
+	sendErr        error
+	sent           []agentproto.Envelope
+	sentTo         []string
 }
 
-func (f *fakeDispatcher) Connected(string) bool { return f.connected }
+func (f *fakeDispatcher) Connected(nodeID string) bool {
+	if f.connectedNodes != nil {
+		return f.connectedNodes[nodeID]
+	}
+	return f.connected
+}
 
 func (f *fakeDispatcher) Send(_ context.Context, nodeID string, env agentproto.Envelope) error {
 	if f.sendErr != nil {
@@ -183,7 +204,7 @@ func TestService_InitiateTransfer_PermittedByAdmin(t *testing.T) {
 	overrides := &fakeOverrideStore{}
 	dispatch := &fakeDispatcher{connected: true}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(transferStore, inventory, overrides, dispatch, audit, testLogger())
+	svc := NewService(transferStore, inventory, overrides, dispatch, audit, nil, nil, testLogger())
 	actor := rbac.Actor{Tier: db.TierAdmin, UserID: "admin-1"}
 
 	got, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -240,7 +261,7 @@ func TestService_InitiateTransfer_PermittedByAdmin(t *testing.T) {
 
 func TestService_InitiateTransfer_PermittedBySuperAdmin_NilRequestedBy(t *testing.T) {
 	transferStore := &fakeTransferStore{nextID: "transfer-1"}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, nil, nil, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -255,7 +276,7 @@ func TestService_InitiateTransfer_PermittedBySuperAdmin_NilRequestedBy(t *testin
 func TestService_InitiateTransfer_PowerDevWithOverride(t *testing.T) {
 	transferStore := &fakeTransferStore{nextID: "transfer-1"}
 	overrides := &fakeOverrideStore{granted: true}
-	svc := NewService(transferStore, &fakeInventoryStore{}, overrides, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, overrides, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, nil, nil, testLogger())
 	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
 
 	_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -269,7 +290,7 @@ func TestService_InitiateTransfer_PowerDevWithOverride(t *testing.T) {
 
 func TestService_InitiateTransfer_PowerDevWithoutOverride_NotPermitted(t *testing.T) {
 	transferStore := &fakeTransferStore{}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{granted: false}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{granted: false}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, nil, nil, testLogger())
 	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
 
 	_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -287,7 +308,7 @@ func TestService_InitiateTransfer_NotPermitted(t *testing.T) {
 			transferStore := &fakeTransferStore{}
 			dispatch := &fakeDispatcher{connected: true}
 			audit := &fakeAuditRecorder{}
-			svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, testLogger())
+			svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, nil, nil, testLogger())
 			actor := rbac.Actor{Tier: tier, UserID: "user-1"}
 
 			_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -310,7 +331,7 @@ func TestService_InitiateTransfer_NotPermitted(t *testing.T) {
 func TestService_InitiateTransfer_InvalidParamsNotPersistedOrDispatched(t *testing.T) {
 	transferStore := &fakeTransferStore{}
 	dispatch := &fakeDispatcher{connected: true}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, &fakeAuditRecorder{}, nil, nil, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	params := validParams()
@@ -332,7 +353,7 @@ func TestService_InitiateTransfer_DestNodeOffline(t *testing.T) {
 	transferStore := &fakeTransferStore{}
 	dispatch := &fakeDispatcher{connected: false}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, nil, nil, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -351,7 +372,7 @@ func TestService_InitiateTransfer_CreateFails(t *testing.T) {
 	transferStore := &fakeTransferStore{createErr: errors.New("database unreachable")}
 	dispatch := &fakeDispatcher{connected: true}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, nil, nil, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -370,7 +391,7 @@ func TestService_InitiateTransfer_DispatchFails(t *testing.T) {
 	transferStore := &fakeTransferStore{nextID: "transfer-1"}
 	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, nil, nil, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -392,7 +413,7 @@ func TestService_InitiateTransfer_AuditFailurePropagates(t *testing.T) {
 	transferStore := &fakeTransferStore{nextID: "transfer-1"}
 	dispatch := &fakeDispatcher{connected: true}
 	audit := &fakeAuditRecorder{recordErr: errors.New("database unreachable")}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, dispatch, audit, nil, nil, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.InitiateTransfer(context.Background(), actor, validParams())
@@ -414,9 +435,9 @@ func newEnvelope(t *testing.T, msgType agentproto.MessageType, payload any) agen
 }
 
 func TestService_HandleTransferProgress_UpdatesProgressAndStatus(t *testing.T) {
-	transferStore := &fakeTransferStore{}
+	transferStore := &fakeTransferStore{findByIDResult: &db.ModelTransfer{ID: "transfer-1", DestNodeID: "node-1"}}
 	inventory := &fakeInventoryStore{}
-	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	env := newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
 		TransferID: "transfer-1", BytesTransferred: 1024, BytesTotal: 4096, Status: string(db.TransferStatusTransferring),
@@ -451,7 +472,7 @@ func TestService_HandleTransferProgress_Completed_UpsertsInventory(t *testing.T)
 		findByIDResult: &db.ModelTransfer{ID: "transfer-1", DestNodeID: "node-1", ModelRef: "meta-llama/Llama-3-8B"},
 	}
 	inventory := &fakeInventoryStore{}
-	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	env := newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
 		TransferID: "transfer-1", BytesTransferred: 4096, BytesTotal: 4096, Status: string(db.TransferStatusCompleted),
@@ -482,7 +503,7 @@ func TestService_HandleTransferProgress_Completed_QuantizedInfersGGUFFormat(t *t
 		findByIDResult: &db.ModelTransfer{ID: "transfer-1", DestNodeID: "node-1", ModelRef: "TheBloke/test-GGUF", Quantization: &quant},
 	}
 	inventory := &fakeInventoryStore{}
-	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	env := newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
 		TransferID: "transfer-1", BytesTransferred: 2048, BytesTotal: 2048, Status: string(db.TransferStatusCompleted),
@@ -502,9 +523,9 @@ func TestService_HandleTransferProgress_Completed_QuantizedInfersGGUFFormat(t *t
 }
 
 func TestService_HandleTransferProgress_Failed_SetsErrorMessage_NoInventoryUpsert(t *testing.T) {
-	transferStore := &fakeTransferStore{}
+	transferStore := &fakeTransferStore{findByIDResult: &db.ModelTransfer{ID: "transfer-1", DestNodeID: "node-1"}}
 	inventory := &fakeInventoryStore{}
-	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	env := newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
 		TransferID: "transfer-1", Status: string(db.TransferStatusFailed), ErrorMessage: "connection reset",
@@ -525,7 +546,7 @@ func TestService_HandleTransferProgress_Failed_SetsErrorMessage_NoInventoryUpser
 
 func TestService_HandleTransferProgress_IgnoresOtherMessageTypes(t *testing.T) {
 	transferStore := &fakeTransferStore{}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	env := newEnvelope(t, agentproto.TypeHeartbeat, agentproto.Heartbeat{})
 	svc.HandleTransferProgress("node-1", env)
@@ -537,7 +558,7 @@ func TestService_HandleTransferProgress_IgnoresOtherMessageTypes(t *testing.T) {
 
 func TestService_HandleTransferProgress_MalformedPayload_Ignored(t *testing.T) {
 	transferStore := &fakeTransferStore{}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	env := agentproto.Envelope{Type: agentproto.TypeTransferProgress, Payload: []byte(`{"transfer_id": 123}`)}
 	svc.HandleTransferProgress("node-1", env)
@@ -553,7 +574,7 @@ func TestService_ListTransfers(t *testing.T) {
 		{ID: "transfer-2", ModelRef: "test-org/other-model"},
 	}
 	transferStore := &fakeTransferStore{listResult: want}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	got, err := svc.ListTransfers(context.Background())
 	if err != nil {
@@ -566,9 +587,34 @@ func TestService_ListTransfers(t *testing.T) {
 
 func TestService_ListTransfers_StoreError(t *testing.T) {
 	transferStore := &fakeTransferStore{listErr: errors.New("database unreachable")}
-	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
 
 	if _, err := svc.ListTransfers(context.Background()); err == nil {
 		t.Fatal("ListTransfers() succeeded despite a store error")
+	}
+}
+
+func TestService_HandleTransferProgress_IgnoresNonDestinationNode(t *testing.T) {
+	transferStore := &fakeTransferStore{findByIDResult: &db.ModelTransfer{ID: "transfer-1", DestNodeID: "node-1", ModelRef: "m"}}
+	inventory := &fakeInventoryStore{}
+	svc := NewService(transferStore, inventory, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
+
+	env := newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
+		TransferID: "transfer-1", BytesTotal: 10, Status: string(db.TransferStatusCompleted),
+	})
+	svc.HandleTransferProgress("node-2", env)
+
+	if len(transferStore.statusCalls) != 0 || len(transferStore.progressCalls) != 0 || len(inventory.calls) != 0 {
+		t.Error("a node that is not the transfer's destination must not be able to update it or plant inventory")
+	}
+}
+
+func TestService_HandleTransferProgress_UnknownTransferIgnored(t *testing.T) {
+	transferStore := &fakeTransferStore{}
+	svc := NewService(transferStore, &fakeInventoryStore{}, &fakeOverrideStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, nil, nil, testLogger())
+	env := newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{TransferID: "nope", Status: string(db.TransferStatusTransferring)})
+	svc.HandleTransferProgress("node-1", env)
+	if len(transferStore.statusCalls) != 0 {
+		t.Error("progress for an unknown transfer must be ignored")
 	}
 }

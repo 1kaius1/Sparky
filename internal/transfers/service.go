@@ -21,6 +21,8 @@ type transferStore interface {
 	FindByID(ctx context.Context, id string) (*db.ModelTransfer, error)
 	UpdateProgress(ctx context.Context, id string, bytesTransferred, bytesTotal int64) error
 	SetStatus(ctx context.Context, id string, status db.TransferStatus, errorMessage *string) error
+	SetSourceInterface(ctx context.Context, id string, interfaceName *string) error
+	SetFormat(ctx context.Context, id string, format *db.ModelFormat) error
 	List(ctx context.Context) ([]*db.ModelTransfer, error)
 }
 
@@ -65,14 +67,20 @@ type Service struct {
 	dispatch  dispatcher
 	audit     auditRecorder
 	logger    *log.Logger
+
+	// peers/sourceInv back peer_node transfers and the connectivity check;
+	// nil disables them (InitiateTransfer then refuses a peer_node request).
+	peers     nodeDirectory
+	sourceInv sourceInventory
+	checks    checkRegistry
 }
 
 // NewService constructs a Service. logger is used only by
 // HandleTransferProgress, which - as an agentconn.OnMessageFunc - has no
 // return value to propagate an error through, same reasoning as
 // agentconn.Handler's own logger dependency.
-func NewService(transfers transferStore, inventory inventoryStore, overrides overrideStore, dispatch dispatcher, audit auditRecorder, logger *log.Logger) *Service {
-	return &Service{transfers: transfers, inventory: inventory, overrides: overrides, dispatch: dispatch, audit: audit, logger: logger}
+func NewService(transfers transferStore, inventory inventoryStore, overrides overrideStore, dispatch dispatcher, audit auditRecorder, peers nodeDirectory, sourceInv sourceInventory, logger *log.Logger) *Service {
+	return &Service{transfers: transfers, inventory: inventory, overrides: overrides, dispatch: dispatch, audit: audit, peers: peers, sourceInv: sourceInv, logger: logger}
 }
 
 // canManageModelStore resolves rbac.CanManageModelStore's hasOverride
@@ -109,8 +117,9 @@ func (s *Service) CanInitiateTransfer(ctx context.Context, actor rbac.Actor) (bo
 	return s.canManageModelStore(ctx, actor)
 }
 
-// InitiateTransfer starts a new internet-sourced (Hugging Face) model
-// download onto params.DestNodeID, if actor is permitted to - see
+// InitiateTransfer starts a new model transfer onto params.DestNodeID - an
+// internet-sourced (Hugging Face) download by default, or a peer_node
+// pull (see initiatePeer) - if actor is permitted to - see
 // rbac.CanManageModelStore. Confirms the destination node currently has a
 // live agent connection (returns ErrDestNodeOffline if not) before
 // creating the model_transfers row, so an unreachable node never leaves
@@ -129,6 +138,10 @@ func (s *Service) InitiateTransfer(ctx context.Context, actor rbac.Actor, params
 
 	if err := params.validate(); err != nil {
 		return nil, err
+	}
+
+	if params.SourceType == db.TransferSourcePeerNode {
+		return s.initiatePeer(ctx, actor, params)
 	}
 
 	if !s.dispatch.Connected(params.DestNodeID) {
@@ -217,6 +230,20 @@ func (s *Service) HandleTransferProgress(nodeID string, env agentproto.Envelope)
 	ctx := context.Background()
 	status := db.TransferStatus(progress.Status)
 
+	// nodeID is the sending connection's authenticated identity: only the
+	// transfer's own destination may report on it. Without this, any
+	// connected node could mark another node's transfer completed or
+	// failed, or plant an inventory row for it.
+	t, err := s.transfers.FindByID(ctx, progress.TransferID)
+	if err != nil {
+		s.logger.Printf("transfers: progress for unknown transfer %s from node %s: %v", progress.TransferID, nodeID, err)
+		return
+	}
+	if t.DestNodeID != nodeID {
+		s.logger.Printf("transfers: ignoring progress for transfer %s from node %s - not its destination", t.ID, nodeID)
+		return
+	}
+
 	if err := s.transfers.UpdateProgress(ctx, progress.TransferID, progress.BytesTransferred, progress.BytesTotal); err != nil {
 		s.logger.Printf("transfers: update progress for transfer %s: %v", progress.TransferID, err)
 	}
@@ -230,15 +257,14 @@ func (s *Service) HandleTransferProgress(nodeID string, env agentproto.Envelope)
 		return
 	}
 
+	if status == db.TransferStatusCompleted || status == db.TransferStatusFailed || status == db.TransferStatusCancelled {
+		s.revokePeer(ctx, t)
+	}
+
 	if status != db.TransferStatusCompleted {
 		return
 	}
 
-	t, err := s.transfers.FindByID(ctx, progress.TransferID)
-	if err != nil {
-		s.logger.Printf("transfers: look up completed transfer %s: %v", progress.TransferID, err)
-		return
-	}
 	var quantization string
 	if t.Quantization != nil {
 		quantization = *t.Quantization
@@ -252,6 +278,11 @@ func (s *Service) HandleTransferProgress(nodeID string, env agentproto.Envelope)
 	format := db.ModelFormatSafetensors
 	if quantization != "" {
 		format = db.ModelFormatGGUF
+	}
+	// A peer transfer copies a known inventory entry, so its real format
+	// (recorded at initiation) wins over the guess.
+	if t.Format != nil {
+		format = *t.Format
 	}
 	if _, err := s.inventory.Upsert(ctx, nodeID, t.ModelRef, quantization, format, db.InventoryStatusPresent, progress.BytesTotal, t.ID); err != nil {
 		s.logger.Printf("transfers: upsert inventory for node %s model %s: %v", nodeID, t.ModelRef, err)
