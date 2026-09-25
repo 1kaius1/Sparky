@@ -631,6 +631,20 @@ explicitly confirmed by the releasing operator before a version is tagged.
       on both real target architecture classes this tooling builds for, not
       just one. See `PLANNING.md`'s 2026-08-20 Decisions Log entry
 
+- [ ] **Full GUI manual test plan written and executed.** Not yet written, on
+      purpose: the GUI is still changing (the Models redesign's Profiles work
+      and cleanup are in flight), and a plan written against a moving
+      interface goes stale before it is used. Once the GUI reaches its final
+      release-candidate state, write a complete, step-by-step manual test plan
+      covering every page and flow a user can reach (sign-in paths, Dashboard,
+      Nodes, Inventory, Profiles, Transfers, Engines, Metrics, Users &
+      permissions, Audit log, Settings, Account, theming) at each permission
+      tier, in a real browser, then execute it and record the result here.
+      Source material already exists from the Models redesign's ad hoc
+      real-browser verification: Inventory Simple/Advanced toggle, download
+      and peer copy, cancel and resume, incomplete-download cleanup, model
+      delete, and live page refresh after each. See `PLANNING.md` Future Ideas
+
 ---
 
 ## Audit Log

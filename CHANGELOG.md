@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Documented a pending pre-release task: a full manual test plan for the GUI
+  must be written once it reaches its final release-candidate state, tracked as
+  an unchecked item in ARCHITECTURE.md's Manual Tests checklist and in
+  PLANNING.md's Future Ideas.
 - Go module and repository skeleton: `cmd/sparky-server` and `cmd/sparky-agent`
   entry points that load and validate their environment configuration and fail
   fast on startup, per ARCHITECTURE.md Application Lifecycle. No routes or
