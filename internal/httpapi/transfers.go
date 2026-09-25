@@ -29,6 +29,7 @@ type transfersPageData struct {
 }
 
 type transferRow struct {
+	ID           string
 	ModelRef     string
 	DestNode     string
 	SourceType   string
@@ -73,6 +74,7 @@ func (a *API) handleTransfers(w http.ResponseWriter, r *http.Request) {
 			errMsg = *t.ErrorMessage
 		}
 		rows = append(rows, transferRow{
+			ID:           t.ID,
 			ModelRef:     t.ModelRef,
 			DestNode:     nodeNames[t.DestNodeID],
 			SourceType:   string(t.SourceType),

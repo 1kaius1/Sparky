@@ -212,6 +212,32 @@ type fakeTransferInitiator struct {
 	transfer     *db.ModelTransfer
 	err          error
 	calls        []transferInitiateCall
+
+	retryCalls []string
+	retryErr   error
+
+	checkID     string
+	checkErr    error
+	checkCalls  []string
+	checkResult *transfers.ConnectivityResult
+	checkKnown  bool
+}
+
+func (f *fakeTransferInitiator) RetryTransfer(_ context.Context, _ rbac.Actor, id string) (*db.ModelTransfer, error) {
+	f.retryCalls = append(f.retryCalls, id)
+	if f.retryErr != nil {
+		return nil, f.retryErr
+	}
+	return &db.ModelTransfer{ID: "new-" + id}, nil
+}
+
+func (f *fakeTransferInitiator) CheckConnectivity(_ context.Context, _ rbac.Actor, dest, src, iface string) (string, error) {
+	f.checkCalls = append(f.checkCalls, dest+"|"+src+"|"+iface)
+	return f.checkID, f.checkErr
+}
+
+func (f *fakeTransferInitiator) GetConnectivityResult(string) (*transfers.ConnectivityResult, bool) {
+	return f.checkResult, f.checkKnown
 }
 
 type transferInitiateCall struct {
@@ -274,6 +300,35 @@ type fakeInventoryLister struct {
 	canDelete    bool
 	deleteErr    error
 	deleteCalled []string
+
+	byNode    map[string][]*db.NodeModelInventory
+	byNodeErr error
+
+	// deleteStates maps "nodeID|modelRef" to {state, reason}.
+	deleteStates map[string][2]string
+}
+
+// fakeSizeEstimator implements sizeEstimator for tests.
+type fakeSizeEstimator struct {
+	size  int64
+	err   error
+	calls []string
+}
+
+func (f *fakeSizeEstimator) EstimateSize(_ context.Context, ref, quant string) (int64, error) {
+	f.calls = append(f.calls, ref+"|"+quant)
+	return f.size, f.err
+}
+
+func (f *fakeInventoryLister) DeleteState(nodeID, modelRef, quantization string, format db.ModelFormat) (string, string) {
+	if st, ok := f.deleteStates[nodeID+"|"+modelRef]; ok {
+		return st[0], st[1]
+	}
+	return "", ""
+}
+
+func (f *fakeInventoryLister) ListByNode(_ context.Context, nodeID string) ([]*db.NodeModelInventory, error) {
+	return f.byNode[nodeID], f.byNodeErr
 }
 
 func (f *fakeInventoryLister) CanDelete(context.Context, rbac.Actor) (bool, error) {
@@ -730,7 +785,7 @@ func newTestDashboardAPIWithInventory(t *testing.T, nodeList *fakeNodeLister, re
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, &fakeThemeSettingsReader{}, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, inventoryFake, testLogger())
+	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, &fakeThemeSettingsReader{}, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, inventoryFake, &fakeSizeEstimator{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

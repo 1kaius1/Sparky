@@ -68,8 +68,11 @@
         return;
       }
       // morph:innerHTML diffs the response against the live subtree and
-      // patches only what changed - see this file's header comment.
-      htmx.ajax("GET", window.location.pathname, { target: "#main-content", swap: "morph:innerHTML" });
+      // patches only what changed - see this file's header comment. The
+      // query string is part of what the page is showing (the Inventory
+      // page's ?view=simple/advanced): refetching only the path would
+      // silently snap the page back to its default view on every live update.
+      htmx.ajax("GET", window.location.pathname + window.location.search, { target: "#main-content", swap: "morph:innerHTML" });
     }, refreshDebounceMs);
   }
 

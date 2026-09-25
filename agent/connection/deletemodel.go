@@ -5,6 +5,7 @@ package connection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,15 @@ func (c *Conn) removeModel(modelRef, quantization, format string) error {
 	if err != nil {
 		return err
 	}
+	// Deleting is idempotent: files that are already gone (removed by hand,
+	// a lost disk, an earlier delete whose answer never arrived) are the
+	// outcome the operator asked for, so that is success - otherwise the
+	// inventory entry could never be cleared. Only a genuine failure to
+	// inspect or remove them is an error.
 	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("model directory: %w", err)
 	}
 
@@ -58,7 +67,9 @@ func (c *Conn) removeModel(modelRef, quantization, format string) error {
 		removed++
 	}
 	if removed == 0 {
-		return fmt.Errorf("no .gguf file matching quantization %q in %s", quantization, dir)
+		// Nothing matched: this quantization is already gone (the directory
+		// may still hold a sibling's files, which are left alone).
+		return nil
 	}
 	if left, _ := filepath.Glob(filepath.Join(dir, "*.gguf")); len(left) == 0 {
 		if err := os.RemoveAll(dir); err != nil {

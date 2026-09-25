@@ -183,10 +183,55 @@ func (s *Service) InitiateTransfer(ctx context.Context, actor rbac.Actor, params
 		"dest_node_id": t.DestNodeID,
 		"model_ref":    t.ModelRef,
 	}
+	if params.RetryOf != "" {
+		detail["retry_of"] = params.RetryOf
+	}
 	if err := s.audit.Record(ctx, requestedBy, actor.IsSuperAdmin, "initiated_transfer", "model_transfer", t.ID, detail); err != nil {
 		return nil, fmt.Errorf("record audit: %w", err)
 	}
 	return t, nil
+}
+
+// RetryTransfer re-runs a failed transfer as a new transfer with the same
+// parameters, if actor is permitted to (rbac.CanManageModelStore). It goes
+// through InitiateTransfer, so everything is re-validated against the
+// current state - a retry of a peer transfer whose source has since gone
+// offline, or lost the model, is refused like any new request would be.
+// The failed row is left untouched as history, and the new transfer's audit
+// record carries retry_of. Only a failed transfer is retryable: a running
+// one is still in flight, and a cancelled one was stopped on purpose.
+func (s *Service) RetryTransfer(ctx context.Context, actor rbac.Actor, transferID string) (*db.ModelTransfer, error) {
+	permitted, err := s.canManageModelStore(ctx, actor)
+	if err != nil {
+		return nil, err
+	}
+	if !permitted {
+		return nil, rbac.ErrNotPermitted
+	}
+
+	t, err := s.transfers.FindByID(ctx, transferID)
+	if err != nil {
+		return nil, err
+	}
+	if t.Status != db.TransferStatusFailed {
+		return nil, ErrNotRetryable
+	}
+
+	params := InitiateTransferParams{DestNodeID: t.DestNodeID, ModelRef: t.ModelRef, SourceType: t.SourceType, RetryOf: t.ID}
+	if t.Quantization != nil {
+		params.Quantization = *t.Quantization
+	}
+	if t.SourceType == db.TransferSourcePeerNode {
+		if t.SourceNodeID == nil || t.Format == nil {
+			return nil, fmt.Errorf("%w: the failed transfer has no recorded source or format", ErrInvalidTransfer)
+		}
+		params.SourceNodeID = *t.SourceNodeID
+		params.Format = *t.Format
+		if t.SourceInterface != nil {
+			params.SourceInterface = *t.SourceInterface
+		}
+	}
+	return s.InitiateTransfer(ctx, actor, params)
 }
 
 // ListTransfers returns every transfer across every node - unguarded by

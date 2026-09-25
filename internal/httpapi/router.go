@@ -55,7 +55,9 @@ type API struct {
 	engineTransfers      engineTransferLister
 	engineInventory      engineInventoryLister
 	inventory            inventoryLister
+	sizeEstimator        sizeEstimator
 	templates            map[string]*template.Template
+	partials             map[string]*template.Template
 	static               http.Handler
 	logger               *log.Logger
 }
@@ -124,7 +126,8 @@ type API struct {
 // read-only Simple/Advanced views via inventory.Service.ListGrouped/
 // ListGroupedSimple, also unguarded at the Read-only floor - the first
 // read path SCHEMA.md's Node model inventory table has ever had (PLANNING.md's
-// Models redesign); transferInitiatorSvc backs the Model
+// Models redesign); sizeEstimatorSvc backs the transfer form's estimated-size
+// preview via modelsource.Estimator; transferInitiatorSvc backs the Model
 // transfers page's download-initiation form via
 // transfers.Service.InitiateTransfer/CanInitiateTransfer, gated by
 // rbac.CanManageModelStore (Admin/SuperAdmin always, PowerDev only with the
@@ -153,10 +156,14 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
+	}
+	partials, err := loadPartialTemplates()
+	if err != nil {
+		return nil, fmt.Errorf("load partial templates: %w", err)
 	}
 	ipWhitelist, err := newBreakGlassIPWhitelist(breakGlassAllowedIPs, logger)
 	if err != nil {
@@ -202,7 +209,9 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		engineTransfers:        engineTransfersSvc,
 		engineInventory:        engineInventorySvc,
 		inventory:              inventorySvc,
+		sizeEstimator:          sizeEstimatorSvc,
 		templates:              templates,
+		partials:               partials,
 		static:                 http.StripPrefix("/static/", http.FileServer(http.FS(staticFS))),
 		logger:                 logger,
 	}, nil
@@ -338,8 +347,18 @@ func (a *API) Router() http.Handler {
 	// the form at all, POST (via transfers.Service.InitiateTransfer) as
 	// the real enforcement boundary that never trusts what the GET
 	// rendered - same reasoning as node registration/engine provisioning.
-	r.With(a.RequireSession).Get("/transfers/new", a.handleInitiateTransferForm)
-	r.With(a.RequireSession, a.RequireCSRF).Post("/transfers/new", a.handleInitiateTransfer)
+	r.With(a.RequireSession).Get("/inventory/transfer/new", a.handleInitiateTransferForm)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/inventory/transfer/new", a.handleInitiateTransfer)
+	// Helper endpoints the form's htmx fragments call - all behind the same
+	// manage_model_store capability as the form itself. check-connectivity
+	// is a POST (it dispatches a command to a node); the rest are reads.
+	// Retry is a write, so CSRF-protected; the capability check and the
+	// only-failed rule live in transfers.Service.RetryTransfer.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/transfers/{id}/retry", a.handleRetryTransfer)
+	r.With(a.RequireSession).Get("/inventory/transfer/estimate-size", a.handleEstimateSize)
+	r.With(a.RequireSession).Get("/inventory/transfer/peer-options", a.handlePeerOptions)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/inventory/transfer/check-connectivity", a.handleCheckConnectivity)
+	r.With(a.RequireSession).Get("/inventory/transfer/check-result", a.handleCheckResult)
 	r.With(a.RequireSession).Get("/engine-inventory", a.handleEngineInventory)
 	r.With(a.RequireSession).Get("/engine-transfers", a.handleEngineTransfers)
 	// The provisioning form's own RBAC gate (rbac.CanManageNodes) is

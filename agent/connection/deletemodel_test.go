@@ -70,11 +70,14 @@ func TestRemoveModel_GGUFUnknownQuantizationRemovesWholeDir(t *testing.T) {
 	}
 }
 
-func TestRemoveModel_GGUFNoMatchErrors(t *testing.T) {
+func TestRemoveModel_GGUFNoMatchIsAlreadyGoneAndLeavesSiblings(t *testing.T) {
 	c, root := newDeleteTestConn(t)
 	writeFile(t, filepath.Join(root, "org", "m", "m-Q8_0.gguf"))
-	if err := c.removeModel("org/m", "Q4_K_M", "gguf"); err == nil {
-		t.Error("want an error when no file matches")
+	if err := c.removeModel("org/m", "Q4_K_M", "gguf"); err != nil {
+		t.Errorf("a quantization whose file is already gone is a successful delete: %v", err)
+	}
+	if !exists(filepath.Join(root, "org", "m", "m-Q8_0.gguf")) {
+		t.Error("a sibling quantization must never be touched")
 	}
 }
 
@@ -94,9 +97,27 @@ func TestRemoveModel_RejectsPathEscape(t *testing.T) {
 	}
 }
 
-func TestRemoveModel_MissingDirErrors(t *testing.T) {
+func TestRemoveModel_MissingDirIsAlreadyGone(t *testing.T) {
 	c, _ := newDeleteTestConn(t)
-	if err := c.removeModel("org/none", "", "safetensors"); err == nil {
-		t.Error("want an error for a missing directory")
+	for _, format := range []string{"safetensors", "gguf"} {
+		if err := c.removeModel("org/none", "Q4_K_M", format); err != nil {
+			t.Errorf("%s: a model whose files are already gone is a successful delete, not an error: %v", format, err)
+		}
+	}
+}
+
+func TestRemoveModel_RealFailuresStillFail(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("directory permissions do not restrict root")
+	}
+	c, root := newDeleteTestConn(t)
+	dir := filepath.Join(root, "org", "m")
+	writeFile(t, filepath.Join(dir, "m-Q4_K_M.gguf"))
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(dir, 0o755) })
+	if err := c.removeModel("org/m", "Q4_K_M", "gguf"); err == nil {
+		t.Error("a genuine failure to remove must still be reported, not swallowed as already-gone")
 	}
 }

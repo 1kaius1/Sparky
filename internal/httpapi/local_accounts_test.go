@@ -25,7 +25,7 @@ func newTestAPIWithLocalAccounts(t *testing.T, users *fakeUserLister, localAccou
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
 	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil,
-		&fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, &fakeTransferInitiator{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, localAccounts, selfAccount, &fakeSettingsViewer{}, &fakeThemeSettingsReader{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, &fakeInventoryLister{}, testLogger())
+		&fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, &fakeTransferInitiator{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, localAccounts, selfAccount, &fakeSettingsViewer{}, &fakeThemeSettingsReader{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, &fakeInventoryLister{}, &fakeSizeEstimator{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

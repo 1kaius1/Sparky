@@ -377,3 +377,106 @@ func TestCheckConnectivity_DestOffline(t *testing.T) {
 		t.Errorf("error = %v", err)
 	}
 }
+
+func failedTransfer() *db.ModelTransfer {
+	tr := queuedPeerTransfer()
+	tr.Status = db.TransferStatusFailed
+	return tr
+}
+
+func TestRetryTransfer_PeerReRunsWithSameParametersAsANewTransfer(t *testing.T) {
+	f := newPeerFixture()
+	old := failedTransfer()
+	old.SourceInterface = sp("eth1")
+	f.store.findByIDResult = old
+
+	got, err := f.svc.RetryTransfer(context.Background(), adminActor, "t-1")
+	if err != nil {
+		t.Fatalf("RetryTransfer() error: %v", err)
+	}
+	if got.ID != "t-1" && len(f.store.created) != 1 {
+		t.Fatalf("a retry must create exactly one new transfer, created %d", len(f.store.created))
+	}
+	created := f.store.created[0]
+	if created.DestNodeID != "dest" || created.ModelRef != "org/m" || created.SourceType != db.TransferSourcePeerNode || *created.SourceNodeID != "src" || *created.Quantization != "Q4_K_M" {
+		t.Errorf("new transfer = %+v, want the failed one's parameters", created)
+	}
+	if len(f.store.statusCalls) != 0 {
+		t.Errorf("the failed transfer must be left untouched as history: %+v", f.store.statusCalls)
+	}
+	if f.dir.resolveArg != "eth1" {
+		t.Errorf("the explicit source interface override was lost: %q", f.dir.resolveArg)
+	}
+	if len(f.dispatch.sent) != 1 || f.dispatch.sent[0].Type != agentproto.TypeAuthorizePeerPull {
+		t.Errorf("a retried peer transfer must go through authorization again: %v", f.dispatch.sent)
+	}
+	if len(f.audit.calls) != 1 || f.audit.calls[0].detail["retry_of"] != "t-1" {
+		t.Errorf("audit = %+v, want retry_of recorded", f.audit.calls)
+	}
+}
+
+func TestRetryTransfer_InternetReRunsAsADownload(t *testing.T) {
+	f := newPeerFixture()
+	f.store.findByIDResult = &db.ModelTransfer{ID: "t-1", DestNodeID: "dest", ModelRef: "org/m", SourceType: db.TransferSourceInternet, Status: db.TransferStatusFailed, Quantization: sp("Q8_0")}
+	if _, err := f.svc.RetryTransfer(context.Background(), adminActor, "t-1"); err != nil {
+		t.Fatal(err)
+	}
+	created := f.store.created[0]
+	if created.SourceType != db.TransferSourceInternet || created.SourceNodeID != nil || *created.Quantization != "Q8_0" {
+		t.Errorf("new transfer = %+v", created)
+	}
+	if len(f.dispatch.sent) != 1 || f.dispatch.sent[0].Type != agentproto.TypeStartTransfer || f.dispatch.sentTo[0] != "dest" {
+		t.Errorf("sent = %v to %v, want start_transfer to the destination", f.dispatch.sent, f.dispatch.sentTo)
+	}
+	if f.audit.calls[0].detail["retry_of"] != "t-1" {
+		t.Errorf("audit = %+v", f.audit.calls)
+	}
+}
+
+func TestRetryTransfer_OnlyFailedTransfersAndOnlyWhenPermitted(t *testing.T) {
+	for _, status := range []db.TransferStatus{db.TransferStatusQueued, db.TransferStatusTransferring, db.TransferStatusCompleted, db.TransferStatusCancelled} {
+		f := newPeerFixture()
+		tr := failedTransfer()
+		tr.Status = status
+		f.store.findByIDResult = tr
+		if _, err := f.svc.RetryTransfer(context.Background(), adminActor, "t-1"); !errors.Is(err, ErrNotRetryable) {
+			t.Errorf("status %s: error = %v, want ErrNotRetryable", status, err)
+		}
+		if len(f.store.created) != 0 || len(f.dispatch.sent) != 0 {
+			t.Errorf("status %s: a refused retry must not create or dispatch anything", status)
+		}
+	}
+
+	f := newPeerFixture()
+	f.store.findByIDResult = failedTransfer()
+	if _, err := f.svc.RetryTransfer(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "d"}, "t-1"); !errors.Is(err, rbac.ErrNotPermitted) {
+		t.Errorf("developer error = %v, want ErrNotPermitted", err)
+	}
+
+	g := newPeerFixture()
+	if _, err := g.svc.RetryTransfer(context.Background(), adminActor, "nope"); !errors.Is(err, db.ErrModelTransferNotFound) {
+		t.Errorf("unknown transfer error = %v, want ErrModelTransferNotFound", err)
+	}
+}
+
+func TestRetryTransfer_RevalidatesAgainstCurrentState(t *testing.T) {
+	f := newPeerFixture()
+	f.store.findByIDResult = failedTransfer()
+	f.dispatch.connectedNodes["src"] = false
+	if _, err := f.svc.RetryTransfer(context.Background(), adminActor, "t-1"); !errors.Is(err, ErrSourceNodeOffline) {
+		t.Errorf("error = %v, want ErrSourceNodeOffline (the source went away since the failure)", err)
+	}
+	g := newPeerFixture()
+	g.store.findByIDResult = failedTransfer()
+	g.src.err = db.ErrNodeModelInventoryNotFound
+	if _, err := g.svc.RetryTransfer(context.Background(), adminActor, "t-1"); !errors.Is(err, ErrSourceNotPresent) {
+		t.Errorf("error = %v, want ErrSourceNotPresent", err)
+	}
+	h := newPeerFixture()
+	tr := failedTransfer()
+	tr.Format = nil
+	h.store.findByIDResult = tr
+	if _, err := h.svc.RetryTransfer(context.Background(), adminActor, "t-1"); !errors.Is(err, ErrInvalidTransfer) {
+		t.Errorf("a peer transfer with no recorded format cannot be retried safely: %v", err)
+	}
+}

@@ -191,6 +191,9 @@ func (s *Service) initiatePeer(ctx context.Context, actor rbac.Actor, params Ini
 		"quantization":   params.Quantization,
 		"format":         string(params.Format),
 	}
+	if params.RetryOf != "" {
+		detail["retry_of"] = params.RetryOf
+	}
 	if err := s.audit.Record(ctx, requestedBy, actor.IsSuperAdmin, "initiated_transfer", "model_transfer", t.ID, detail); err != nil {
 		return nil, fmt.Errorf("record audit: %w", err)
 	}

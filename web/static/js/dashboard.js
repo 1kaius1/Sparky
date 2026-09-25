@@ -106,7 +106,7 @@
       var dataIDs = data.instances.map(function (i) { return i.id; }).sort().join(",");
       if (domIDs !== dataIDs) {
         if (typeof htmx !== "undefined") {
-          htmx.ajax("GET", window.location.pathname, { target: "#main-content", swap: "morph:innerHTML" });
+          htmx.ajax("GET", window.location.pathname + window.location.search, { target: "#main-content", swap: "morph:innerHTML" });
         }
         return;
       }

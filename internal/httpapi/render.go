@@ -105,6 +105,40 @@ func loadPageTemplates() (map[string]*template.Template, error) {
 	return result, nil
 }
 
+// loadPartialTemplates parses each htmx-swapped fragment
+// (web/templates/partials/<name>.html) into its own template, executed by
+// name via renderPartial. Fragments are standalone - no base layout - and
+// each file defines a template named after itself.
+func loadPartialTemplates() (map[string]*template.Template, error) {
+	names := []string{"estimate_size", "peer_options", "connectivity"}
+	result := make(map[string]*template.Template, len(names))
+	for _, name := range names {
+		t, err := template.ParseFS(web.FS, "templates/partials/"+name+".html")
+		if err != nil {
+			return nil, fmt.Errorf("parse %s partial: %w", name, err)
+		}
+		result[name] = t
+	}
+	return result, nil
+}
+
+// renderPartial writes one htmx fragment. html/template's contextual
+// escaping applies exactly as for a full page, so values a fragment
+// interpolates (node-reported interface names, model references) are
+// escaped.
+func (a *API) renderPartial(w http.ResponseWriter, name string, data any) {
+	t, ok := a.partials[name]
+	if !ok {
+		a.logger.Printf("httpapi: no partial registered for %q", name)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if err := t.ExecuteTemplate(w, name, data); err != nil {
+		a.logger.Printf("httpapi: render partial %s: %v", name, err)
+	}
+}
+
 // render writes page's full HTML document, or - if the request came from
 // htmx (the HX-Request header htmx sets on every request it makes) - just
 // that page's inner content block, leaving the sidebar/shell already on

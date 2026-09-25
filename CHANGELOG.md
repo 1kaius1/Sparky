@@ -1555,8 +1555,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could), and the security review's finding - model file names from
   third-party repos are refused if they could be parsed as rsync options.
   Packages now also depend on `rsync`; uninstall removes the drop-in.
+- Inventory-driven transfer initiation - PR 7 of 10 in the Models redesign.
+  The model transfer form moves to `/inventory/transfer/new` (the old
+  `/transfers/new` is gone) and now starts either an internet download or a
+  peer-to-peer copy from another node. Peer mode picks a source node, then one
+  of the models that node actually has (or arrives preselected from the
+  Inventory page's new per-row "Replicate to..." link), then which of the
+  source's network interfaces to pull from (node default, else fastest). A
+  "Check Destination" button tests, from the destination, whether it can reach
+  the source's sshd, and the Start button stays disabled until it passes;
+  changing the source, destination, model or interface invalidates the check.
+  This gate is a convenience, not a guarantee - a passed check proves only that
+  a TCP path was open at that moment. Admins also get a Rescan button to refresh
+  the source's reported interfaces. Internet mode shows an estimated download
+  size before you start (`internal/modelsource`, from the Hugging Face Hub API's
+  per-file sizes, LFS sizes preferred, counting only the matching `.gguf` when a
+  quantization is given); any failure quietly shows "size unknown". The
+  Inventory page gains a "Download or copy a model" link. New htmx fragment
+  templates under `web/templates/partials/`.
+- A **Retry** button on the Model transfers page for a failed transfer. It
+  starts a new transfer with the same parameters (internet or peer, including
+  the quantization, format and any explicit source interface) and leaves the
+  failed row untouched as history; the new transfer's audit record carries
+  `retry_of`. A retry is re-validated against the current state like any new
+  request, so retrying a peer copy whose source has since gone offline or lost
+  the model is refused with the reason. Only failed transfers can be retried
+  (not running, completed, or deliberately cancelled ones), and the button is
+  shown only to viewers who can start transfers.
 
 ### Fixed
+- Deleting a model no longer looks like nothing happened. The removal is
+  confirmed by the node asynchronously, so after clicking OK the page reloaded
+  to a row that looked untouched until the node answered (noticeable for a
+  large model, on a slow or busy node). The row now shows "removing..." at once,
+  with its Delete button replaced by a note that it is waiting for the node, and
+  disappears when the node confirms. A second delete of the same entry while one
+  is in flight is refused. If the node reports it could not remove the files,
+  the row says so (with the node's reason, shown only to viewers who can manage
+  models, since it can contain a filesystem path) and offers "Retry delete" -
+  previously such a failure was only written to the server log. A delete that is
+  never answered stops showing as pending after 15 minutes. Deleting is also now
+  idempotent on the node: a model whose files are already gone (removed by hand,
+  a lost disk) counts as successfully deleted instead of failing forever, which
+  left an inventory entry that could never be cleared; a genuine failure to
+  remove files still fails.
+- The Inventory page's Simple/Advanced choice no longer resets to Advanced
+  whenever a transfer makes progress. The live-refresh script re-requested only
+  the page's path, dropping the query string that holds `?view=simple`, so the
+  first progress event after switching views snapped it back. It now refetches
+  the path plus its query string (`sse.js`, and the same latent bug in
+  `dashboard.js`).
 - The Nodes and Dashboard pages now update without a manual reload when a
   node's agent connects, disconnects, or goes unreachable. `internal/agentconn`
   wrote `agent_status` transitions straight to the database and broadcast

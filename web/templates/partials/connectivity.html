@@ -1,0 +1,10 @@
+{{define "connectivity"}}
+{{if eq .State "pending"}}
+<div class="check-status check-pending" data-check-state="pending"
+     hx-get="{{.PollURL}}" hx-trigger="load delay:1s" hx-swap="outerHTML">{{.Message}}</div>
+{{else if eq .State "passed"}}
+<div class="check-status check-passed" data-check-state="passed">{{.Message}}{{if .LatencyMs}} ({{.LatencyMs}} ms){{end}}</div>
+{{else}}
+<div class="check-status check-failed" data-check-state="{{.State}}">{{.Message}}</div>
+{{end}}
+{{end}}

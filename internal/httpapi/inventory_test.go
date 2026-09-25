@@ -212,3 +212,70 @@ func TestHandleDeleteInventoryEntry(t *testing.T) {
 		})
 	}
 }
+
+func TestInventoryPage_ShowsRemovingAndFailedDeleteStates(t *testing.T) {
+	group := func() []inventory.Group {
+		return []inventory.Group{{
+			ModelRef: "org/m", Quantization: "Q4_K_M", Format: db.ModelFormatGGUF,
+			Entries: []*db.NodeModelInventory{{NodeID: "node-1", Status: db.InventoryStatusPresent, PlacedAt: time.Now()}},
+		}}
+	}
+	render := func(states map[string][2]string) string {
+		fake := &fakeInventoryLister{groups: group(), canDelete: true, deleteStates: states}
+		users := newFakeUserLister()
+		users.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+		api := newTestDashboardAPIWithInventory(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, fake)
+		rec := httptest.NewRecorder()
+		api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/inventory", "user-1"))
+		return rec.Body.String()
+	}
+
+	normal := render(nil)
+	if !strings.Contains(normal, `hx-post="/inventory/delete"`) || strings.Contains(normal, "removing...") {
+		t.Error("an ordinary row must offer Delete and not claim to be removing")
+	}
+
+	removing := render(map[string][2]string{"node-1|org/m": {inventory.DeleteRemoving, ""}})
+	if !strings.Contains(removing, "removing...") || !strings.Contains(removing, "to remove the files") {
+		t.Errorf("a pending delete must be visible on the page: %s", removing)
+	}
+	if strings.Contains(removing, `hx-post="/inventory/delete"`) {
+		t.Error("the Delete button must be replaced while a delete is in flight (no double submit)")
+	}
+
+	failed := render(map[string][2]string{"node-1|org/m": {inventory.DeleteFailed, "device busy"}})
+	if !strings.Contains(failed, "Delete failed: device busy") || !strings.Contains(failed, "Retry delete") {
+		t.Errorf("a failed delete must show why and offer a retry: %s", failed)
+	}
+}
+
+func TestHandleDeleteInventoryEntry_InProgressIsAConflict(t *testing.T) {
+	fake := &fakeInventoryLister{deleteErr: inventory.ErrDeleteInProgress}
+	users := newFakeUserLister()
+	users.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+	api := newTestDashboardAPIWithInventory(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, fake)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, newAuthenticatedFormRequest(t, "/inventory/delete", "user-1", url.Values{"node_id": {"n"}, "model_ref": {"org/m"}, "format": {"gguf"}}))
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "DELETE_IN_PROGRESS") {
+		t.Errorf("status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestInventoryPage_DeleteFailureDetailIsOnlyForViewersWhoCanDelete(t *testing.T) {
+	fake := &fakeInventoryLister{
+		canDelete: false,
+		groups: []inventory.Group{{
+			ModelRef: "org/m", Quantization: "Q4_K_M", Format: db.ModelFormatGGUF,
+			Entries: []*db.NodeModelInventory{{NodeID: "node-1", Status: db.InventoryStatusPresent, PlacedAt: time.Now()}},
+		}},
+		deleteStates: map[string][2]string{"node-1|org/m": {inventory.DeleteFailed, "stat /opt/sparky/serviceloop/models/org/m: no such file"}},
+	}
+	users := newFakeUserLister()
+	users.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithInventory(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, fake)
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/inventory", "user-1"))
+	if strings.Contains(rec.Body.String(), "/opt/sparky") {
+		t.Error("a node's filesystem path in a failure reason must not be shown to a viewer who cannot manage models")
+	}
+}
