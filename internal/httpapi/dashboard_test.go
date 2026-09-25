@@ -303,6 +303,9 @@ type fakeInventoryLister struct {
 
 	byNode    map[string][]*db.NodeModelInventory
 	byNodeErr error
+
+	// deleteStates maps "nodeID|modelRef" to {state, reason}.
+	deleteStates map[string][2]string
 }
 
 // fakeSizeEstimator implements sizeEstimator for tests.
@@ -315,6 +318,13 @@ type fakeSizeEstimator struct {
 func (f *fakeSizeEstimator) EstimateSize(_ context.Context, ref, quant string) (int64, error) {
 	f.calls = append(f.calls, ref+"|"+quant)
 	return f.size, f.err
+}
+
+func (f *fakeInventoryLister) DeleteState(nodeID, modelRef, quantization string, format db.ModelFormat) (string, string) {
+	if st, ok := f.deleteStates[nodeID+"|"+modelRef]; ok {
+		return st[0], st[1]
+	}
+	return "", ""
 }
 
 func (f *fakeInventoryLister) ListByNode(_ context.Context, nodeID string) ([]*db.NodeModelInventory, error) {

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -387,5 +388,90 @@ func TestService_HandleDeleteModelResult_FailureLeavesPresent(t *testing.T) {
 	f.svc.HandleDeleteModelResult("node-1", deleteResultEnv(t, agentproto.DeleteModelResult{ModelRef: "org/m", Format: "gguf", Success: false, Reason: "busy"}))
 	if len(f.store.setStatusCalls) != 0 {
 		t.Errorf("setStatusCalls = %v, want none", f.store.setStatusCalls)
+	}
+}
+
+func TestDelete_ShowsRemovingUntilTheNodeConfirms(t *testing.T) {
+	f := newDeleteFixture()
+	if s, _ := f.svc.DeleteState("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); s != DeleteNone {
+		t.Fatalf("state before any delete = %q", s)
+	}
+	if err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); err != nil {
+		t.Fatal(err)
+	}
+	if s, _ := f.svc.DeleteState("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); s != DeleteRemoving {
+		t.Errorf("state after dispatch = %q, want %q - the page must show it immediately", s, DeleteRemoving)
+	}
+	if s, _ := f.svc.DeleteState("node-2", "org/m", "Q4_K_M", db.ModelFormatGGUF); s != DeleteNone {
+		t.Error("the state must be per node")
+	}
+	if s, _ := f.svc.DeleteState("node-1", "org/m", "Q8_0", db.ModelFormatGGUF); s != DeleteNone {
+		t.Error("the state must be per quantization")
+	}
+
+	f.svc.HandleDeleteModelResult("node-1", deleteResultEnv(t, agentproto.DeleteModelResult{ModelRef: "org/m", Quantization: "Q4_K_M", Format: "gguf", Success: true}))
+	if s, _ := f.svc.DeleteState("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); s != DeleteNone {
+		t.Errorf("state after confirmation = %q, want it cleared", s)
+	}
+}
+
+func TestDelete_SecondRequestWhileRemovingIsRefused(t *testing.T) {
+	f := newDeleteFixture()
+	if err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); err != nil {
+		t.Fatal(err)
+	}
+	err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF)
+	if !errors.Is(err, ErrDeleteInProgress) {
+		t.Errorf("error = %v, want ErrDeleteInProgress", err)
+	}
+	if len(f.dispatch.sent) != 1 {
+		t.Errorf("a double click must not send a second delete command (%d sent)", len(f.dispatch.sent))
+	}
+}
+
+func TestDelete_FailureIsRememberedAndRetryable(t *testing.T) {
+	f := newDeleteFixture()
+	if err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); err != nil {
+		t.Fatal(err)
+	}
+	f.svc.HandleDeleteModelResult("node-1", deleteResultEnv(t, agentproto.DeleteModelResult{ModelRef: "org/m", Quantization: "Q4_K_M", Format: "gguf", Success: false, Reason: "device busy"}))
+	s, reason := f.svc.DeleteState("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF)
+	if s != DeleteFailed || reason != "device busy" {
+		t.Errorf("state = %q, %q; want the failure and the node's reason shown, not silently dropped", s, reason)
+	}
+	if len(f.store.setStatusCalls) != 0 {
+		t.Error("a failed delete must leave the entry present")
+	}
+	if err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); err != nil {
+		t.Errorf("a failed delete must be retryable: %v", err)
+	}
+	if s, _ := f.svc.DeleteState("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); s != DeleteRemoving {
+		t.Errorf("state after retry = %q, want removing", s)
+	}
+}
+
+func TestDelete_FailureReasonIsBoundedAndNeverEmpty(t *testing.T) {
+	f := newDeleteFixture()
+	f.svc.HandleDeleteModelResult("node-1", deleteResultEnv(t, agentproto.DeleteModelResult{ModelRef: "org/m", Format: "gguf", Success: false, Reason: strings.Repeat("x", 1000)}))
+	if _, reason := f.svc.DeleteState("node-1", "org/m", "", db.ModelFormatGGUF); len(reason) != maxFailureLen {
+		t.Errorf("reason length = %d, want it capped at %d", len(reason), maxFailureLen)
+	}
+	f.svc.HandleDeleteModelResult("node-1", deleteResultEnv(t, agentproto.DeleteModelResult{ModelRef: "org/n", Format: "gguf", Success: false}))
+	if _, reason := f.svc.DeleteState("node-1", "org/n", "", db.ModelFormatGGUF); reason == "" {
+		t.Error("a failure with no reason must still say something")
+	}
+}
+
+func TestDeleteState_ExpiresSoANodeThatNeverAnswersDoesNotStickTheRow(t *testing.T) {
+	f := newDeleteFixture()
+	if err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); err != nil {
+		t.Fatal(err)
+	}
+	key := deleteKey("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF)
+	f.svc.deletesMu.Lock()
+	f.svc.deletes[key] = deleteState{at: time.Now().Add(-deleteStateTTL - time.Minute)}
+	f.svc.deletesMu.Unlock()
+	if s, _ := f.svc.DeleteState("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); s != DeleteNone {
+		t.Errorf("state = %q, want an old pending delete to lapse", s)
 	}
 }

@@ -1584,6 +1584,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shown only to viewers who can start transfers.
 
 ### Fixed
+- Deleting a model no longer looks like nothing happened. The removal is
+  confirmed by the node asynchronously, so after clicking OK the page reloaded
+  to a row that looked untouched until the node answered (noticeable for a
+  large model, on a slow or busy node). The row now shows "removing..." at once,
+  with its Delete button replaced by a note that it is waiting for the node, and
+  disappears when the node confirms. A second delete of the same entry while one
+  is in flight is refused. If the node reports it could not remove the files,
+  the row says so (with the node's reason, shown only to viewers who can manage
+  models, since it can contain a filesystem path) and offers "Retry delete" -
+  previously such a failure was only written to the server log. A delete that is
+  never answered stops showing as pending after 15 minutes.
 - The Inventory page's Simple/Advanced choice no longer resets to Advanced
   whenever a transfer makes progress. The live-refresh script re-requested only
   the page's path, dropping the query string that holds `?view=simple`, so the

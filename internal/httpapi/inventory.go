@@ -21,6 +21,7 @@ type inventoryLister interface {
 	ListGroupedSimple(ctx context.Context) ([]inventory.SimpleRow, error)
 	ListByNode(ctx context.Context, nodeID string) ([]*db.NodeModelInventory, error)
 	CanDelete(ctx context.Context, actor rbac.Actor) (bool, error)
+	DeleteState(nodeID, modelRef, quantization string, format db.ModelFormat) (state, reason string)
 	Delete(ctx context.Context, actor rbac.Actor, nodeID, modelRef, quantization string, format db.ModelFormat) error
 }
 
@@ -53,11 +54,16 @@ type inventoryEntryRow struct {
 	// ReplicateURL opens the transfer form with this entry as a peer
 	// source - this row's node is the source, this group the model.
 	ReplicateURL string
-	NodeID       string
-	NodeName     string
-	Status       string
-	Size         string
-	PlacedAt     string
+	// Removing is true while a delete has been sent to the node and not yet
+	// confirmed; DeleteError is set (and the Delete button offered again)
+	// when the node reported it could not remove the files.
+	Removing    bool
+	DeleteError string
+	NodeID      string
+	NodeName    string
+	Status      string
+	Size        string
+	PlacedAt    string
 }
 
 // inventorySimpleRow is one model_ref's totals across every quantization/
@@ -129,7 +135,10 @@ func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
 		for _, g := range groups {
 			entries := make([]inventoryEntryRow, 0, len(g.Entries))
 			for _, e := range g.Entries {
+				state, reason := a.inventory.DeleteState(e.NodeID, g.ModelRef, g.Quantization, g.Format)
 				entries = append(entries, inventoryEntryRow{
+					Removing:     state == inventory.DeleteRemoving,
+					DeleteError:  reasonIf(state == inventory.DeleteFailed, reason),
 					ReplicateURL: "/inventory/transfer/new?" + url.Values{"source_node_id": {e.NodeID}, "entry": {encodeEntry(g.ModelRef, g.Quantization, g.Format)}}.Encode(),
 					NodeID:       e.NodeID,
 					NodeName:     nodeNames[e.NodeID],
@@ -197,6 +206,9 @@ func (a *API) handleDeleteInventoryEntry(w http.ResponseWriter, r *http.Request)
 	case errors.Is(err, inventory.ErrNodeOffline):
 		writeError(w, r, http.StatusConflict, "NODE_OFFLINE", err.Error())
 		return
+	case errors.Is(err, inventory.ErrDeleteInProgress):
+		writeError(w, r, http.StatusConflict, "DELETE_IN_PROGRESS", err.Error())
+		return
 	case err != nil:
 		a.logger.Printf("httpapi: delete inventory entry %s on node %s: %v", modelRef, nodeID, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -205,4 +217,11 @@ func (a *API) handleDeleteInventoryEntry(w http.ResponseWriter, r *http.Request)
 
 	w.Header().Set("HX-Redirect", "/inventory")
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func reasonIf(cond bool, reason string) string {
+	if cond {
+		return reason
+	}
+	return ""
 }

@@ -13,6 +13,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/db"
@@ -25,6 +27,31 @@ import (
 // (a deleted entry is only marked removed, never hard-deleted, so no FK
 // ever fires), so it is checked here in Go.
 var ErrModelInUse = errors.New("model is still referenced by a profile")
+
+// ErrDeleteInProgress is returned by Delete when a delete of the same entry
+// has been sent and the node has not answered yet.
+var ErrDeleteInProgress = errors.New("a delete of this model is already in progress")
+
+// Delete states reported by DeleteState.
+const (
+	DeleteNone     = ""
+	DeleteRemoving = "removing"
+	DeleteFailed   = "failed"
+)
+
+const (
+	// deleteStateTTL bounds how long a pending or failed delete is shown.
+	// A node that never answers must not leave a row stuck on "removing"
+	// forever, and a failure notice should not outlive its usefulness.
+	deleteStateTTL = 15 * time.Minute
+	maxFailureLen  = 200
+)
+
+type deleteState struct {
+	at     time.Time
+	failed bool
+	reason string
+}
 
 // ErrNodeOffline is returned by Delete when the node holding the model has
 // no live agent connection - deletion needs the node online to actually
@@ -77,6 +104,56 @@ type Service struct {
 	dispatch  dispatcher
 	audit     auditRecorder
 	logger    *log.Logger
+
+	// deletes tracks deletes that have been dispatched but not yet
+	// confirmed (and recent failures), so the Inventory page can show
+	// "removing..." the moment the operator confirms rather than a row
+	// that looks untouched until the node answers. In-memory only: a
+	// server restart forgets it, which is harmless - the entry simply
+	// looks present until the agent's answer (which still updates the
+	// database) arrives.
+	deletesMu sync.Mutex
+	deletes   map[string]deleteState
+}
+
+func deleteKey(nodeID, modelRef, quantization string, format db.ModelFormat) string {
+	return nodeID + "\x00" + modelRef + "\x00" + quantization + "\x00" + string(format)
+}
+
+// DeleteState reports whether a delete of this entry is in flight
+// (DeleteRemoving) or recently failed (DeleteFailed, with the node's
+// reason), for the Inventory page.
+func (s *Service) DeleteState(nodeID, modelRef, quantization string, format db.ModelFormat) (state, reason string) {
+	s.deletesMu.Lock()
+	defer s.deletesMu.Unlock()
+	key := deleteKey(nodeID, modelRef, quantization, format)
+	d, ok := s.deletes[key]
+	if !ok {
+		return DeleteNone, ""
+	}
+	if time.Since(d.at) > deleteStateTTL {
+		delete(s.deletes, key)
+		return DeleteNone, ""
+	}
+	if d.failed {
+		return DeleteFailed, d.reason
+	}
+	return DeleteRemoving, ""
+}
+
+func (s *Service) setDeleteState(key string, d deleteState) {
+	s.deletesMu.Lock()
+	defer s.deletesMu.Unlock()
+	if s.deletes == nil {
+		s.deletes = make(map[string]deleteState)
+	}
+	s.deletes[key] = d
+}
+
+func (s *Service) clearDeleteState(key string) {
+	s.deletesMu.Lock()
+	defer s.deletesMu.Unlock()
+	delete(s.deletes, key)
 }
 
 // NewService constructs a Service. logger is used only by
@@ -275,6 +352,10 @@ func (s *Service) Delete(ctx context.Context, actor rbac.Actor, nodeID, modelRef
 	if entry.Status == db.InventoryStatusRemoved {
 		return db.ErrNodeModelInventoryNotFound
 	}
+	key := deleteKey(nodeID, modelRef, quantization, format)
+	if state, _ := s.DeleteState(nodeID, modelRef, quantization, format); state == DeleteRemoving {
+		return ErrDeleteInProgress
+	}
 
 	profiles, err := s.profiles.List(ctx)
 	if err != nil {
@@ -305,6 +386,7 @@ func (s *Service) Delete(ctx context.Context, actor rbac.Actor, nodeID, modelRef
 	if err := s.dispatch.Send(ctx, nodeID, env); err != nil {
 		return fmt.Errorf("dispatch delete_model to node %s: %w", nodeID, err)
 	}
+	s.setDeleteState(key, deleteState{at: time.Now()})
 
 	var actorID *string
 	if !actor.IsSuperAdmin {
@@ -331,10 +413,22 @@ func (s *Service) HandleDeleteModelResult(nodeID string, env agentproto.Envelope
 		s.logger.Printf("inventory: node %s sent a malformed delete_model_result: %v", nodeID, err)
 		return
 	}
+	key := deleteKey(nodeID, result.ModelRef, result.Quantization, db.ModelFormat(result.Format))
 	if !result.Success {
 		s.logger.Printf("inventory: node %s failed to delete %s (%s, %s): %s", nodeID, result.ModelRef, result.Quantization, result.Format, result.Reason)
+		// Remember why, so the page can tell the operator instead of the
+		// row silently going back to looking untouched.
+		reason := result.Reason
+		if len(reason) > maxFailureLen {
+			reason = reason[:maxFailureLen]
+		}
+		if reason == "" {
+			reason = "the node reported a failure"
+		}
+		s.setDeleteState(key, deleteState{at: time.Now(), failed: true, reason: reason})
 		return
 	}
+	s.clearDeleteState(key)
 	err := s.inventory.SetStatus(context.Background(), nodeID, result.ModelRef, result.Quantization, db.ModelFormat(result.Format), db.InventoryStatusRemoved)
 	if err != nil {
 		s.logger.Printf("inventory: mark %s removed on node %s: %v", result.ModelRef, nodeID, err)
