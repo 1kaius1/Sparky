@@ -1594,7 +1594,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the row says so (with the node's reason, shown only to viewers who can manage
   models, since it can contain a filesystem path) and offers "Retry delete" -
   previously such a failure was only written to the server log. A delete that is
-  never answered stops showing as pending after 15 minutes.
+  never answered stops showing as pending after 15 minutes. Deleting is also now
+  idempotent on the node: a model whose files are already gone (removed by hand,
+  a lost disk) counts as successfully deleted instead of failing forever, which
+  left an inventory entry that could never be cleared; a genuine failure to
+  remove files still fails.
 - The Inventory page's Simple/Advanced choice no longer resets to Advanced
   whenever a transfer makes progress. The live-refresh script re-requested only
   the page's path, dropping the query string that holds `?view=simple`, so the
