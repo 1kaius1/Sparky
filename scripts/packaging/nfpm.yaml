@@ -32,9 +32,11 @@ section: net
 priority: optional
 
 # openssh-client provides ssh-keygen, which `sparky-agent setup` uses to
-# generate this node's SSH identity for peer-to-peer model transfer. The
-# package name differs by family, so the per-format lists live in
-# overrides below (which replace, not extend, this list).
+# generate this node's SSH identity for peer-to-peer model transfer;
+# openssh-server provides the sshd (and its host key) any node may need to
+# be the source of such a transfer. The client package name differs by
+# family, so the per-format lists live in overrides below (which replace,
+# not extend, this list).
 depends:
   - systemd
 
@@ -43,10 +45,12 @@ overrides:
     depends:
       - systemd
       - openssh-client
+      - openssh-server
   rpm:
     depends:
       - systemd
       - openssh-clients
+      - openssh-server
 
 contents:
   - src: dist/build/sparky-agent

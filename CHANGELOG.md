@@ -1528,7 +1528,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   "Fastest"); the change is audited as `set_default_transfer_interface`.
   New env vars `SPARKY_SSH_KEY_PATH` / `SPARKY_SSH_HOST_KEY_PATH`; the
   `.deb`/`.rpm` now depend on `openssh-client`/`openssh-clients` (for
-  `ssh-keygen`) and the tarball installer checks for it. Central app must be
+  `ssh-keygen`) and `openssh-server` (so every node has an sshd and host key
+  and can be a transfer source), and the tarball installer checks for both. Central app must be
   deployed before upgraded agents (an old central app rejects the extended
   `hello`).
 
