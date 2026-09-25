@@ -62,6 +62,10 @@ type ModelTransfer struct {
 	// auto-selection was used", the same NULL-means-default convention
 	// Quantization already carries.
 	SourceInterface *string
+	// Format is the format a peer_node transfer is moving, copied from
+	// the source's inventory entry - nil for an internet-sourced transfer,
+	// whose format is inferred (see migration 000032).
+	Format *ModelFormat
 }
 
 // ErrModelTransferNotFound is returned when a lookup finds no matching row.
@@ -81,12 +85,12 @@ func NewModelTransferRepository(pool *pgxpool.Pool) *ModelTransferRepository {
 }
 
 const modelTransferColumns = `id, dest_node_id, model_ref, source_type, source_node_id, status,
-	bytes_transferred, bytes_total, quantization, requested_by, requested_at, completed_at, error_message, source_interface`
+	bytes_transferred, bytes_total, quantization, requested_by, requested_at, completed_at, error_message, source_interface, format`
 
 func scanModelTransfer(row pgx.Row) (*ModelTransfer, error) {
 	var t ModelTransfer
 	err := row.Scan(&t.ID, &t.DestNodeID, &t.ModelRef, &t.SourceType, &t.SourceNodeID, &t.Status,
-		&t.BytesTransferred, &t.BytesTotal, &t.Quantization, &t.RequestedBy, &t.RequestedAt, &t.CompletedAt, &t.ErrorMessage, &t.SourceInterface)
+		&t.BytesTransferred, &t.BytesTotal, &t.Quantization, &t.RequestedBy, &t.RequestedAt, &t.CompletedAt, &t.ErrorMessage, &t.SourceInterface, &t.Format)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrModelTransferNotFound
 	}
@@ -138,15 +142,25 @@ func (r *ModelTransferRepository) UpdateProgress(ctx context.Context, id string,
 
 // SetSourceInterface records which of the source node's interfaces a
 // peer_node transfer resolved to use - see ModelTransfer's own
-// SourceInterface doc comment. Not yet called by anything -
-// internal/transfers' real peer_node orchestration (a later PR) is what
-// resolves an interface in the first place.
+// SourceInterface doc comment.
 func (r *ModelTransferRepository) SetSourceInterface(ctx context.Context, id string, interfaceName *string) error {
 	_, err := r.pool.Exec(ctx,
 		`UPDATE model_transfers SET source_interface = $1 WHERE id = $2`,
 		interfaceName, id)
 	if err != nil {
 		return fmt.Errorf("set source interface for model transfer %s: %w", id, err)
+	}
+	return nil
+}
+
+// SetFormat records the format a peer_node transfer is moving - see
+// ModelTransfer.Format. Set once, right after Create.
+func (r *ModelTransferRepository) SetFormat(ctx context.Context, id string, format *ModelFormat) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE model_transfers SET format = $1 WHERE id = $2`,
+		format, id)
+	if err != nil {
+		return fmt.Errorf("set format for model transfer %s: %w", id, err)
 	}
 	return nil
 }

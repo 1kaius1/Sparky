@@ -36,6 +36,19 @@ func main() {
 		return
 	}
 
+	// Also before config.Load(): sshd invokes these two with a scrubbed
+	// environment, so they read no agent configuration - see agent/peertransfer.
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "peer-authkeys":
+			runPeerAuthorizedKeys(os.Args[2:])
+			return
+		case "peer-serve":
+			runPeerServe(os.Args[2:])
+			return
+		}
+	}
+
 	cfg, err := config.Load()
 	if err != nil {
 		logger.Fatalf("config: %v", err)
@@ -71,8 +84,10 @@ func main() {
 		NodeName:    cfg.NodeName,
 		// Read once at startup; best-effort, "" if absent - see
 		// provision.ReadSSHPublicKey.
-		SSHPublicKey:     provision.ReadSSHPublicKey(cfg.SSHKeyPath + ".pub"),
-		SSHHostPublicKey: provision.ReadSSHPublicKey(cfg.SSHHostKeyPath),
+		SSHKeyPath:          cfg.SSHKeyPath,
+		PeerTransferAuthTTL: time.Duration(cfg.PeerTransferAuthTTLSecs) * time.Second,
+		SSHPublicKey:        provision.ReadSSHPublicKey(cfg.SSHKeyPath + ".pub"),
+		SSHHostPublicKey:    provision.ReadSSHPublicKey(cfg.SSHHostKeyPath),
 		EngineBinaryPaths: map[string]string{
 			"llamacpp": cfg.LlamaCPPBinaryPath,
 			"vllm":     cfg.VLLMBinaryPath,

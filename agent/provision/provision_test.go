@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -259,5 +260,132 @@ func TestEnsureSSHKeypair_NeverOverwritesExistingKey(t *testing.T) {
 		if c.name == "ssh-keygen" {
 			t.Fatal("ssh-keygen ran despite an existing private key - identity would be rotated")
 		}
+	}
+}
+
+func peerProvisioner(t *testing.T, fn func(name string, args []string) error) (*Provisioner, *fakeRunner, string) {
+	t.Helper()
+	dir := t.TempDir()
+	fake := &fakeRunner{fn: fn}
+	return &Provisioner{run: fake.run, grantDir: "/grants", usedDir: "/used", sshdDropIn: filepath.Join(dir, "50-sparky-peer.conf")}, fake, dir
+}
+
+func cmdNames(f *fakeRunner) []string {
+	var out []string
+	for _, c := range f.calls {
+		out = append(out, c.name)
+	}
+	return out
+}
+
+func TestEnsurePeerAccess_CreatesEverythingOnAFreshHost(t *testing.T) {
+	p, fake, _ := peerProvisioner(t, func(name string, _ []string) error {
+		if name == "id" {
+			return errors.New("no such user")
+		}
+		return nil
+	})
+	if err := p.EnsurePeerAccess(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"install", "id", "useradd", "usermod", "install", "install", "sshd", "systemctl"}; !reflect.DeepEqual(cmdNames(fake), want) {
+		t.Fatalf("commands = %v, want %v", cmdNames(fake), want)
+	}
+	wantAdd := []string{"--system", "--user-group", "--no-create-home", "--home-dir", "/var/lib/sparky-peer", "--shell", "/bin/sh", "sparky-peer"}
+	if !reflect.DeepEqual(fake.calls[2].args, wantAdd) {
+		t.Errorf("useradd args = %v, want %v", fake.calls[1].args, wantAdd)
+	}
+	wantInstall := []string{"-d", "-o", "serviceloop", "-g", "sparky-peer", "-m", "2750", "/grants"}
+	if !reflect.DeepEqual(fake.calls[4].args, wantInstall) {
+		t.Errorf("install args = %v, want %v", fake.calls[3].args, wantInstall)
+	}
+	wantUsed := []string{"-d", "-o", "sparky-peer", "-g", "serviceloop", "-m", "2770", "/used"}
+	if !reflect.DeepEqual(fake.calls[5].args, wantUsed) {
+		t.Errorf("used-dir install args = %v, want %v", fake.calls[4].args, wantUsed)
+	}
+	written, err := os.ReadFile(p.sshdDropIn)
+	if err != nil || string(written) != sshdDropIn {
+		t.Errorf("drop-in not written as expected: %v", err)
+	}
+}
+
+func TestSSHDDropIn_ScopedToPeerUserAndLocked(t *testing.T) {
+	// Every directive must sit inside the Match block, and the hardening
+	// directives must be present - a regression here silently widens what
+	// the account can do.
+	head, block, found := strings.Cut(sshdDropIn, "Match User sparky-peer\n")
+	if !found {
+		t.Fatal("no Match User sparky-peer block")
+	}
+	for _, line := range strings.Split(head, "\n") {
+		if l := strings.TrimSpace(line); l != "" && !strings.HasPrefix(l, "#") {
+			t.Errorf("directive %q outside the Match block would apply to every account", l)
+		}
+	}
+	for _, want := range []string{
+		"AuthorizedKeysFile none", "AuthorizedKeysCommand /opt/sparky/bin/sparky-agent peer-authkeys %u",
+		"AuthorizedKeysCommandUser serviceloop", "AuthenticationMethods publickey", "PasswordAuthentication no",
+		"KbdInteractiveAuthentication no", "AllowTcpForwarding no", "AllowAgentForwarding no", "X11Forwarding no",
+		"PermitTTY no", "PermitUserRC no", "AllowStreamLocalForwarding no", "PermitTunnel no", "GatewayPorts no",
+	} {
+		if !strings.Contains(block, want) {
+			t.Errorf("drop-in is missing %q", want)
+		}
+	}
+	if strings.Contains(sshdDropIn, "ForceCommand") {
+		t.Error("ForceCommand would override the per-transfer forced command")
+	}
+}
+
+func TestEnsurePeerAccess_IdempotentWhenUpToDate(t *testing.T) {
+	p, fake, _ := peerProvisioner(t, nil)
+	if err := os.WriteFile(p.sshdDropIn, []byte(sshdDropIn), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.EnsurePeerAccess(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range fake.calls {
+		if c.name == "useradd" || c.name == "sshd" || c.name == "systemctl" {
+			t.Errorf("%s ran although the account exists and the drop-in is current", c.name)
+		}
+	}
+}
+
+func TestEnsurePeerAccess_SSHDRejectionRollsBack(t *testing.T) {
+	p, _, _ := peerProvisioner(t, func(name string, _ []string) error {
+		if name == "sshd" {
+			return errors.New("bad config")
+		}
+		return nil
+	})
+	if err := p.EnsurePeerAccess(context.Background()); err == nil {
+		t.Fatal("want an error when sshd rejects the config")
+	}
+	if _, err := os.Stat(p.sshdDropIn); !errors.Is(err, os.ErrNotExist) {
+		t.Error("a rejected drop-in must be removed so sshd is never left broken")
+	}
+
+	p2, _, _ := peerProvisioner(t, func(name string, _ []string) error {
+		if name == "sshd" {
+			return errors.New("bad config")
+		}
+		return nil
+	})
+	if err := os.WriteFile(p2.sshdDropIn, []byte("# previous\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_ = p2.EnsurePeerAccess(context.Background())
+	if got, _ := os.ReadFile(p2.sshdDropIn); string(got) != "# previous\n" {
+		t.Errorf("previous drop-in not restored, got %q", got)
+	}
+}
+
+func TestEnsurePeerAccess_MissingDropInDirIsAClearError(t *testing.T) {
+	p, _, dir := peerProvisioner(t, nil)
+	p.sshdDropIn = filepath.Join(dir, "missing", "50-sparky-peer.conf")
+	err := p.EnsurePeerAccess(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Include") {
+		t.Errorf("error = %v, want one that explains the missing drop-in directory", err)
 	}
 }

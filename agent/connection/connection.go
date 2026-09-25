@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"log"
 	"math/rand"
+	"net"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -26,6 +27,7 @@ import (
 
 	"github.com/1kaius1/Sparky/agent/enginetransfer"
 	"github.com/1kaius1/Sparky/agent/netinfo"
+	"github.com/1kaius1/Sparky/agent/peertransfer"
 	"github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
@@ -98,6 +100,12 @@ type Config struct {
 	// and works normally without participating in peer transfer.
 	SSHPublicKey     string
 	SSHHostPublicKey string
+
+	// SSHKeyPath is this node's private key, used when it pulls a model
+	// from a peer; PeerTransferAuthTTL bounds a source-side authorization.
+	// Both feed agent/peertransfer.
+	SSHKeyPath          string
+	PeerTransferAuthTTL time.Duration
 
 	// ModelStoragePath is where a TypeStartTransfer download lands -
 	// SPARKY_MODEL_STORAGE_PATH, per docs/AGENT.md Configuration. Not
@@ -212,6 +220,19 @@ type Conn struct {
 
 	// listInterfaces is a fakeable seam over netinfo.List.
 	listInterfaces func() ([]netinfo.Interface, error)
+
+	// authorizer/puller are the two halves of peer-to-peer transfer
+	// (agent/peertransfer): the source-side grant writer and the
+	// destination-side rsync puller. dialTimeout is the connectivity
+	// check's TCP dial budget.
+	authorizer *peertransfer.Authorizer
+	puller     peerPuller
+	dial       func(network, address string, timeout time.Duration) (net.Conn, error)
+}
+
+// peerPuller is the subset of *peertransfer.Puller Conn needs.
+type peerPuller interface {
+	Pull(ctx context.Context, req agentproto.StartPeerTransfer, progress peertransfer.ProgressFunc) error
 }
 
 // New constructs a Conn.
@@ -227,6 +248,9 @@ func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, engi
 		maxBackoff:      defaultMaxBackoff,
 		activeInstances: make(map[string]activeInstance),
 		listInterfaces:  netinfo.List,
+		authorizer:      peertransfer.NewAuthorizer(peertransfer.GrantDir, peertransfer.UsedDir, cfg.ModelStoragePath, cfg.PeerTransferAuthTTL),
+		puller:          peertransfer.NewPuller(cfg.SSHKeyPath, cfg.ModelStoragePath),
+		dial:            net.DialTimeout,
 	}
 }
 
@@ -258,6 +282,13 @@ func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, engi
 // every still-running exec'd engine process on a clean agent exit - see
 // docs/AGENT.md Signal Handling.
 func (c *Conn) Run(ctx context.Context) {
+	if removed, err := c.authorizer.SweepStale(); err != nil {
+		// Expected on a node whose peer-transfer directory was never set
+		// up - not fatal, that node just can't be a transfer source.
+		c.logger.Printf("agent connection: sweep stale peer-transfer grants: %v", err)
+	} else if removed > 0 {
+		c.logger.Printf("agent connection: swept %d stale peer-transfer grant file(s)", removed)
+	}
 	defer c.transferWG.Wait()
 	defer c.engineTransferWG.Wait()
 	defer c.shutdownRuntime()
@@ -583,6 +614,40 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 		}()
 	case agentproto.TypeRescanInterfaces:
 		go c.sendInterfaces(ctx, conn, env.RequestID)
+	case agentproto.TypeAuthorizePeerPull:
+		var req agentproto.AuthorizePeerPull
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed authorize_peer_pull payload: %v", err)
+			return
+		}
+		c.handleAuthorizePeerPull(ctx, conn, req)
+	case agentproto.TypeRevokePeerPull:
+		var req agentproto.RevokePeerPull
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed revoke_peer_pull payload: %v", err)
+			return
+		}
+		if err := c.authorizer.Revoke(req.TransferID); err != nil {
+			c.logger.Printf("agent connection: revoke peer pull %s: %v", req.TransferID, err)
+		}
+	case agentproto.TypeStartPeerTransfer:
+		var req agentproto.StartPeerTransfer
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed start_peer_transfer payload: %v", err)
+			return
+		}
+		c.transferWG.Add(1)
+		go func() {
+			defer c.transferWG.Done()
+			c.runPeerTransfer(ctx, conn, req)
+		}()
+	case agentproto.TypeCheckPeerConnectivity:
+		var req agentproto.CheckPeerConnectivity
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed check_peer_connectivity payload: %v", err)
+			return
+		}
+		go c.runConnectivityCheck(ctx, conn, req)
 	case agentproto.TypeDeleteModel:
 		var del agentproto.DeleteModel
 		if err := env.DecodePayload(&del); err != nil {
@@ -621,31 +686,7 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 func (c *Conn) runTransfer(ctx context.Context, conn *websocket.Conn, start agentproto.StartTransfer) {
 	destDir := filepath.Join(c.cfg.ModelStoragePath, filepath.FromSlash(start.ModelRef))
 
-	progress := func(bytesTransferred, bytesTotal int64, status, errMsg string) {
-		env, err := agentproto.NewEnvelope(agentproto.TypeTransferProgress, "", agentproto.TransferProgress{
-			TransferID:       start.TransferID,
-			BytesTransferred: bytesTransferred,
-			BytesTotal:       bytesTotal,
-			Status:           status,
-			ErrorMessage:     errMsg,
-		})
-		if err != nil {
-			c.logger.Printf("agent connection: build transfer_progress for %s: %v", start.TransferID, err)
-			return
-		}
-		raw, err := json.Marshal(env)
-		if err != nil {
-			c.logger.Printf("agent connection: marshal transfer_progress for %s: %v", start.TransferID, err)
-			return
-		}
-		// conn.Write is safe for concurrent use (coder/websocket - see
-		// internal/agentconn.Registry.Send's doc comment for the same
-		// claim, confirmed against the library itself) - sendHeartbeats
-		// may be writing to this same connection concurrently.
-		if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
-			c.logger.Printf("agent connection: send transfer_progress for %s: %v", start.TransferID, err)
-		}
-	}
+	progress := c.transferProgressFunc(ctx, conn, start.TransferID)
 
 	if err := c.transfer.Download(ctx, start.ModelRef, start.Quantization, destDir, progress); err != nil {
 		c.logger.Printf("agent connection: transfer %s failed: %v", start.TransferID, err)

@@ -19,5 +19,7 @@
 #   sudo /usr/local/sbin/sparky-agent-purge.sh
 set -e
 
+userdel sparky-peer 2>/dev/null || true
+rm -rf /var/lib/sparky-peer
 userdel serviceloop 2>/dev/null || true
 rm -rf /etc/sparky-agent

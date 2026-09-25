@@ -29,6 +29,13 @@ type Config struct {
 	SSHKeyPath     string
 	SSHHostKeyPath string
 
+	// PeerTransferAuthTTLSecs bounds how long a source-side peer-transfer
+	// authorization stays usable if the central app never revokes it -
+	// SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS, optional, defaulting to 7200
+	// (2 hours). A non-positive value falls back to the default: there is
+	// no "never expires".
+	PeerTransferAuthTTLSecs int
+
 	TelemetryPollInterval string
 	LogLevel              string
 	LogFormat             string
@@ -121,6 +128,11 @@ const (
 	defaultSSHHostKeyPath = "/etc/ssh/ssh_host_ed25519_key.pub"
 )
 
+// defaultPeerTransferAuthTTLSecs duplicates agent/peertransfer.DefaultAuthTTL
+// (2 hours) for the same no-cross-package-import reason as the constants
+// above.
+const defaultPeerTransferAuthTTLSecs = 7200
+
 // defaultHealthCheckIntervalSecs is SPARKY_HEALTH_CHECK_INTERVAL_SECONDS'
 // own default - the "once a minute" cadence confirmed directly with the
 // user.
@@ -180,6 +192,15 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse SPARKY_HEALTH_CHECK_INTERVAL_SECONDS: %w", err)
 	}
 	cfg.HealthCheckIntervalSecs = healthCheckIntervalSecs
+
+	peerTTL, err := getEnvDefaultInt("SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS", defaultPeerTransferAuthTTLSecs)
+	if err != nil {
+		return nil, fmt.Errorf("parse SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS: %w", err)
+	}
+	if peerTTL <= 0 {
+		peerTTL = defaultPeerTransferAuthTTLSecs
+	}
+	cfg.PeerTransferAuthTTLSecs = peerTTL
 
 	return cfg, nil
 }

@@ -127,7 +127,15 @@ func main() {
 	// controls' own writes (LoadInstance/UnloadInstance) - same
 	// twice-passed-value reasoning as nodeService/profileService above.
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
-	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, logger)
+	// inventoryService backs the Inventory page's unguarded ListGrouped/
+	// ListGroupedSimple reads (PLANNING.md's Models redesign) - the first
+	// read path node_model_inventory has ever had; internal/transfers'
+	// own inventoryRepo dependency above remains the only write path.
+	inventoryService := inventory.NewService(inventoryRepo, profileRepo, overrideRepo, agentRegistry, auditRecorder, logger)
+	// transferService additionally gets nodeService (SSH identity and
+	// interface resolution) and inventoryService (source-presence check) for
+	// peer_node transfers.
+	transferService := transfers.NewService(transferRepo, inventoryRepo, overrideRepo, agentRegistry, auditRecorder, nodeService, inventoryService, logger)
 	// engineProvisionService backs the Engine transfers page's unguarded
 	// ListEngineTransfers read, its provisioning form's own write
 	// (ProvisionEngine), and the Engine inventory page's unguarded
@@ -140,12 +148,6 @@ func main() {
 	// since before this HTTP wiring existed (PLANNING.md's 2026-08-15
 	// Decisions Log entry).
 	engineProvisionService := engineprovision.NewService(engineTransferRepo, engineInventoryRepo, agentRegistry, auditRecorder, logger)
-
-	// inventoryService backs the Inventory page's unguarded ListGrouped/
-	// ListGroupedSimple reads (PLANNING.md's Models redesign) - the first
-	// read path node_model_inventory has ever had; internal/transfers'
-	// own inventoryRepo dependency above remains the only write path.
-	inventoryService := inventory.NewService(inventoryRepo, profileRepo, overrideRepo, agentRegistry, auditRecorder, logger)
 
 	// rbacService backs both the Users & permissions page's RBAC-gated
 	// roster read (ListUsers) and, as of Dashboard UI Phase 8, its
@@ -197,6 +199,11 @@ func main() {
 		case agentproto.TypeTransferProgress:
 			transferService.HandleTransferProgress(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypePeerAuthorizeResult:
+			transferService.HandlePeerAuthorizeResult(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(agentproto.TypeTransferProgress)})
+		case agentproto.TypeConnectivityCheckResult:
+			transferService.HandleConnectivityCheckResult(nodeID, env)
 		case agentproto.TypeReportInterfaces:
 			nodeService.HandleReportInterfaces(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})

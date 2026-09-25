@@ -20,7 +20,9 @@ NVIDIA DGX Spark hardware and generic Docker/Podman GPU machines alike. The agen
 dials out to the central app and holds a persistent WebSocket connection open; the
 central app never initiates a connection into a compute node. Postgres is the single
 source of truth for all persistent state. Hard constraints: compute nodes require
-zero inbound network exposure, and the application must run identically on bare-metal
+zero inbound network exposure - with one narrowly scoped, ephemeral, central-app-
+brokered exception, peer-to-peer model transfer, whose full threat model is in
+Security Considerations - and the application must run identically on bare-metal
 Linux (systemd), Podman, and Kubernetes.
 
 ---
@@ -171,9 +173,17 @@ agent-communication layer, and writes the outcome to Running instances and Runni
 instance nodes.
 
 #### Model Transfer Orchestrator
-Handles both Hugging Face downloads and peer-to-peer rsync replication over the
-cluster link, writing to Model transfers and updating Node model inventory on
-completion. Computes the free-space side of the Blue-state eligibility check.
+Handles both Hugging Face downloads and peer-to-peer rsync replication, writing to
+Model transfers and updating Node model inventory on completion. A peer transfer is
+validated up front (both nodes connected, the source really has that inventory
+entry, both have the SSH material the pull needs, a source interface resolved), then
+brokered in two steps over the existing agent WebSocket: the source agent is asked
+to authorize the destination's key for exactly this transfer, and only after it
+accepts is the destination told to pull. Only the transfer's own destination may
+report progress on it, and a terminal status revokes the source's authorization.
+Also runs the destination-side "Check Destination" reachability test that gates
+initiating a transfer. Computes the free-space side of the Blue-state eligibility
+check.
 
 #### Engine Provisioning
 Dispatches a compiled-engine binary provisioning run to a node's Engine Transfer
@@ -268,7 +278,10 @@ Executes downloads and rsync replications, writing to node-local storage
 (`/opt/sparky/serviceloop/models/` on a bare-metal host; a per-`runtime_backend`
 configurable path on Docker/Podman hosts). Deletion of a local model copy to free
 space is a distinct action from unloading a running instance - see `SCHEMA.md`
-Permission overrides.
+Permission overrides. Peer transfer is `agent/peertransfer`: the destination side
+runs `rsync` over `ssh` as an outbound connection; the source side writes
+per-transfer grant files and provides the two small commands sshd invokes (see
+Peer-to-peer model transfer under Security Considerations).
 
 #### Engine Transfer Executor
 Bare-metal only. Downloads a maintainer-built compiled-engine release tarball
@@ -400,6 +413,117 @@ Service Layer -> Agent-Communication Layer -> WebSocket message (JSON, request I
   concerns outside the app's managed storage, not for manually touching model files,
   so the database can stay authoritative without filesystem-reconciliation logic
 
+### Peer-to-peer model transfer: the scoped exception to zero inbound exposure
+
+Copying a model node to node needs a real data path between two hosts, and the
+central app never proxies model bytes. That necessarily means one node accepts an
+inbound connection from another - a genuine, deliberate exception to "compute nodes
+require zero inbound network exposure". It is confined as narrowly as OpenSSH allows,
+and this section is the complete statement of what is exposed and why it is
+acceptable. It was security-reviewed as a merge gate (see `PLANNING.md` Decisions
+Log).
+
+**Shape.** The destination pulls (an outbound connection, like a Hugging Face
+download); the source briefly accepts one inbound SSH connection. Real OpenSSH and
+`rsync --server` are used - there is no custom transfer daemon and no `rsync --daemon`
+(a standalone network service) anywhere.
+
+**Persistent identity, ephemeral authorization.** Each node has a persistent SSH
+client keypair generated locally by `sparky-agent setup` (only the public half is
+ever reported; the private key never leaves the node), the same per-node,
+never-shared shape as the bearer token. Authorization to use it is not persistent:
+for each transfer the central app - over the already-authenticated agent WebSocket -
+asks the source agent to authorize the destination's public key for exactly that
+transfer.
+
+**Mechanism.** The source agent writes a small grant file (transfer id, the
+destination's public key and addresses, the model directory and file list the agent
+itself resolved, an expiry) into a serviceloop-owned directory. sshd, through a
+`Match User sparky-peer` block in a drop-in Sparky installs, calls
+`AuthorizedKeysCommand` (`sparky-agent peer-authkeys`), which turns each unexpired,
+unused grant into one authorized_keys line computed on demand:
+`restrict,from="<destination addresses>",command="/opt/sparky/bin/sparky-agent
+peer-serve <id>" <key>`. No authorized_keys file exists for the account, so no
+shared file can be corrupted, and an expired grant stops working by itself - the
+lines are computed at connect time, so expiry needs no cleanup to be effective and a
+crashed agent can never leave a live authorization behind.
+
+**Controls, in the order a connection meets them.**
+
+1. *Network*: it is the distribution's own sshd, already present on the host
+   (`openssh-server` is a package dependency). Sparky adds no listener. Only the
+   `sparky-peer` account is affected by the drop-in; every other account's login is
+   unchanged.
+2. *Dedicated account*: the destination authenticates as `sparky-peer`, not
+   `serviceloop`. It has a locked password, an empty root-owned home, group access to
+   read downloaded models, and no access to serviceloop's private key (`.ssh` is
+   0700), the agent's secrets, or the grant directory (it cannot create or alter
+   grants). serviceloop keeps its `nologin` shell.
+3. *sshd drop-in*: public-key only, no password or keyboard-interactive, no TTY, no
+   TCP/stream-local/agent/X11 forwarding, no tunnels, no user rc. Validated with
+   `sshd -t` at setup and rolled back if sshd rejects it.
+4. *Key possession*: the destination's key must match a live grant. The key is
+   validated as a bare `<type> <base64>` line on receipt by the central app and again
+   by the source agent before it is written (`agentproto.ValidSSHPublicKey` - no
+   comment, options, or newline can be smuggled into an authorized_keys line).
+5. *`from=`*: the connection must come from one of the destination's known
+   addresses. This is an additional restriction, never the only one - the key is the
+   credential; addresses can be shared behind NAT.
+6. *Forced command*: whatever the client asked to run is replaced by
+   `peer-serve <id>`. It re-validates the grant, requires the connecting address
+   (from sshd's `SSH_CONNECTION`, not the client) to be one the grant covers, and
+   requires the client's command to be exactly `rsync --server --sender` with a
+   short-flag cluster of plain options (no `-L`/`-k`/`-K` symlink following, no other
+   long options beyond `--timeout=N` and `--safe-links`) and source path `.`. The
+   command string is only pattern-matched, never given to a shell; the client's path
+   is ignored. What is served comes from the grant: rsync runs with its working
+   directory set to the model directory and relative sources only (named files as
+   `./<name>`), so no absolute path from any input reaches rsync. For a GGUF entry
+   with a concrete quantization only the matching file(s) are served, never sibling
+   quantizations. File names come from third-party repositories, so a matching name
+   that could be parsed as an rsync option or contains anything outside a
+   conservative character set is refused when the grant is created and again when it
+   is served (found by the security review; without it a repo could ship a file named
+   like `--files-from=...-Q4_K_M.gguf` and have it read as an option).
+7. *Single use*: `peer-serve` records the grant as used with an atomic `O_EXCL`
+   marker before exec'ing rsync, so of two simultaneous connections one wins and a
+   second finds nothing; the marker also makes `peer-authkeys` stop offering the key
+   immediately. (The marker directory is the one place `sparky-peer` can write; it
+   can only add markers.)
+8. *Lifetime*: a grant expires after `SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS` (default
+   2 hours) whether or not anything else happens; the central app also revokes it
+   the moment the transfer reaches any terminal status; the agent sweeps stale
+   grants at startup. Expiry is enforced at use, so a lost revoke or a stopped agent
+   is never the only thing between a stale grant and abuse.
+
+**Destination side.** The destination pins the source's sshd host key (reported at
+its connect time) in a per-transfer `known_hosts` with `StrictHostKeyChecking=yes` and
+`HostKeyAlgorithms` restricted to the pinned key's type, so there is no trust-on-
+first-use window; a mismatch fails the transfer. It offers only its own identity
+(`IdentitiesOnly`), `BatchMode`, no forwarding, dials a validated literal IP (never a
+resolved name), and runs rsync with `--safe-links` so a symlink pointing outside the
+transferred tree is never recreated. The destination directory is resolved locally
+from the model reference and confined to model storage.
+
+**Trust model and what is deliberately not defended.** The central app and its
+WebSocket to each agent are trusted for authorization: whoever can make the central
+app authorize a transfer can move a model between two nodes. That is the same trust
+already placed in the central app to start any model, so this adds no new party. A
+compromised destination node can pull only what a live, granted transfer covers and
+only from an address the grant allows. A compromised *source* node can only refuse or
+serve wrong bytes to its own transfers; it is not given any credential for the
+destination. Model bytes travel over SSH (encrypted); their integrity is rsync's, not
+a separate signature. Not defended: a hostile local user on the source host reading
+world-readable model files (model storage is group/world readable by design), and
+denial of service against sshd itself (an ordinary sshd exposure that exists with or
+without Sparky).
+
+**Operational notes.** A host whose sshd has `AllowUsers`/`AllowGroups` must permit
+`sparky-peer`. A host whose `sshd_config` has no `Include` for
+`/etc/ssh/sshd_config.d/` fails `sparky-agent setup` with a clear error rather than
+silently running unrestricted. Removing the package removes the drop-in; purging also
+removes the account.
+
 ---
 
 ## Deployment Model
@@ -479,7 +603,12 @@ explicitly confirmed by the releasing operator before a version is tagged.
 - [ ] CDI GPU passthrough verified on Podman, target distro(s) - including the known
       read-only-filesystem hook behavior
 - [ ] Multi-node NCCL/MPI launch verified on physically linked Sparks (2+ nodes)
-- [ ] Peer-to-peer rsync replication verified over the real cluster link
+- [ ] Peer-to-peer rsync replication verified over the real cluster link (the
+      mechanism itself - real sshd, forced command, grant lifecycle, host-key
+      pinning, refusal of every off-script command, Debian and Rocky, mixed
+      rsync versions - was verified between podman containers on 2026-09-25, see
+      `PLANNING.md`; what remains is a real two-node run over the physical link,
+      including transfer throughput on the chosen interface)
 - [ ] Partial-GPU-offload engine (llama.cpp) verified on memory-constrained hardware
       (the 32GB RAM laptop target)
 - [ ] Break-glass SuperAdmin login and first-Admin bootstrap flow

@@ -31,7 +31,15 @@ systemctl daemon-reload
 rm -f /usr/local/bin/sparky-agent
 rm -f /opt/sparky/bin/sparky-agent
 
+# Take the peer-transfer sshd drop-in out of service (it points at the binary
+# just removed) and drop transient grant state; see scripts/packaging/postremove.sh.
+rm -f /etc/ssh/sshd_config.d/50-sparky-peer.conf
+rm -rf /opt/sparky/serviceloop/peer-grants /opt/sparky/serviceloop/peer-used
+systemctl reload sshd 2>/dev/null || systemctl reload ssh 2>/dev/null || true
+
 if [ "$purge" = true ]; then
+    userdel sparky-peer 2>/dev/null || true
+    rm -rf /var/lib/sparky-peer
     userdel serviceloop 2>/dev/null || true
     rm -rf /etc/sparky-agent
 fi

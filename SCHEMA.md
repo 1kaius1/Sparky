@@ -429,7 +429,7 @@ in source.
 | `id` | uuid, PK | |
 | `dest_node_id` | uuid, FK -> Nodes.id | |
 | `model_ref` | text | |
-| `source_type` | enum | `internet` / `peer_node` |
+| `source_type` | enum | `internet` / `peer_node` (both implemented; a `peer_node` transfer is a pull over `rsync`-over-SSH, see `ARCHITECTURE.md` Security Considerations) |
 | `source_node_id` | uuid, nullable, FK -> Nodes.id | Populated only when `source_type = peer_node` |
 | `status` | enum | `queued` / `transferring` / `completed` / `failed` / `cancelled` |
 | `bytes_transferred` / `bytes_total` | bigint | |
@@ -437,7 +437,8 @@ in source.
 | `requested_by` | uuid, nullable, FK -> Users.id | Null when the break-glass SuperAdmin initiated the transfer - same reasoning as Nodes' `registered_by`, since the SuperAdmin is not a `Users` row |
 | `requested_at` / `completed_at` | timestamptz | |
 | `error_message` | text, nullable | |
-| `source_interface` | text, nullable | Which of the source node's Node network interfaces a `peer_node` transfer actually used - full traceability for a slow/failed transfer. `null` means either "internet-sourced (not applicable)" or "`peer_node` but `Fastest` auto-selection was used" - both read the same way `quantization` above already uses `NULL` for "not applicable"/"default". Not yet set by anything - real `peer_node` orchestration is planned, not built yet (`PLANNING.md` Decisions Log) |
+| `source_interface` | text, nullable | Which of the source node's Node network interfaces a `peer_node` transfer actually used - full traceability for a slow/failed transfer. `null` means either "internet-sourced (not applicable)" or "`peer_node` but `Fastest` auto-selection was used" - both read the same way `quantization` above already uses `NULL` for "not applicable"/"default". Set only when the caller chose an explicit per-transfer override - a node's configured default or `Fastest` auto-selection both leave it `NULL` |
+| `format` | enum, nullable | `safetensors` / `gguf` - the format a `peer_node` transfer is moving, copied from the source's Node model inventory entry so the destination's new entry reuses the source's exact `(model_ref, quantization, format)` key instead of the quantization-presence guess an internet download still relies on. `NULL` for every internet-sourced transfer |
 
 ---
 

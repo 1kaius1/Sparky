@@ -63,6 +63,26 @@ func TestLoad_DefaultsApply(t *testing.T) {
 	}
 }
 
+func TestLoad_PeerTransferAuthTTL(t *testing.T) {
+	setAllRequired(t)
+	cfg, err := Load()
+	if err != nil || cfg.PeerTransferAuthTTLSecs != 7200 {
+		t.Fatalf("default = %d, %v; want 7200", cfg.PeerTransferAuthTTLSecs, err)
+	}
+	t.Setenv("SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS", "600")
+	if cfg, _ := Load(); cfg.PeerTransferAuthTTLSecs != 600 {
+		t.Errorf("override = %d, want 600", cfg.PeerTransferAuthTTLSecs)
+	}
+	t.Setenv("SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS", "0")
+	if cfg, _ := Load(); cfg.PeerTransferAuthTTLSecs != 7200 {
+		t.Errorf("non-positive = %d, want the default (no never-expires)", cfg.PeerTransferAuthTTLSecs)
+	}
+	t.Setenv("SPARKY_PEER_TRANSFER_AUTH_TTL_SECONDS", "abc")
+	if _, err := Load(); err == nil {
+		t.Error("a non-numeric TTL must be a config error")
+	}
+}
+
 func TestLoad_SSHPathOverrides(t *testing.T) {
 	setAllRequired(t)
 	t.Setenv("SPARKY_SSH_KEY_PATH", "/keys/id")

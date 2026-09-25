@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 
+	"github.com/1kaius1/Sparky/agent/modelpath"
 	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
@@ -26,14 +27,9 @@ import (
 // the directory too once no .gguf files remain, so sibling quantizations
 // of the same repo are left alone.
 func (c *Conn) removeModel(modelRef, quantization, format string) error {
-	root := filepath.Clean(c.cfg.ModelStoragePath)
-	if modelRef == "" {
-		return fmt.Errorf("empty model_ref")
-	}
-	dir := filepath.Join(root, filepath.FromSlash(modelRef))
-	rel, err := filepath.Rel(root, dir)
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || filepath.IsAbs(modelRef) {
-		return fmt.Errorf("model_ref %q resolves outside model storage", modelRef)
+	dir, err := modelpath.Resolve(c.cfg.ModelStoragePath, modelRef)
+	if err != nil {
+		return err
 	}
 	if _, err := os.Stat(dir); err != nil {
 		return fmt.Errorf("model directory: %w", err)
