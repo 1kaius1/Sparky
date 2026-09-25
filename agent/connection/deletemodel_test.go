@@ -121,3 +121,21 @@ func TestRemoveModel_RealFailuresStillFail(t *testing.T) {
 		t.Error("a genuine failure to remove must still be reported, not swallowed as already-gone")
 	}
 }
+
+func TestRemoveModel_GGUFQuantizationAlsoRemovesRsyncTempFilesButNotSiblings(t *testing.T) {
+	c, root := newDeleteTestConn(t)
+	dir := filepath.Join(root, "org", "m")
+	// What a cancelled peer copy leaves: rsync's hidden temp file, plus a
+	// sibling quantization that must survive.
+	writeFile(t, filepath.Join(dir, ".m-Q4_K_M.gguf.AbC123"))
+	writeFile(t, filepath.Join(dir, "m-Q8_0.gguf"))
+	if err := c.removeModel("org/m", "Q4_K_M", "gguf"); err != nil {
+		t.Fatal(err)
+	}
+	if exists(filepath.Join(dir, ".m-Q4_K_M.gguf.AbC123")) {
+		t.Error("the partial temp file must be freed - it is the data the operator asked to delete")
+	}
+	if !exists(filepath.Join(dir, "m-Q8_0.gguf")) {
+		t.Error("a sibling quantization must never be touched")
+	}
+}

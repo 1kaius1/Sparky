@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/1kaius1/Sparky/agent/modelpath"
@@ -202,9 +203,35 @@ func (p *Puller) Pull(ctx context.Context, req agentproto.StartPeerTransfer, pro
 	return nil
 }
 
+// cancelGrace is how long a cancelled rsync gets to save its partial file
+// and exit after SIGTERM before its whole process group is killed. A
+// variable so tests can shorten it.
+var cancelGrace = 10 * time.Second
+
 // runRsync is the real runRsyncFunc.
 func runRsync(ctx context.Context, args []string, onLine func(string)) (string, error) {
-	cmd := exec.CommandContext(ctx, "rsync", args...)
+	return runProcess(ctx, "rsync", args, onLine)
+}
+
+// runProcess runs a command and streams its stdout lines to onLine.
+//
+// It runs the command in its own process group and, when ctx is cancelled,
+// signals the whole group - not just the leader. rsync forks helper
+// processes and starts ssh as a child, so killing only the leader (exec's
+// default) leaves them running: found by cancelling a real transfer, where
+// the copy kept going in the background and the source's SSH session stayed
+// open. SIGTERM comes first because rsync handles it by saving its partial
+// file under the final name (with --partial), which is what lets a later
+// transfer resume; if the group is still alive after cancelGrace, SIGKILL.
+func runProcess(ctx context.Context, name string, args []string, onLine func(string)) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	var killTimer *time.Timer
+	cmd.Cancel = func() error {
+		pgid := -cmd.Process.Pid
+		killTimer = time.AfterFunc(cancelGrace, func() { _ = syscall.Kill(pgid, syscall.SIGKILL) })
+		return syscall.Kill(pgid, syscall.SIGTERM)
+	}
 	var stderr tailBuffer
 	cmd.Stderr = &stderr
 	stdout, err := cmd.StdoutPipe()
@@ -229,7 +256,15 @@ func runRsync(ctx context.Context, args []string, onLine func(string)) (string, 
 	for sc.Scan() {
 		onLine(sc.Text())
 	}
-	return stderr.String(), cmd.Wait()
+	waitErr := cmd.Wait()
+	if killTimer != nil {
+		killTimer.Stop()
+	}
+	// Anything the group left behind after the leader exited (a straggler
+	// helper) is cleaned up now, so a finished or cancelled transfer never
+	// leaves processes running.
+	_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+	return stderr.String(), waitErr
 }
 
 // tailBuffer keeps the last few KB written to it.

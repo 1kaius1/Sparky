@@ -21,6 +21,11 @@ const (
 	InventoryStatusPresent InventoryStatus = "present"
 	InventoryStatusStale   InventoryStatus = "stale"
 	InventoryStatusRemoved InventoryStatus = "removed"
+	// InventoryStatusIncomplete means the node holds partial data for the
+	// model - left by a cancelled or failed transfer, kept so a new one can
+	// resume it. Not usable (never offered as a copy source or a profile's
+	// model) but visible, so the operator can free the disk space.
+	InventoryStatusIncomplete InventoryStatus = "incomplete"
 )
 
 // ModelFormat mirrors the model_format Postgres enum - see

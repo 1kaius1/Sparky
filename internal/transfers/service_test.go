@@ -102,6 +102,20 @@ func (f *fakeTransferStore) List(_ context.Context) ([]*db.ModelTransfer, error)
 type fakeInventoryStore struct {
 	upsertErr error
 	calls     []upsertCall
+
+	// getResult/getErr script what Get returns (default: not found).
+	getResult *db.NodeModelInventory
+	getErr    error
+}
+
+func (f *fakeInventoryStore) Get(context.Context, string, string, string, db.ModelFormat) (*db.NodeModelInventory, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	if f.getResult != nil {
+		return f.getResult, nil
+	}
+	return nil, db.ErrNodeModelInventoryNotFound
 }
 
 type upsertCall struct {

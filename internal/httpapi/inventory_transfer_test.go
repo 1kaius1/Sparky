@@ -682,3 +682,64 @@ func TestTransfersPage_RetryButtonOnlyOnFailedRowsAndOnlyWhenPermitted(t *testin
 		}
 	}
 }
+
+func TestCancelTransfer_Handler(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+	}{
+		{"ok", nil, http.StatusNoContent},
+		{"forbidden", rbac.ErrNotPermitted, http.StatusForbidden},
+		{"not found", db.ErrModelTransferNotFound, http.StatusNotFound},
+		{"already finished", transfers.ErrNotCancelable, http.StatusConflict},
+		{"unexpected", context.Canceled, http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newTransferFormFixture(t, db.TierAdmin, true)
+			f.initiator.cancelErr = tt.err
+			rec := f.post(t, "/transfers/abc-123/cancel", url.Values{})
+			if rec.Code != tt.wantCode {
+				t.Errorf("status = %d, want %d: %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			if len(f.initiator.cancelCalls) != 1 || f.initiator.cancelCalls[0] != "abc-123" {
+				t.Errorf("cancelCalls = %v", f.initiator.cancelCalls)
+			}
+			if tt.wantCode == http.StatusNoContent && rec.Header().Get("HX-Redirect") != "/transfers" {
+				t.Errorf("HX-Redirect = %q", rec.Header().Get("HX-Redirect"))
+			}
+		})
+	}
+}
+
+func TestTransfersPage_CancelButtonOnlyOnUnfinishedRowsAndOnlyWhenPermitted(t *testing.T) {
+	transfersFake := &fakeTransferLister{transfers: []*db.ModelTransfer{
+		{ID: "queued-1", DestNodeID: "n", ModelRef: "org/a", Status: db.TransferStatusQueued, RequestedAt: time.Now()},
+		{ID: "run-1", DestNodeID: "n", ModelRef: "org/b", Status: db.TransferStatusTransferring, RequestedAt: time.Now()},
+		{ID: "done-1", DestNodeID: "n", ModelRef: "org/c", Status: db.TransferStatusCompleted, RequestedAt: time.Now()},
+		{ID: "failed-1", DestNodeID: "n", ModelRef: "org/d", Status: db.TransferStatusFailed, RequestedAt: time.Now()},
+		{ID: "cancel-1", DestNodeID: "n", ModelRef: "org/e", Status: db.TransferStatusCancelled, RequestedAt: time.Now()},
+	}}
+	for _, permitted := range []bool{true, false} {
+		viewer := newFakeUserLister()
+		viewer.byID["u-1"] = &db.User{ID: "u-1", Tier: db.TierAdmin}
+		api := newTestModelTransfersAPI(t, &fakeNodeLister{}, transfersFake, &fakeTransferInitiator{permitted: permitted}, viewer)
+		rec := httptest.NewRecorder()
+		api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/transfers", "u-1"))
+		body := rec.Body.String()
+		for _, id := range []string{"queued-1", "run-1"} {
+			if got := strings.Contains(body, `hx-post="/transfers/`+id+`/cancel"`); got != permitted {
+				t.Errorf("permitted=%v: cancel button on %s = %v", permitted, id, got)
+			}
+		}
+		for _, id := range []string{"done-1", "failed-1", "cancel-1"} {
+			if strings.Contains(body, "/transfers/"+id+"/cancel") {
+				t.Errorf("permitted=%v: a cancel button appeared on a finished transfer (%s)", permitted, id)
+			}
+		}
+		if permitted && !strings.Contains(body, "Data already transferred is kept") {
+			t.Error("the confirm dialog must say partial data is kept")
+		}
+	}
+}

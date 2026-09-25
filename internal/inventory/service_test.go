@@ -475,3 +475,53 @@ func TestDeleteState_ExpiresSoANodeThatNeverAnswersDoesNotStickTheRow(t *testing
 		t.Errorf("state = %q, want an old pending delete to lapse", s)
 	}
 }
+
+func TestListGroupedSimple_CountsIncompleteApartFromUsableData(t *testing.T) {
+	partial := entry("node-2", "org/m", "Q8_0", db.ModelFormatGGUF, 999)
+	partial.Status = db.InventoryStatusIncomplete
+	onlyPartial := entry("node-1", "org/only-partial", "FP16", db.ModelFormatSafetensors, 50)
+	onlyPartial.Status = db.InventoryStatusIncomplete
+	store := &fakeInventoryStore{listResult: []*db.NodeModelInventory{
+		entry("node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF, 100),
+		partial,
+		onlyPartial,
+	}}
+	rows, err := newTestService(store).ListGroupedSimple(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+	m := rows[0]
+	if !reflect.DeepEqual(m.Quantizations, []string{"Q4_K_M"}) || m.TotalSizeBytes != 100 || m.IncompleteCount != 1 {
+		t.Errorf("org/m = %+v, want only usable data in the quantizations and size, with the partial copy counted apart", m)
+	}
+	if o := rows[1]; o.ModelRef != "org/only-partial" || len(o.Quantizations) != 0 || o.TotalSizeBytes != 0 || o.IncompleteCount != 1 {
+		t.Errorf("a model with only partial data must still be listed, as incomplete: %+v", o)
+	}
+}
+
+func TestListByNode_ExcludesIncompleteAndRemoved(t *testing.T) {
+	partial := entry("node-1", "org/a", "Q4", db.ModelFormatGGUF, 1)
+	partial.Status = db.InventoryStatusIncomplete
+	gone := entry("node-1", "org/b", "Q4", db.ModelFormatGGUF, 1)
+	gone.Status = db.InventoryStatusRemoved
+	ok := entry("node-1", "org/c", "Q4", db.ModelFormatGGUF, 1)
+	svc := newTestService(&fakeInventoryStore{listByNodeResult: []*db.NodeModelInventory{partial, gone, ok}})
+	got, err := svc.ListByNode(context.Background(), "node-1")
+	if err != nil || len(got) != 1 || got[0].ModelRef != "org/c" {
+		t.Errorf("ListByNode = %+v, %v; partial data is not something a profile can run or another node can copy", got, err)
+	}
+}
+
+func TestDelete_IncompleteEntryCanBeDeleted(t *testing.T) {
+	f := newDeleteFixture()
+	f.store.getResult.Status = db.InventoryStatusIncomplete
+	if err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); err != nil {
+		t.Fatalf("deleting partial data is the whole point of listing it: %v", err)
+	}
+	if len(f.dispatch.sent) != 1 {
+		t.Error("the delete command must reach the node")
+	}
+}

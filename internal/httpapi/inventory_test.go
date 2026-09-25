@@ -279,3 +279,26 @@ func TestInventoryPage_DeleteFailureDetailIsOnlyForViewersWhoCanDelete(t *testin
 		t.Error("a node's filesystem path in a failure reason must not be shown to a viewer who cannot manage models")
 	}
 }
+
+func TestInventoryPage_IncompleteEntriesAreLabelledAndDeletable(t *testing.T) {
+	f := newTransferFormFixture(t, db.TierAdmin, true)
+	f.inventory.canDelete = true
+	f.inventory.groups = []inventory.Group{{
+		ModelRef: "org/m", Quantization: "Q4_K_M", Format: db.ModelFormatGGUF,
+		Entries: []*db.NodeModelInventory{{NodeID: "node-1", Status: db.InventoryStatusIncomplete, SizeBytes: 3 << 20, PlacedAt: time.Now()}},
+	}}
+	f.inventory.simple = []inventory.SimpleRow{{ModelRef: "org/m", IncompleteCount: 2}}
+
+	body := f.get(t, "/inventory").Body.String()
+	for _, want := range []string{`status-incomplete`, "Partial data from a cancelled or failed transfer", "Delete the incomplete download of", `hx-post="/inventory/delete"`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("Advanced view missing %q", want)
+		}
+	}
+	if strings.Contains(body, "Replicate to...") {
+		t.Error("partial data must not be offered as a copy source (the viewer can transfer, so a usable entry would show the link)")
+	}
+	if simple := f.get(t, "/inventory?view=simple").Body.String(); !strings.Contains(simple, "2 incomplete") {
+		t.Errorf("Simple view must flag incomplete copies: %s", simple)
+	}
+}

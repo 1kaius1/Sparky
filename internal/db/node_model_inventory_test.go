@@ -332,3 +332,40 @@ func TestNodeModelInventoryRepository_SetStatus(t *testing.T) {
 		t.Errorf("SetStatus() on a missing key error = %v, want ErrNodeModelInventoryNotFound", err)
 	}
 }
+
+func TestNodeModelInventoryRepository_IncompleteStatusRoundTripsAndIsReplacedByACompletedUpsert(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	inventory := NewNodeModelInventoryRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	first := createTestTransfer(t, transfers, node.ID, nil)
+	second := createTestTransfer(t, transfers, node.ID, nil)
+	modelRef := "test-org/partial-model"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef)
+	})
+
+	partial, err := inventory.Upsert(ctx, node.ID, modelRef, "Q4_K_M", ModelFormatGGUF, InventoryStatusIncomplete, 4096, first.ID)
+	if err != nil {
+		t.Fatalf("Upsert(incomplete) error: %v", err)
+	}
+	if partial.Status != InventoryStatusIncomplete || partial.SizeBytes != 4096 {
+		t.Errorf("partial = %+v", partial)
+	}
+
+	// A later successful transfer replaces the partial entry (same key).
+	done, err := inventory.Upsert(ctx, node.ID, modelRef, "Q4_K_M", ModelFormatGGUF, InventoryStatusPresent, 9999, second.ID)
+	if err != nil {
+		t.Fatalf("Upsert(present) error: %v", err)
+	}
+	if done.Status != InventoryStatusPresent || done.SizeBytes != 9999 || done.PlacedVia != second.ID {
+		t.Errorf("completed = %+v, want the partial entry replaced", done)
+	}
+	list, err := inventory.ListByNode(ctx, node.ID)
+	if err != nil || len(list) != 1 {
+		t.Errorf("ListByNode = %d entries, %v; want exactly one (no duplicate beside the partial one)", len(list), err)
+	}
+}

@@ -1583,7 +1583,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (not running, completed, or deliberately cancelled ones), and the button is
   shown only to viewers who can start transfers.
 
+- Transfer cancellation - PR 8 of 10 in the Models redesign. A **Cancel**
+  button (with a confirm dialog) on queued and running rows of the Model
+  transfers page stops an internet download or a peer-to-peer copy: the row is
+  marked cancelled at once, the destination node - the one doing the work for
+  either kind - is told to stop (`cancel_transfer`), and for a peer copy the
+  source drops its SSH authorization right away. Data already transferred is
+  kept, so a new transfer of the same model resumes from it rather than
+  starting over - and it is listed on the Inventory page as an **incomplete**
+  entry under the node it landed on (marked as partial data, counted apart in
+  the Simple view, never offered as a copy source or a profile's model), with a
+  Delete button, so an aborted download of the wrong model cannot leave tens of
+  gigabytes on a node's disk that nobody can see or free. A failed transfer that
+  moved data is listed the same way; a working copy of the same model is never
+  downgraded by a failed re-download; and a later completed transfer replaces
+  the incomplete entry (migration `000033` adds the `incomplete` status). Late reports from the node can never overwrite a cancelled
+  (or otherwise finished) transfer - previously any stray progress message
+  could rewrite a finished row - and a node that was offline when the cancel
+  was sent is told again as soon as it reports the transfer as running. Audited
+  as `cancelled_transfer`. Cancelling a peer copy kills rsync and everything it
+  started (SIGTERM to the whole process group, so rsync saves its partial file,
+  then SIGKILL after 10 seconds): killing only the top process left rsync's
+  helpers and the ssh session running in the background, which a real run
+  showed (the copy carried on writing to disk after "cancelled").
+
 ### Fixed
+- Pages that update themselves live no longer get stuck showing stale data when
+  the update happens while the page is loading or the tab is in the background.
+  The live-update script only reacted to events that arrived while its
+  connection was open, so anything that happened between the server rendering a
+  page and the browser's connection opening (a node confirming a model delete a
+  few milliseconds after the redirect rendered the row as "removing") was lost,
+  and the page stayed stale until a manual reload. It now refetches once
+  whenever the connection opens (including after a reconnect), and makes up for
+  a refresh it skipped because the tab was hidden when the tab returns.
+  Reproduced deterministically (a delayed live connection plus a briefly paused
+  node: 3 of 3 attempts left the deleted row on the page) and verified fixed
+  (0 of 3).
 - Deleting a model no longer looks like nothing happened. The removal is
   confirmed by the node asynchronously, so after clicking OK the page reloaded
   to a row that looked untouched until the node answered (noticeable for a

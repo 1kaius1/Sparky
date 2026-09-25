@@ -58,6 +58,7 @@ type inventoryEntryRow struct {
 	// confirmed; DeleteError is set (and the Delete button offered again)
 	// when the node reported it could not remove the files.
 	Removing    bool
+	Incomplete  bool
 	DeleteError string
 	NodeID      string
 	NodeName    string
@@ -69,9 +70,10 @@ type inventoryEntryRow struct {
 // inventorySimpleRow is one model_ref's totals across every quantization/
 // format/node it exists in - the Simple view's row unit.
 type inventorySimpleRow struct {
-	ModelRef      string
-	Quantizations string
-	Size          string
+	IncompleteCount int
+	ModelRef        string
+	Quantizations   string
+	Size            string
 }
 
 func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
@@ -119,9 +121,10 @@ func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
 		data.SimpleRows = make([]inventorySimpleRow, 0, len(rows))
 		for _, row := range rows {
 			data.SimpleRows = append(data.SimpleRows, inventorySimpleRow{
-				ModelRef:      row.ModelRef,
-				Quantizations: strings.Join(row.Quantizations, ", "),
-				Size:          formatMB(row.TotalSizeBytes),
+				IncompleteCount: row.IncompleteCount,
+				ModelRef:        row.ModelRef,
+				Quantizations:   strings.Join(row.Quantizations, ", "),
+				Size:            formatMB(row.TotalSizeBytes),
 			})
 		}
 	} else {
@@ -138,6 +141,7 @@ func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
 				state, reason := a.inventory.DeleteState(e.NodeID, g.ModelRef, g.Quantization, g.Format)
 				entries = append(entries, inventoryEntryRow{
 					Removing:     state == inventory.DeleteRemoving,
+					Incomplete:   e.Status == db.InventoryStatusIncomplete,
 					DeleteError:  reasonIf(state == inventory.DeleteFailed, reason),
 					ReplicateURL: "/inventory/transfer/new?" + url.Values{"source_node_id": {e.NodeID}, "entry": {encodeEntry(g.ModelRef, g.Quantization, g.Format)}}.Encode(),
 					NodeID:       e.NodeID,

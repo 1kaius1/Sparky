@@ -248,7 +248,7 @@ table.data-table:not(.panel .data-table) {
 .status-online, .status-running, .status-completed, .status-healthy { background: var(--color-status-online); }
 .status-offline, .status-queued, .status-cancelled { background: var(--color-status-offline); }
 .status-unreachable { background: var(--color-status-unreachable); }
-.status-starting, .status-stopping, .status-transferring, .status-unknown { background: var(--color-status-starting); }
+.status-starting, .status-stopping, .status-transferring, .status-unknown, .status-incomplete { background: var(--color-status-starting); }
 .status-stopped { background: var(--color-status-stopped); }
 .status-failed, .status-unhealthy { background: var(--color-status-failed); }
 

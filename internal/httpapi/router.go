@@ -355,6 +355,7 @@ func (a *API) Router() http.Handler {
 	// Retry is a write, so CSRF-protected; the capability check and the
 	// only-failed rule live in transfers.Service.RetryTransfer.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/transfers/{id}/retry", a.handleRetryTransfer)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/transfers/{id}/cancel", a.handleCancelTransfer)
 	r.With(a.RequireSession).Get("/inventory/transfer/estimate-size", a.handleEstimateSize)
 	r.With(a.RequireSession).Get("/inventory/transfer/peer-options", a.handlePeerOptions)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/inventory/transfer/check-connectivity", a.handleCheckConnectivity)

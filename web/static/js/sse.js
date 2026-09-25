@@ -41,6 +41,10 @@
     });
   }
 
+  // refreshWhileHidden records that a refresh was skipped because the tab
+  // was in the background, so it can be made up when the tab returns.
+  var refreshWhileHidden = false;
+
   function scheduleRefresh() {
     if (refreshTimer !== null) {
       return;
@@ -48,8 +52,11 @@
     refreshTimer = window.setTimeout(function () {
       refreshTimer = null;
       // A backgrounded tab still receives SSE messages - no reason to
-      // spend a request re-rendering content nobody is looking at.
+      // spend a request re-rendering content nobody is looking at. But the
+      // skipped update must not be lost: the page would come back showing
+      // stale data until the next unrelated event, so remember it.
       if (document.visibilityState !== "visible") {
+        refreshWhileHidden = true;
         return;
       }
       var main = document.getElementById("main-content");
@@ -145,6 +152,23 @@
     var source = new EventSource("/events");
     source.addEventListener("open", function () {
       setConnectionStatus("live", "Live");
+      // The page was rendered by the server some time before this
+      // connection opened (a full load renders first, connects after), and
+      // again after any reconnect. Whatever happened in that gap produced an
+      // event nobody was listening for - e.g. a node confirming a model
+      // delete a few milliseconds after the redirect rendered the row as
+      // "removing", which then stayed that way until a manual reload. One
+      // refetch on open closes the gap; it only fires for a page that
+      // declares live topics, and the morph swap makes it cheap.
+      if (currentPageTopics().length > 0) {
+        scheduleRefresh();
+      }
+    });
+    document.addEventListener("visibilitychange", function () {
+      if (document.visibilityState === "visible" && refreshWhileHidden) {
+        refreshWhileHidden = false;
+        scheduleRefresh();
+      }
     });
     source.addEventListener("error", function () {
       if (source.readyState === EventSource.CLOSED) {

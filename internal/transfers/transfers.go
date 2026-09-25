@@ -30,6 +30,10 @@ var ErrDestNodeOffline = errors.New("destination node is not connected")
 // failed - only a failed transfer can be retried.
 var ErrNotRetryable = errors.New("only a failed transfer can be retried")
 
+// ErrNotCancelable is returned by CancelTransfer for a transfer that has
+// already reached a terminal status.
+var ErrNotCancelable = errors.New("this transfer has already finished")
+
 // ErrSourceNodeOffline is ErrDestNodeOffline's counterpart for a peer
 // transfer's source - both ends must be connected, since the source has to
 // authorize the pull before it can start.
