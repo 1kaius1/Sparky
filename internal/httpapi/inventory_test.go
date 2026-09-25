@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/events"
 	"github.com/1kaius1/Sparky/internal/inventory"
+	"github.com/1kaius1/Sparky/internal/rbac"
 )
 
 func newTestInventoryAPI(t *testing.T, nodeList *fakeNodeLister, inventoryFake *fakeInventoryLister) *API {
@@ -150,5 +152,63 @@ func TestHandleInventory_Unauthenticated(t *testing.T) {
 	}
 	if loc := rec.Header().Get("Location"); loc != "/login" {
 		t.Errorf("Location = %q, want %q", loc, "/login")
+	}
+}
+
+func advancedGroupFixture() []inventory.Group {
+	return []inventory.Group{{
+		ModelRef: "org/m", Quantization: "Q4_K_M", Format: db.ModelFormatGGUF,
+		Entries: []*db.NodeModelInventory{{NodeID: "node-1", Status: db.InventoryStatusPresent, PlacedAt: time.Now()}},
+	}}
+}
+
+func TestHandleInventory_DeleteButtonOnlyWhenPermitted(t *testing.T) {
+	for _, canDelete := range []bool{true, false} {
+		fake := &fakeInventoryLister{groups: advancedGroupFixture(), canDelete: canDelete}
+		users := newFakeUserLister()
+		users.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+		api := newTestDashboardAPIWithInventory(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, fake)
+		req := newAuthenticatedRequest(t, http.MethodGet, "/inventory", "user-1")
+		rec := httptest.NewRecorder()
+		api.Router().ServeHTTP(rec, req)
+		if got := strings.Contains(rec.Body.String(), `hx-post="/inventory/delete"`); got != canDelete {
+			t.Errorf("canDelete=%v: delete form present = %v", canDelete, got)
+		}
+	}
+}
+
+func TestHandleDeleteInventoryEntry(t *testing.T) {
+	tests := []struct {
+		name       string
+		form       url.Values
+		deleteErr  error
+		wantStatus int
+		wantCalled bool
+	}{
+		{"ok", url.Values{"node_id": {"node-1"}, "model_ref": {"org/m"}, "quantization": {"Q4_K_M"}, "format": {"gguf"}}, nil, http.StatusNoContent, true},
+		{"missing model_ref", url.Values{"node_id": {"node-1"}, "format": {"gguf"}}, nil, http.StatusBadRequest, false},
+		{"bad format", url.Values{"node_id": {"node-1"}, "model_ref": {"org/m"}, "format": {"onnx"}}, nil, http.StatusBadRequest, false},
+		{"not permitted", url.Values{"node_id": {"node-1"}, "model_ref": {"org/m"}, "format": {"gguf"}}, rbac.ErrNotPermitted, http.StatusForbidden, true},
+		{"not found", url.Values{"node_id": {"node-1"}, "model_ref": {"org/m"}, "format": {"gguf"}}, db.ErrNodeModelInventoryNotFound, http.StatusNotFound, true},
+		{"in use", url.Values{"node_id": {"node-1"}, "model_ref": {"org/m"}, "format": {"gguf"}}, inventory.ErrModelInUse, http.StatusConflict, true},
+		{"node offline", url.Values{"node_id": {"node-1"}, "model_ref": {"org/m"}, "format": {"gguf"}}, inventory.ErrNodeOffline, http.StatusConflict, true},
+		{"internal", url.Values{"node_id": {"node-1"}, "model_ref": {"org/m"}, "format": {"gguf"}}, context.Canceled, http.StatusInternalServerError, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeInventoryLister{deleteErr: tt.deleteErr}
+			users := newFakeUserLister()
+			users.byID["user-1"] = &db.User{ID: "user-1", Tier: db.TierAdmin}
+			api := newTestDashboardAPIWithInventory(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, users, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, fake)
+			req := newAuthenticatedFormRequest(t, "/inventory/delete", "user-1", tt.form)
+			rec := httptest.NewRecorder()
+			api.Router().ServeHTTP(rec, req)
+			if rec.Code != tt.wantStatus {
+				t.Errorf("status = %d, want %d: %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if (len(fake.deleteCalled) > 0) != tt.wantCalled {
+				t.Errorf("Delete called = %v, want %v", fake.deleteCalled, tt.wantCalled)
+			}
+		})
 	}
 }

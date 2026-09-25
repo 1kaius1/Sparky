@@ -10,10 +10,26 @@ package inventory
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"log"
 
+	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/rbac"
 )
+
+// ErrModelInUse is returned by Delete when a Model profile still targets
+// the entry - deleting it would leave that profile pointing at nothing.
+// The planned inventory foreign key on model_profiles cannot enforce this
+// (a deleted entry is only marked removed, never hard-deleted, so no FK
+// ever fires), so it is checked here in Go.
+var ErrModelInUse = errors.New("model is still referenced by a profile")
+
+// ErrNodeOffline is returned by Delete when the node holding the model has
+// no live agent connection - deletion needs the node online to actually
+// free the disk space, so there is nothing sensible to queue.
+var ErrNodeOffline = errors.New("node is not connected")
 
 // inventoryStore is the subset of *db.NodeModelInventoryRepository this
 // package needs, narrow enough to fake in tests - same pattern as
@@ -22,6 +38,30 @@ type inventoryStore interface {
 	List(ctx context.Context) ([]*db.NodeModelInventory, error)
 	ListByNode(ctx context.Context, nodeID string) ([]*db.NodeModelInventory, error)
 	Get(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat) (*db.NodeModelInventory, error)
+	SetStatus(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat, status db.InventoryStatus) error
+}
+
+// profileStore is the subset of *db.ProfileRepository Delete needs to
+// refuse removing a model a profile still uses.
+type profileStore interface {
+	List(ctx context.Context) ([]*db.Profile, error)
+}
+
+// overrideStore is the subset of *db.PermissionOverrideRepository needed
+// to resolve rbac.CanManageModelStore's hasOverride argument.
+type overrideStore interface {
+	Get(ctx context.Context, userID string, capability db.Capability) (*db.PermissionOverride, error)
+}
+
+// dispatcher is the subset of *agentconn.Registry this package needs.
+type dispatcher interface {
+	Connected(nodeID string) bool
+	Send(ctx context.Context, nodeID string, env agentproto.Envelope) error
+}
+
+// auditRecorder is the subset of *audit.Recorder this package needs.
+type auditRecorder interface {
+	Record(ctx context.Context, actorID *string, isSuperAdminAction bool, action, objectType, objectID string, detail map[string]any) error
 }
 
 // Service is Inventory's read layer. Every method here is unguarded by
@@ -32,11 +72,18 @@ type inventoryStore interface {
 // ARCHITECTURE.md Audit Log.
 type Service struct {
 	inventory inventoryStore
+	profiles  profileStore
+	overrides overrideStore
+	dispatch  dispatcher
+	audit     auditRecorder
+	logger    *log.Logger
 }
 
-// NewService constructs a Service.
-func NewService(inventory inventoryStore) *Service {
-	return &Service{inventory: inventory}
+// NewService constructs a Service. logger is used only by
+// HandleDeleteModelResult, which - as an agentconn.OnMessageFunc - has no
+// return value to propagate an error through.
+func NewService(inventory inventoryStore, profiles profileStore, overrides overrideStore, dispatch dispatcher, audit auditRecorder, logger *log.Logger) *Service {
+	return &Service{inventory: inventory, profiles: profiles, overrides: overrides, dispatch: dispatch, audit: audit, logger: logger}
 }
 
 // Group is every node's entry for one (model_ref, quantization, format)
@@ -53,7 +100,8 @@ type Group struct {
 // ListGrouped returns every distinct (model_ref, quantization, format)
 // combination across every node, each carrying its own per-node entries -
 // the Advanced Inventory view's raw input (PLANNING.md's Models redesign
-// decision 14). Group order matches
+// decision 14). Entries marked removed (see Delete) are excluded - the row
+// is kept for history, but the model is no longer on the node. Group order matches
 // *db.NodeModelInventoryRepository.List's own ORDER BY (model_ref,
 // quantization, format, node_id) - a group is emitted the first time its
 // key is seen, so no separate sort is needed here.
@@ -71,6 +119,9 @@ func (s *Service) ListGrouped(ctx context.Context) ([]Group, error) {
 	index := make(map[key]*Group)
 	var order []key
 	for _, e := range entries {
+		if e.Status == db.InventoryStatusRemoved {
+			continue
+		}
 		k := key{modelRef: e.ModelRef, quantization: e.Quantization, format: e.Format}
 		g, ok := index[k]
 		if !ok {
@@ -139,7 +190,8 @@ func (s *Service) ListGroupedSimple(ctx context.Context) ([]SimpleRow, error) {
 	return rows, nil
 }
 
-// ListByNode returns a single node's inventory entries - backs the
+// ListByNode returns a single node's inventory entries, excluding entries
+// marked removed - backs the
 // Profile-creation cascading picker (PLANNING.md's Models redesign PR 9),
 // not yet wired to anything.
 func (s *Service) ListByNode(ctx context.Context, nodeID string) ([]*db.NodeModelInventory, error) {
@@ -147,7 +199,13 @@ func (s *Service) ListByNode(ctx context.Context, nodeID string) ([]*db.NodeMode
 	if err != nil {
 		return nil, fmt.Errorf("list inventory for node %s: %w", nodeID, err)
 	}
-	return entries, nil
+	present := make([]*db.NodeModelInventory, 0, len(entries))
+	for _, e := range entries {
+		if e.Status != db.InventoryStatusRemoved {
+			present = append(present, e)
+		}
+	}
+	return present, nil
 }
 
 // Get looks up a single node's inventory entry for one model
@@ -162,4 +220,123 @@ func (s *Service) Get(ctx context.Context, nodeID, modelRef, quantization string
 		return nil, err
 	}
 	return entry, nil
+}
+
+// canManageModelStore resolves rbac.CanManageModelStore's hasOverride
+// argument, querying the overrides table only for a PowerDev actor - the
+// only tier where it can matter. Same logic as
+// internal/transfers.Service's own copy, kept local rather than shared to
+// avoid a dependency between the two packages.
+func (s *Service) canManageModelStore(ctx context.Context, actor rbac.Actor) (bool, error) {
+	hasOverride := false
+	if !actor.IsSuperAdmin && actor.Tier == db.TierPowerDev {
+		_, err := s.overrides.Get(ctx, actor.UserID, db.CapabilityManageModelStore)
+		switch {
+		case err == nil:
+			hasOverride = true
+		case errors.Is(err, db.ErrPermissionOverrideNotFound):
+		default:
+			return false, fmt.Errorf("check manage_model_store override: %w", err)
+		}
+	}
+	return rbac.CanManageModelStore(actor, hasOverride), nil
+}
+
+// CanDelete reports whether actor may call Delete - exported so
+// internal/httpapi can decide whether to show the Delete action at all,
+// not a security boundary (Delete re-checks).
+func (s *Service) CanDelete(ctx context.Context, actor rbac.Actor) (bool, error) {
+	return s.canManageModelStore(ctx, actor)
+}
+
+// Delete asks the node holding a model copy to remove it from disk.
+// Gated by rbac.CanManageModelStore (already documented as covering
+// "download and delete"). Refuses if a profile still targets the entry
+// (ErrModelInUse) or the node has no live connection (ErrNodeOffline).
+// The request is asynchronous, same as a transfer: this returns once the
+// delete_model command is dispatched, and HandleDeleteModelResult marks
+// the entry removed when the agent confirms. A permitted, dispatched
+// request is audited as "deleted_model_copy" against the node (audit
+// object ids are strict uuids and an inventory entry has none of its own,
+// so the model identity goes in the detail).
+func (s *Service) Delete(ctx context.Context, actor rbac.Actor, nodeID, modelRef, quantization string, format db.ModelFormat) error {
+	permitted, err := s.canManageModelStore(ctx, actor)
+	if err != nil {
+		return err
+	}
+	if !permitted {
+		return rbac.ErrNotPermitted
+	}
+
+	entry, err := s.inventory.Get(ctx, nodeID, modelRef, quantization, format)
+	if err != nil {
+		return err
+	}
+	if entry.Status == db.InventoryStatusRemoved {
+		return db.ErrNodeModelInventoryNotFound
+	}
+
+	profiles, err := s.profiles.List(ctx)
+	if err != nil {
+		return fmt.Errorf("list profiles for delete check: %w", err)
+	}
+	for _, p := range profiles {
+		if p.TargetNodeID == nil || *p.TargetNodeID != nodeID || p.ModelRef != modelRef || p.Format != format {
+			continue
+		}
+		profileQuant := ""
+		if p.Quantization != nil {
+			profileQuant = *p.Quantization
+		}
+		if profileQuant == quantization {
+			return fmt.Errorf("%w: profile %q", ErrModelInUse, p.Name)
+		}
+	}
+
+	if !s.dispatch.Connected(nodeID) {
+		return ErrNodeOffline
+	}
+	env, err := agentproto.NewEnvelope(agentproto.TypeDeleteModel, "", agentproto.DeleteModel{
+		ModelRef: modelRef, Quantization: quantization, Format: string(format),
+	})
+	if err != nil {
+		return fmt.Errorf("build delete_model envelope: %w", err)
+	}
+	if err := s.dispatch.Send(ctx, nodeID, env); err != nil {
+		return fmt.Errorf("dispatch delete_model to node %s: %w", nodeID, err)
+	}
+
+	var actorID *string
+	if !actor.IsSuperAdmin {
+		actorID = &actor.UserID
+	}
+	detail := map[string]any{"model_ref": modelRef, "quantization": quantization, "format": string(format)}
+	if err := s.audit.Record(ctx, actorID, actor.IsSuperAdmin, "deleted_model_copy", "node", nodeID, detail); err != nil {
+		return fmt.Errorf("record audit: %w", err)
+	}
+	return nil
+}
+
+// HandleDeleteModelResult implements agentconn.OnMessageFunc for
+// agentproto.TypeDeleteModelResult. nodeID is the sending connection's
+// authenticated identity, not a wire value. A confirmed removal marks the
+// entry removed; a failure is logged and leaves the entry present, since
+// the files may still be on disk.
+func (s *Service) HandleDeleteModelResult(nodeID string, env agentproto.Envelope) {
+	if env.Type != agentproto.TypeDeleteModelResult {
+		return
+	}
+	var result agentproto.DeleteModelResult
+	if err := env.DecodePayload(&result); err != nil {
+		s.logger.Printf("inventory: node %s sent a malformed delete_model_result: %v", nodeID, err)
+		return
+	}
+	if !result.Success {
+		s.logger.Printf("inventory: node %s failed to delete %s (%s, %s): %s", nodeID, result.ModelRef, result.Quantization, result.Format, result.Reason)
+		return
+	}
+	err := s.inventory.SetStatus(context.Background(), nodeID, result.ModelRef, result.Quantization, db.ModelFormat(result.Format), db.InventoryStatusRemoved)
+	if err != nil {
+		s.logger.Printf("inventory: mark %s removed on node %s: %v", result.ModelRef, nodeID, err)
+	}
 }

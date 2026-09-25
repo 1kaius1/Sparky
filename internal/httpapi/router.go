@@ -301,6 +301,9 @@ func (a *API) Router() http.Handler {
 	// Models redesign decision 14) - no client JS needed, same server-
 	// rendered-htmx-swap convention as every other page here.
 	r.With(a.RequireSession).Get("/inventory", a.handleInventory)
+	// The RBAC gate (rbac.CanManageModelStore) lives inside
+	// inventory.Service.Delete, same as the other write routes.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/inventory/delete", a.handleDeleteInventoryEntry)
 	// The registration form's own RBAC gate (rbac.CanManageNodes) is
 	// checked directly in both handlers - GET to decide whether to show
 	// the form at all, POST (via nodes.Service.RegisterNode) as the real

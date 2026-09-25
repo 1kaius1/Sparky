@@ -238,6 +238,19 @@ type fakeInventoryLister struct {
 	groupsErr error
 	simple    []inventory.SimpleRow
 	simpleErr error
+
+	canDelete    bool
+	deleteErr    error
+	deleteCalled []string
+}
+
+func (f *fakeInventoryLister) CanDelete(context.Context, rbac.Actor) (bool, error) {
+	return f.canDelete, nil
+}
+
+func (f *fakeInventoryLister) Delete(_ context.Context, _ rbac.Actor, nodeID, modelRef, quantization string, format db.ModelFormat) error {
+	f.deleteCalled = append(f.deleteCalled, nodeID+"|"+modelRef+"|"+quantization+"|"+string(format))
+	return f.deleteErr
 }
 
 func (f *fakeInventoryLister) ListGrouped(context.Context) ([]inventory.Group, error) {

@@ -158,6 +158,7 @@
     // declare node_status so a node coming online or dropping does too
     // (agentconn emits it on every agent_status transition).
     source.addEventListener("transfer_progress", refreshIfRelevant("transfer_progress"));
+    source.addEventListener("delete_model_result", refreshIfRelevant("delete_model_result"));
     source.addEventListener("engine_transfer_progress", refreshIfRelevant("engine_transfer_progress"));
     source.addEventListener("instance_result", refreshIfRelevant("instance_result"));
     source.addEventListener("instance_health", refreshIfRelevant("instance_health"));

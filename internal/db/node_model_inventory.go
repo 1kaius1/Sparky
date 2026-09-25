@@ -184,3 +184,21 @@ func (r *NodeModelInventoryRepository) List(ctx context.Context) ([]*NodeModelIn
 	}
 	return entries, nil
 }
+
+// SetStatus updates an existing entry's status without touching any other
+// column - used to mark a deleted model copy "removed" rather than hard-
+// deleting the row, the same "never delete rows, mark status" precedent
+// as Running instances. Returns ErrNodeModelInventoryNotFound if no row
+// matches the full composite key.
+func (r *NodeModelInventoryRepository) SetStatus(ctx context.Context, nodeID, modelRef, quantization string, format ModelFormat, status InventoryStatus) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE node_model_inventory SET status = $5 WHERE node_id = $1 AND model_ref = $2 AND quantization = $3 AND format = $4`,
+		nodeID, modelRef, quantization, format, status)
+	if err != nil {
+		return fmt.Errorf("set node model inventory status: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNodeModelInventoryNotFound
+	}
+	return nil
+}

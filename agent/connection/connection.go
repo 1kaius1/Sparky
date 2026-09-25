@@ -565,6 +565,17 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.instanceWG.Done()
 			c.runCheckInstance(ctx, conn, check)
 		}()
+	case agentproto.TypeDeleteModel:
+		var del agentproto.DeleteModel
+		if err := env.DecodePayload(&del); err != nil {
+			c.logger.Printf("agent connection: received malformed delete_model payload: %v", err)
+			return
+		}
+		c.transferWG.Add(1)
+		go func() {
+			defer c.transferWG.Done()
+			c.runDeleteModel(ctx, conn, del)
+		}()
 	default:
 		c.logger.Printf("agent connection: received unhandled message type %q", env.Type)
 	}
