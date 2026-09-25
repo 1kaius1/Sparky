@@ -2280,6 +2280,16 @@ Two questions originally tracked here have moved on, not been deleted outright:
 
 ## Future Ideas
 
+- **Write the full GUI manual test plan at release-candidate time** - a
+  complete, step-by-step manual test plan for the web GUI, written once the
+  GUI reaches its final release-candidate state and not before: the interface
+  is still changing (Models redesign PRs 9 and 10 remain), and a plan written
+  against a moving target goes stale before it is used. Scope: every page and
+  flow reachable at each permission tier, in a real browser, executed and
+  recorded as a new ARCHITECTURE.md Manual Tests gate before a version is
+  tagged. Starting material: the real-browser checks done ad hoc during the
+  Models redesign (Inventory Simple/Advanced, download and peer copy, cancel
+  and resume, incomplete-download cleanup, delete, live refresh).
 - Native Vault sidecar/CSI integration in the Helm chart, if a concrete user need
   emerges (deliberately deferred - see Decisions Log)
 - Additional engine adapters beyond vLLM/Aphrodite/llama.cpp as the ecosystem evolves
