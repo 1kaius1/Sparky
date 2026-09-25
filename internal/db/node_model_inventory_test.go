@@ -296,3 +296,39 @@ func TestNodeModelInventoryRepository_List(t *testing.T) {
 		t.Errorf("List() missing one or both of the two entries just created across different nodes")
 	}
 }
+
+func TestNodeModelInventoryRepository_SetStatus(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	inventory := NewNodeModelInventoryRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	transfer := createTestTransfer(t, transfers, node.ID, nil)
+	modelRef := "test-org/test-model"
+	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "Q4_K_M", ModelFormatGGUF, InventoryStatusPresent, 1024, transfer.ID); err != nil {
+		t.Fatalf("Upsert() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef)
+	})
+
+	if err := inventory.SetStatus(ctx, node.ID, modelRef, "Q4_K_M", ModelFormatGGUF, InventoryStatusRemoved); err != nil {
+		t.Fatalf("SetStatus() error: %v", err)
+	}
+	got, err := inventory.Get(ctx, node.ID, modelRef, "Q4_K_M", ModelFormatGGUF)
+	if err != nil {
+		t.Fatalf("Get() error: %v", err)
+	}
+	if got.Status != InventoryStatusRemoved {
+		t.Errorf("Status = %q, want %q", got.Status, InventoryStatusRemoved)
+	}
+	if got.SizeBytes != 1024 {
+		t.Errorf("SizeBytes = %d, want unchanged 1024", got.SizeBytes)
+	}
+
+	if err := inventory.SetStatus(ctx, node.ID, modelRef, "Q8_0", ModelFormatGGUF, InventoryStatusRemoved); err != ErrNodeModelInventoryNotFound {
+		t.Errorf("SetStatus() on a missing key error = %v, want ErrNodeModelInventoryNotFound", err)
+	}
+}

@@ -1498,6 +1498,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Model transfers is un-navved, not deleted; `GET /transfers` still works,
   reachable via a "View transfer history" link on the Inventory page. No
   add/remove actions yet - those land in later PRs in the same sequence.
+- Model deletion - PR 4 of 10 in the Models redesign. The Inventory page's
+  Advanced view has a per-row Delete action (confirm dialog, shown only to
+  actors holding `manage_model_store`, the capability SCHEMA.md already
+  documented as covering "download and delete") backed by
+  `inventory.Service.Delete`, which dispatches a new `delete_model` command
+  to the node holding the copy. The agent resolves the path itself, refuses
+  any `model_ref` that would escape `SPARKY_MODEL_STORAGE_PATH`, and removes
+  the model directory (or, for a GGUF quantization, just the matching
+  file(s) so sibling quantizations survive), then replies
+  `delete_model_result`; the entry is marked `removed` (kept for history,
+  hidden from the Inventory page) only on confirmed success. Refused with a
+  clear error if a Model profile still targets that model on that node, or
+  if the node is offline. Audited as `deleted_model_copy`.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

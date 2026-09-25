@@ -145,7 +145,7 @@ func main() {
 	// ListGroupedSimple reads (PLANNING.md's Models redesign) - the first
 	// read path node_model_inventory has ever had; internal/transfers'
 	// own inventoryRepo dependency above remains the only write path.
-	inventoryService := inventory.NewService(inventoryRepo)
+	inventoryService := inventory.NewService(inventoryRepo, profileRepo, overrideRepo, agentRegistry, auditRecorder, logger)
 
 	// rbacService backs both the Users & permissions page's RBAC-gated
 	// roster read (ListUsers) and, as of Dashboard UI Phase 8, its
@@ -196,6 +196,9 @@ func main() {
 		switch env.Type {
 		case agentproto.TypeTransferProgress:
 			transferService.HandleTransferProgress(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypeDeleteModelResult:
+			inventoryService.HandleDeleteModelResult(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
 		case agentproto.TypeEngineTransferProgress:
 			engineProvisionService.HandleEngineTransferProgress(nodeID, env)

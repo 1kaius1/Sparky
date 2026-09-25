@@ -4,10 +4,13 @@ package httpapi
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 
+	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/inventory"
+	"github.com/1kaius1/Sparky/internal/rbac"
 )
 
 // inventoryLister is the subset of *inventory.Service this package needs
@@ -15,6 +18,8 @@ import (
 type inventoryLister interface {
 	ListGrouped(ctx context.Context) ([]inventory.Group, error)
 	ListGroupedSimple(ctx context.Context) ([]inventory.SimpleRow, error)
+	CanDelete(ctx context.Context, actor rbac.Actor) (bool, error)
+	Delete(ctx context.Context, actor rbac.Actor, nodeID, modelRef, quantization string, format db.ModelFormat) error
 }
 
 // inventoryPageData is the Inventory page's view model - see PLANNING.md's
@@ -22,7 +27,10 @@ type inventoryLister interface {
 // matching slice below is populated, mirroring transfersPageData's own
 // single-purpose-per-request shape.
 type inventoryPageData struct {
-	View           string
+	View string
+	// CanDelete only decides whether the Delete action is shown, not a
+	// security boundary - inventory.Service.Delete re-checks.
+	CanDelete      bool
 	AdvancedGroups []inventoryGroupRow
 	SimpleRows     []inventorySimpleRow
 }
@@ -37,6 +45,7 @@ type inventoryGroupRow struct {
 }
 
 type inventoryEntryRow struct {
+	NodeID   string
 	NodeName string
 	Status   string
 	Size     string
@@ -71,6 +80,15 @@ func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	data := inventoryPageData{View: view}
+	if identity, ok := IdentityFromContext(ctx); ok {
+		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
+			canDelete, err := a.inventory.CanDelete(ctx, actor)
+			if err != nil {
+				a.logger.Printf("httpapi: check delete-model permission for inventory: %v", err)
+			}
+			data.CanDelete = canDelete
+		}
+	}
 
 	if view == "simple" {
 		rows, err := a.inventory.ListGroupedSimple(ctx)
@@ -99,6 +117,7 @@ func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
 			entries := make([]inventoryEntryRow, 0, len(g.Entries))
 			for _, e := range g.Entries {
 				entries = append(entries, inventoryEntryRow{
+					NodeID:   e.NodeID,
 					NodeName: nodeNames[e.NodeID],
 					Status:   string(e.Status),
 					Size:     formatMB(e.SizeBytes),
@@ -115,4 +134,61 @@ func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
 	}
 
 	a.render(w, r, "inventory", "Inventory", data)
+}
+
+// handleDeleteInventoryEntry is POST /inventory/delete - asks the node
+// holding a model copy to remove it. Fields are form values rather than
+// path segments since model_ref contains slashes. The RBAC decision lives
+// in inventory.Service.Delete, same as every other write path; same
+// hx-post/HX-Redirect shape as handleUnloadInstance. The removal itself is
+// asynchronous - the entry disappears once the agent confirms.
+func (a *API) handleDeleteInventoryEntry(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for delete inventory entry: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed form")
+		return
+	}
+	nodeID := r.PostForm.Get("node_id")
+	modelRef := r.PostForm.Get("model_ref")
+	format := db.ModelFormat(r.PostForm.Get("format"))
+	if nodeID == "" || modelRef == "" || (format != db.ModelFormatSafetensors && format != db.ModelFormatGGUF) {
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "node_id, model_ref, and a valid format are required")
+		return
+	}
+
+	err = a.inventory.Delete(ctx, actor, nodeID, modelRef, r.PostForm.Get("quantization"), format)
+	switch {
+	case errors.Is(err, rbac.ErrNotPermitted):
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "model store management required")
+		return
+	case errors.Is(err, db.ErrNodeModelInventoryNotFound):
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "inventory entry not found")
+		return
+	case errors.Is(err, inventory.ErrModelInUse):
+		writeError(w, r, http.StatusConflict, "MODEL_IN_USE", err.Error())
+		return
+	case errors.Is(err, inventory.ErrNodeOffline):
+		writeError(w, r, http.StatusConflict, "NODE_OFFLINE", err.Error())
+		return
+	case err != nil:
+		a.logger.Printf("httpapi: delete inventory entry %s on node %s: %v", modelRef, nodeID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("HX-Redirect", "/inventory")
+	w.WriteHeader(http.StatusNoContent)
 }

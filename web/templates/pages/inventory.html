@@ -1,5 +1,5 @@
 {{define "content"}}
-<div data-sse-topics="transfer_progress" hidden></div>
+<div data-sse-topics="transfer_progress delete_model_result" hidden></div>
 <h1>Inventory</h1>
 
 <p>
@@ -32,8 +32,8 @@
   </tbody>
 </table>
 {{else}}
-{{range .Data.AdvancedGroups}}
-<h2>{{.ModelRef}} - {{.Quantization}} ({{.Format}})</h2>
+{{range $group := .Data.AdvancedGroups}}
+<h2>{{$group.ModelRef}} - {{$group.Quantization}} ({{$group.Format}})</h2>
 <table class="data-table">
   <thead>
     <tr>
@@ -41,15 +41,27 @@
       <th>Status</th>
       <th>Size</th>
       <th>Placed at</th>
+      {{if $.Data.CanDelete}}<th></th>{{end}}
     </tr>
   </thead>
   <tbody>
-    {{range .Entries}}
+    {{range $group.Entries}}
     <tr>
       <td>{{.NodeName}}</td>
       <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
       <td>{{.Size}}</td>
       <td>{{.PlacedAt}}</td>
+      {{if $.Data.CanDelete}}
+      <td>
+        <form hx-post="/inventory/delete" hx-swap="none" hx-confirm="Delete {{$group.ModelRef}} ({{$group.Quantization}}, {{$group.Format}}) from {{.NodeName}}? This removes the files from that node." data-toast="Delete requested for {{$group.ModelRef}} on {{.NodeName}}">
+          <input type="hidden" name="node_id" value="{{.NodeID}}">
+          <input type="hidden" name="model_ref" value="{{$group.ModelRef}}">
+          <input type="hidden" name="quantization" value="{{$group.Quantization}}">
+          <input type="hidden" name="format" value="{{$group.Format}}">
+          <button type="submit">Delete</button>
+        </form>
+      </td>
+      {{end}}
     </tr>
     {{end}}
   </tbody>
