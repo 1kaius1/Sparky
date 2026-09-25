@@ -1584,6 +1584,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   shown only to viewers who can start transfers.
 
 ### Fixed
+- The Inventory page's Simple/Advanced choice no longer resets to Advanced
+  whenever a transfer makes progress. The live-refresh script re-requested only
+  the page's path, dropping the query string that holds `?view=simple`, so the
+  first progress event after switching views snapped it back. It now refetches
+  the path plus its query string (`sse.js`, and the same latent bug in
+  `dashboard.js`).
 - The Nodes and Dashboard pages now update without a manual reload when a
   node's agent connects, disconnects, or goes unreachable. `internal/agentconn`
   wrote `agent_status` transitions straight to the database and broadcast
