@@ -618,3 +618,121 @@ func TestHandleTransferProgress_FinishedTransfersAreNotReopened(t *testing.T) {
 		}
 	}
 }
+
+func incompleteUpserts(f *peerFixture) []upsertCall {
+	var out []upsertCall
+	for _, c := range f.inv.calls {
+		if c.status == db.InventoryStatusIncomplete {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func TestCancelTransfer_RunningTransferLeavesAnIncompleteEntryOnTheDestination(t *testing.T) {
+	f := newPeerFixture()
+	tr := queuedPeerTransfer()
+	tr.Status = db.TransferStatusTransferring
+	tr.BytesTransferred = 1500
+	f.store.findByIDResult = tr
+	if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+		t.Fatal(err)
+	}
+	got := incompleteUpserts(f)
+	if len(got) != 1 {
+		t.Fatalf("incomplete upserts = %v, want exactly one - the partial data must be visible so it can be deleted", f.inv.calls)
+	}
+	c := got[0]
+	if c.nodeID != "dest" || c.modelRef != "org/m" || c.quantization != "Q4_K_M" || c.format != db.ModelFormatGGUF || c.sizeBytes != 1500 || c.placedVia != "t-1" {
+		t.Errorf("entry = %+v, want it filed under the destination with the transfer's own key and the bytes seen so far", c)
+	}
+}
+
+func TestCancelTransfer_QueuedTransferLeavesNoIncompleteEntry(t *testing.T) {
+	f := newPeerFixture()
+	f.store.findByIDResult = queuedPeerTransfer() // still queued: nothing has landed on the node
+	if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.inv.calls) != 0 {
+		t.Errorf("a transfer that never started must not create an inventory entry: %v", f.inv.calls)
+	}
+}
+
+func TestHandleTransferProgress_FailureWithBytesLeavesAnIncompleteEntry(t *testing.T) {
+	f := newPeerFixture()
+	tr := queuedPeerTransfer()
+	tr.Status = db.TransferStatusTransferring
+	f.store.findByIDResult = tr
+	f.svc.HandleTransferProgress("dest", newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
+		TransferID: "t-1", BytesTransferred: 4096, BytesTotal: 9000, Status: string(db.TransferStatusFailed), ErrorMessage: "connection reset",
+	}))
+	got := incompleteUpserts(f)
+	if len(got) != 1 || got[0].sizeBytes != 4096 {
+		t.Errorf("incomplete upserts = %v, want one carrying the 4096 bytes moved", f.inv.calls)
+	}
+}
+
+func TestHandleTransferProgress_FailureBeforeAnyDataLeavesNothing(t *testing.T) {
+	f := newPeerFixture()
+	tr := queuedPeerTransfer()
+	tr.Status = db.TransferStatusTransferring
+	f.store.findByIDResult = tr
+	f.svc.HandleTransferProgress("dest", newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
+		TransferID: "t-1", Status: string(db.TransferStatusFailed), ErrorMessage: "no such repo",
+	}))
+	if len(f.inv.calls) != 0 {
+		t.Errorf("a failure before any bytes moved must not list phantom partial data: %v", f.inv.calls)
+	}
+}
+
+func TestRecordIncomplete_NeverDowngradesAUsableEntry(t *testing.T) {
+	for _, status := range []db.InventoryStatus{db.InventoryStatusPresent, db.InventoryStatusStale} {
+		f := newPeerFixture()
+		f.inv.getResult = &db.NodeModelInventory{Status: status}
+		tr := queuedPeerTransfer()
+		tr.Status = db.TransferStatusTransferring
+		tr.BytesTransferred = 10
+		f.store.findByIDResult = tr
+		if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.inv.calls) != 0 {
+			t.Errorf("%s: a cancelled re-download made a working model look broken: %v", status, f.inv.calls)
+		}
+	}
+	// A removed or already-incomplete entry, by contrast, is refreshed.
+	for _, status := range []db.InventoryStatus{db.InventoryStatusRemoved, db.InventoryStatusIncomplete} {
+		f := newPeerFixture()
+		f.inv.getResult = &db.NodeModelInventory{Status: status}
+		tr := queuedPeerTransfer()
+		tr.Status = db.TransferStatusTransferring
+		f.store.findByIDResult = tr
+		if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+			t.Fatal(err)
+		}
+		if len(incompleteUpserts(f)) != 1 {
+			t.Errorf("%s: want the entry refreshed as incomplete, got %v", status, f.inv.calls)
+		}
+	}
+}
+
+func TestRecordIncomplete_InternetTransferUsesTheSameKeyAsItsCompletion(t *testing.T) {
+	f := newPeerFixture()
+	q := "Q8_0"
+	f.store.findByIDResult = &db.ModelTransfer{ID: "t-1", DestNodeID: "dest", ModelRef: "org/m", SourceType: db.TransferSourceInternet, Status: db.TransferStatusTransferring, Quantization: &q, BytesTransferred: 77}
+	if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+		t.Fatal(err)
+	}
+	got := incompleteUpserts(f)
+	if len(got) != 1 || got[0].quantization != "Q8_0" || got[0].format != db.ModelFormatGGUF {
+		t.Fatalf("incomplete = %v", f.inv.calls)
+	}
+	// ...so a later successful transfer replaces it rather than sitting beside it.
+	g := newPeerFixture()
+	g.store.findByIDResult = &db.ModelTransfer{ID: "t-2", DestNodeID: "dest", ModelRef: "org/m", SourceType: db.TransferSourceInternet, Status: db.TransferStatusTransferring, Quantization: &q}
+	g.svc.HandleTransferProgress("dest", newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{TransferID: "t-2", BytesTotal: 5, Status: string(db.TransferStatusCompleted)}))
+	if len(g.inv.calls) != 1 || g.inv.calls[0].status != db.InventoryStatusPresent || g.inv.calls[0].quantization != got[0].quantization || g.inv.calls[0].format != got[0].format {
+		t.Errorf("completion upsert = %v, want the same key as the incomplete entry, status present", g.inv.calls)
+	}
+}

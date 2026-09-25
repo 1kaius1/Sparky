@@ -30,6 +30,7 @@ type transferStore interface {
 // package needs.
 type inventoryStore interface {
 	Upsert(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error)
+	Get(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat) (*db.NodeModelInventory, error)
 }
 
 // overrideStore is the subset of *db.PermissionOverrideRepository this
@@ -232,6 +233,12 @@ func (s *Service) CancelTransfer(ctx context.Context, actor rbac.Actor, transfer
 	}
 	s.sendCancel(ctx, t.DestNodeID, t.ID)
 	s.revokePeer(ctx, t)
+	// A transfer that had started leaves partial data on the node. The
+	// agent's own final report is ignored (the row is already cancelled), so
+	// the last progress the server saw is the best size available.
+	if previous == db.TransferStatusTransferring {
+		s.recordIncomplete(ctx, t, t.BytesTransferred)
+	}
 
 	var actorID *string
 	if !actor.IsSuperAdmin {
@@ -319,6 +326,55 @@ func (s *Service) ListTransfers(ctx context.Context) ([]*db.ModelTransfer, error
 	return transfers, nil
 }
 
+// inventoryKey is the (quantization, format) an inventory entry for this
+// transfer is filed under - the same for the finished model and for the
+// partial data a cancelled or failed attempt leaves, so a later successful
+// transfer replaces the incomplete entry rather than sitting beside it.
+func inventoryKey(t *db.ModelTransfer) (quantization string, format db.ModelFormat) {
+	if t.Quantization != nil {
+		quantization = *t.Quantization
+	}
+	// Same convention-based inference migrations/000030_add_model_format.up.sql
+	// uses to backfill historical rows: a non-empty quantization is only
+	// ever meaningful for a GGUF file today. This is a stopgap, not the
+	// real answer - a later PR (agent/modelinspect) determines format by
+	// inspecting the downloaded file itself instead of guessing from
+	// whether a quantization string happens to be present.
+	format = db.ModelFormatSafetensors
+	if quantization != "" {
+		format = db.ModelFormatGGUF
+	}
+	// A peer transfer copies a known inventory entry, so its real format
+	// (recorded at initiation) wins over the guess.
+	if t.Format != nil {
+		format = *t.Format
+	}
+	return quantization, format
+}
+
+// recordIncomplete files partial data a cancelled or failed transfer left on
+// its destination as an "incomplete" inventory entry, so it shows up on the
+// Inventory page and can be deleted - otherwise it would sit on the node's
+// disk (kept on purpose, so a new transfer can resume it) with nothing in
+// the UI to free it. An existing usable entry for the same model is never
+// downgraded: a failed re-download must not make a working model look
+// broken. Best-effort - a failure here is logged, never surfaced, since the
+// transfer's own status is already recorded.
+func (s *Service) recordIncomplete(ctx context.Context, t *db.ModelTransfer, bytes int64) {
+	quantization, format := inventoryKey(t)
+	existing, err := s.inventory.Get(ctx, t.DestNodeID, t.ModelRef, quantization, format)
+	switch {
+	case err == nil && (existing.Status == db.InventoryStatusPresent || existing.Status == db.InventoryStatusStale):
+		return
+	case err != nil && !errors.Is(err, db.ErrNodeModelInventoryNotFound):
+		s.logger.Printf("transfers: look up inventory for incomplete %s on node %s: %v", t.ModelRef, t.DestNodeID, err)
+		return
+	}
+	if _, err := s.inventory.Upsert(ctx, t.DestNodeID, t.ModelRef, quantization, format, db.InventoryStatusIncomplete, bytes, t.ID); err != nil {
+		s.logger.Printf("transfers: record incomplete %s on node %s: %v", t.ModelRef, t.DestNodeID, err)
+	}
+}
+
 // HandleTransferProgress implements agentconn.OnMessageFunc for
 // agentproto.TypeTransferProgress, the only message type Model transfers
 // dispatches or expects back - wire it in as the onMessage callback passed
@@ -391,30 +447,15 @@ func (s *Service) HandleTransferProgress(nodeID string, env agentproto.Envelope)
 	if status == db.TransferStatusCompleted || status == db.TransferStatusFailed || status == db.TransferStatusCancelled {
 		s.revokePeer(ctx, t)
 	}
+	if status == db.TransferStatusFailed && progress.BytesTransferred > 0 {
+		s.recordIncomplete(ctx, t, progress.BytesTransferred)
+	}
 
 	if status != db.TransferStatusCompleted {
 		return
 	}
 
-	var quantization string
-	if t.Quantization != nil {
-		quantization = *t.Quantization
-	}
-	// Same convention-based inference migrations/000030_add_model_format.up.sql
-	// uses to backfill historical rows: a non-empty quantization is only
-	// ever meaningful for a GGUF file today. This is a stopgap, not the
-	// real answer - a later PR (agent/modelinspect) determines format by
-	// inspecting the downloaded file itself instead of guessing from
-	// whether a quantization string happens to be present.
-	format := db.ModelFormatSafetensors
-	if quantization != "" {
-		format = db.ModelFormatGGUF
-	}
-	// A peer transfer copies a known inventory entry, so its real format
-	// (recorded at initiation) wins over the guess.
-	if t.Format != nil {
-		format = *t.Format
-	}
+	quantization, format := inventoryKey(t)
 	if _, err := s.inventory.Upsert(ctx, nodeID, t.ModelRef, quantization, format, db.InventoryStatusPresent, progress.BytesTotal, t.ID); err != nil {
 		s.logger.Printf("transfers: upsert inventory for node %s model %s: %v", nodeID, t.ModelRef, err)
 	}

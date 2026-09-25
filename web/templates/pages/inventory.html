@@ -25,7 +25,7 @@
     {{range .Data.SimpleRows}}
     <tr>
       <td>{{.ModelRef}}</td>
-      <td>{{.Quantizations}}</td>
+      <td>{{.Quantizations}}{{if .IncompleteCount}} <span class="status status-incomplete">{{.IncompleteCount}} incomplete</span>{{end}}</td>
       <td>{{.Size}}</td>
     </tr>
     {{else}}
@@ -54,6 +54,7 @@
       <td>
         {{if .Removing}}<span class="status status-stopping">removing...</span>
         {{else}}<span class="status status-{{.Status}}">{{.Status}}</span>{{end}}
+        {{if .Incomplete}}<br><small>Partial data from a cancelled or failed transfer - starting the transfer again resumes it, or delete it to free the space.</small>{{end}}
         {{if and $.Data.CanDelete .DeleteError}}<br><small class="form-error">Delete failed: {{.DeleteError}}</small>{{end}}
       </td>
       <td>{{.Size}}</td>
@@ -64,7 +65,7 @@
         {{if .Removing}}
         <small>Waiting for {{.NodeName}} to remove the files...</small>
         {{else}}
-        <form hx-post="/inventory/delete" hx-swap="none" hx-confirm="Delete {{$group.ModelRef}} ({{$group.Quantization}}, {{$group.Format}}) from {{.NodeName}}? This removes the files from that node." data-toast="Delete requested for {{$group.ModelRef}} on {{.NodeName}}">
+        <form hx-post="/inventory/delete" hx-swap="none" hx-confirm="{{if .Incomplete}}Delete the incomplete download of{{else}}Delete{{end}} {{$group.ModelRef}} ({{$group.Quantization}}, {{$group.Format}}) from {{.NodeName}}? This removes the files from that node." data-toast="Delete requested for {{$group.ModelRef}} on {{.NodeName}}">
           <input type="hidden" name="node_id" value="{{.NodeID}}">
           <input type="hidden" name="model_ref" value="{{$group.ModelRef}}">
           <input type="hidden" name="quantization" value="{{$group.Quantization}}">

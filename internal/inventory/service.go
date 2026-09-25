@@ -226,6 +226,11 @@ type SimpleRow struct {
 	ModelRef       string
 	Quantizations  []string
 	TotalSizeBytes int64
+	// IncompleteCount is how many partial copies (cancelled/failed
+	// transfers' leftovers) exist across nodes. They are counted apart, and
+	// excluded from Quantizations and TotalSizeBytes: partial data is not
+	// an available quantization and would misstate what is usable.
+	IncompleteCount int
 }
 
 // ListGroupedSimple collapses ListGrouped's own output further, by
@@ -251,11 +256,15 @@ func (s *Service) ListGroupedSimple(ctx context.Context) ([]SimpleRow, error) {
 			seenQuant[g.ModelRef] = make(map[string]bool)
 			order = append(order, g.ModelRef)
 		}
-		if !seenQuant[g.ModelRef][g.Quantization] {
-			seenQuant[g.ModelRef][g.Quantization] = true
-			row.Quantizations = append(row.Quantizations, g.Quantization)
-		}
 		for _, e := range g.Entries {
+			if e.Status == db.InventoryStatusIncomplete {
+				row.IncompleteCount++
+				continue
+			}
+			if !seenQuant[g.ModelRef][g.Quantization] {
+				seenQuant[g.ModelRef][g.Quantization] = true
+				row.Quantizations = append(row.Quantizations, g.Quantization)
+			}
 			row.TotalSizeBytes += e.SizeBytes
 		}
 	}
@@ -267,8 +276,9 @@ func (s *Service) ListGroupedSimple(ctx context.Context) ([]SimpleRow, error) {
 	return rows, nil
 }
 
-// ListByNode returns a single node's inventory entries, excluding entries
-// marked removed - backs the
+// ListByNode returns a single node's usable inventory entries, excluding
+// entries marked removed and incomplete (partial data is not something a
+// profile can run or another node can copy) - backs the
 // Profile-creation cascading picker (PLANNING.md's Models redesign PR 9),
 // not yet wired to anything.
 func (s *Service) ListByNode(ctx context.Context, nodeID string) ([]*db.NodeModelInventory, error) {
@@ -278,7 +288,7 @@ func (s *Service) ListByNode(ctx context.Context, nodeID string) ([]*db.NodeMode
 	}
 	present := make([]*db.NodeModelInventory, 0, len(entries))
 	for _, e := range entries {
-		if e.Status != db.InventoryStatusRemoved {
+		if e.Status != db.InventoryStatusRemoved && e.Status != db.InventoryStatusIncomplete {
 			present = append(present, e)
 		}
 	}

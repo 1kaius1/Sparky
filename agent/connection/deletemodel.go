@@ -52,17 +52,21 @@ func (c *Conn) removeModel(modelRef, quantization, format string) error {
 		return nil
 	}
 
-	matches, err := filepath.Glob(filepath.Join(dir, "*.gguf"))
+	// Any file whose name contains the quantization - not just "*.gguf": an
+	// interrupted peer copy also leaves rsync's hidden temp file
+	// (".<name>.gguf.XXXXXX"), which is exactly the data a delete of an
+	// incomplete entry has to free.
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return fmt.Errorf("glob .gguf files in %s: %w", dir, err)
+		return fmt.Errorf("read %s: %w", dir, err)
 	}
 	removed := 0
-	for _, m := range matches {
-		if !strings.Contains(filepath.Base(m), quantization) {
+	for _, e := range entries {
+		if e.IsDir() || !strings.Contains(e.Name(), quantization) {
 			continue
 		}
-		if err := os.Remove(m); err != nil {
-			return fmt.Errorf("remove %s: %w", m, err)
+		if err := os.Remove(filepath.Join(dir, e.Name())); err != nil {
+			return fmt.Errorf("remove %s: %w", e.Name(), err)
 		}
 		removed++
 	}

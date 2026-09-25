@@ -1590,7 +1590,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   either kind - is told to stop (`cancel_transfer`), and for a peer copy the
   source drops its SSH authorization right away. Data already transferred is
   kept, so a new transfer of the same model resumes from it rather than
-  starting over. Late reports from the node can never overwrite a cancelled
+  starting over - and it is listed on the Inventory page as an **incomplete**
+  entry under the node it landed on (marked as partial data, counted apart in
+  the Simple view, never offered as a copy source or a profile's model), with a
+  Delete button, so an aborted download of the wrong model cannot leave tens of
+  gigabytes on a node's disk that nobody can see or free. A failed transfer that
+  moved data is listed the same way; a working copy of the same model is never
+  downgraded by a failed re-download; and a later completed transfer replaces
+  the incomplete entry (migration `000033` adds the `incomplete` status). Late reports from the node can never overwrite a cancelled
   (or otherwise finished) transfer - previously any stray progress message
   could rewrite a finished row - and a node that was offline when the cancel
   was sent is told again as soon as it reports the transfer as running. Audited
