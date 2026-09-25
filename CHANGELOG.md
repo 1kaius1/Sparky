@@ -1608,6 +1608,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   showed (the copy carried on writing to disk after "cancelled").
 
 ### Fixed
+- Pages that update themselves live no longer get stuck showing stale data when
+  the update happens while the page is loading or the tab is in the background.
+  The live-update script only reacted to events that arrived while its
+  connection was open, so anything that happened between the server rendering a
+  page and the browser's connection opening (a node confirming a model delete a
+  few milliseconds after the redirect rendered the row as "removing") was lost,
+  and the page stayed stale until a manual reload. It now refetches once
+  whenever the connection opens (including after a reconnect), and makes up for
+  a refresh it skipped because the tab was hidden when the tab returns.
+  Reproduced deterministically (a delayed live connection plus a briefly paused
+  node: 3 of 3 attempts left the deleted row on the page) and verified fixed
+  (0 of 3).
 - Deleting a model no longer looks like nothing happened. The removal is
   confirmed by the node asynchronously, so after clicking OK the page reloaded
   to a row that looked untouched until the node answered (noticeable for a
