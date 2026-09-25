@@ -26,6 +26,10 @@ var ErrInvalidTransfer = errors.New("invalid model transfer")
 // never leaves behind a queued transfer nothing will ever pick up.
 var ErrDestNodeOffline = errors.New("destination node is not connected")
 
+// ErrNotRetryable is returned by RetryTransfer for a transfer that has not
+// failed - only a failed transfer can be retried.
+var ErrNotRetryable = errors.New("only a failed transfer can be retried")
+
 // ErrSourceNodeOffline is ErrDestNodeOffline's counterpart for a peer
 // transfer's source - both ends must be connected, since the source has to
 // authorize the pull before it can start.
@@ -59,6 +63,10 @@ type InitiateTransferParams struct {
 	// reported interfaces is pulled from; empty means the node's default,
 	// else "Fastest" - see nodes.Service.ResolveTransferSource.
 	SourceInterface string
+
+	// RetryOf is the ID of the failed transfer this one re-runs, recorded in
+	// the audit detail only - it has no effect on how the transfer runs.
+	RetryOf string
 
 	// Quantization restricts the download to just the one .gguf file
 	// matching this value, instead of every file in the repo - empty

@@ -620,3 +620,65 @@ func TestEncodeDecodeEntryRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestRetryTransfer_Handler(t *testing.T) {
+	tests := []struct {
+		name     string
+		err      error
+		wantCode int
+	}{
+		{"ok", nil, http.StatusNoContent},
+		{"forbidden", rbac.ErrNotPermitted, http.StatusForbidden},
+		{"not found", db.ErrModelTransferNotFound, http.StatusNotFound},
+		{"not failed", transfers.ErrNotRetryable, http.StatusConflict},
+		{"source offline", transfers.ErrSourceNodeOffline, http.StatusConflict},
+		{"dest offline", transfers.ErrDestNodeOffline, http.StatusConflict},
+		{"source lost the model", transfers.ErrSourceNotPresent, http.StatusConflict},
+		{"peer not ready", fmt.Errorf("%w: x", transfers.ErrPeerNotReady), http.StatusConflict},
+		{"unexpected", context.Canceled, http.StatusInternalServerError},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			f := newTransferFormFixture(t, db.TierAdmin, true)
+			f.initiator.retryErr = tt.err
+			rec := f.post(t, "/transfers/abc-123/retry", url.Values{})
+			if rec.Code != tt.wantCode {
+				t.Errorf("status = %d, want %d: %s", rec.Code, tt.wantCode, rec.Body.String())
+			}
+			if len(f.initiator.retryCalls) != 1 || f.initiator.retryCalls[0] != "abc-123" {
+				t.Errorf("retryCalls = %v", f.initiator.retryCalls)
+			}
+			if tt.wantCode == http.StatusNoContent && rec.Header().Get("HX-Redirect") != "/transfers" {
+				t.Errorf("HX-Redirect = %q", rec.Header().Get("HX-Redirect"))
+			}
+			if tt.wantCode == http.StatusConflict && !strings.Contains(rec.Body.String(), "CANNOT_RETRY") {
+				t.Errorf("the reason must reach the toast: %s", rec.Body.String())
+			}
+		})
+	}
+}
+
+func TestTransfersPage_RetryButtonOnlyOnFailedRowsAndOnlyWhenPermitted(t *testing.T) {
+	transfersFake := &fakeTransferLister{transfers: []*db.ModelTransfer{
+		{ID: "failed-1", DestNodeID: "n", ModelRef: "org/a", Status: db.TransferStatusFailed, RequestedAt: time.Now()},
+		{ID: "done-1", DestNodeID: "n", ModelRef: "org/b", Status: db.TransferStatusCompleted, RequestedAt: time.Now()},
+		{ID: "run-1", DestNodeID: "n", ModelRef: "org/c", Status: db.TransferStatusTransferring, RequestedAt: time.Now()},
+		{ID: "cancel-1", DestNodeID: "n", ModelRef: "org/d", Status: db.TransferStatusCancelled, RequestedAt: time.Now()},
+	}}
+	for _, permitted := range []bool{true, false} {
+		viewer := newFakeUserLister()
+		viewer.byID["u-1"] = &db.User{ID: "u-1", Tier: db.TierAdmin}
+		api := newTestModelTransfersAPI(t, &fakeNodeLister{}, transfersFake, &fakeTransferInitiator{permitted: permitted}, viewer)
+		rec := httptest.NewRecorder()
+		api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/transfers", "u-1"))
+		body := rec.Body.String()
+		if got := strings.Contains(body, `hx-post="/transfers/failed-1/retry"`); got != permitted {
+			t.Errorf("permitted=%v: retry button on the failed row = %v", permitted, got)
+		}
+		for _, id := range []string{"done-1", "run-1", "cancel-1"} {
+			if strings.Contains(body, "/transfers/"+id+"/retry") {
+				t.Errorf("permitted=%v: a retry button appeared on a non-failed transfer (%s)", permitted, id)
+			}
+		}
+	}
+}

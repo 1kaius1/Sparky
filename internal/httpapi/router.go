@@ -352,6 +352,9 @@ func (a *API) Router() http.Handler {
 	// Helper endpoints the form's htmx fragments call - all behind the same
 	// manage_model_store capability as the form itself. check-connectivity
 	// is a POST (it dispatches a command to a node); the rest are reads.
+	// Retry is a write, so CSRF-protected; the capability check and the
+	// only-failed rule live in transfers.Service.RetryTransfer.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/transfers/{id}/retry", a.handleRetryTransfer)
 	r.With(a.RequireSession).Get("/inventory/transfer/estimate-size", a.handleEstimateSize)
 	r.With(a.RequireSession).Get("/inventory/transfer/peer-options", a.handlePeerOptions)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/inventory/transfer/check-connectivity", a.handleCheckConnectivity)

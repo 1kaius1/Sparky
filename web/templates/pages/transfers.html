@@ -16,6 +16,7 @@
       <th>Progress</th>
       <th>Requested at</th>
       <th>Error</th>
+      {{if .Data.CanInitiate}}<th></th>{{end}}
     </tr>
   </thead>
   <tbody>
@@ -28,9 +29,18 @@
       <td>{{.Progress}}</td>
       <td>{{.RequestedAt}}</td>
       <td>{{.ErrorMessage}}</td>
+      {{if $.Data.CanInitiate}}
+      <td>
+        {{if eq .Status "failed"}}
+        <form hx-post="/transfers/{{.ID}}/retry" hx-swap="none" data-toast="Retry started for {{.ModelRef}}">
+          <button type="submit">Retry</button>
+        </form>
+        {{end}}
+      </td>
+      {{end}}
     </tr>
     {{else}}
-    <tr><td colspan="7" class="empty">No transfers yet.</td></tr>
+    <tr><td colspan="8" class="empty">No transfers yet.</td></tr>
     {{end}}
   </tbody>
 </table>

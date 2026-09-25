@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/go-chi/chi/v5"
+
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/modelsource"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -25,6 +27,7 @@ import (
 type transferInitiator interface {
 	CanInitiateTransfer(ctx context.Context, actor rbac.Actor) (bool, error)
 	InitiateTransfer(ctx context.Context, actor rbac.Actor, params transfers.InitiateTransferParams) (*db.ModelTransfer, error)
+	RetryTransfer(ctx context.Context, actor rbac.Actor, transferID string) (*db.ModelTransfer, error)
 	CheckConnectivity(ctx context.Context, actor rbac.Actor, destNodeID, sourceNodeID, sourceInterface string) (string, error)
 	GetConnectivityResult(checkID string) (*transfers.ConnectivityResult, bool)
 }
@@ -437,4 +440,47 @@ func (a *API) handleCheckResult(w http.ResponseWriter, r *http.Request) {
 		}
 		a.renderPartial(w, "connectivity", connectivityData{State: "failed", Message: msg})
 	}
+}
+
+// handleRetryTransfer is POST /transfers/{id}/retry - re-runs a failed
+// transfer as a new one. The RBAC decision and the "only failed" rule live
+// in transfers.Service.RetryTransfer; same hx-post/HX-Redirect shape as
+// handleLoadInstance, with the failure reason surfacing as the toast.
+func (a *API) handleRetryTransfer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for retry transfer: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	_, err = a.transferInitiatorSvc.RetryTransfer(ctx, actor, id)
+	switch {
+	case errors.Is(err, rbac.ErrNotPermitted):
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "manage_model_store capability required")
+		return
+	case errors.Is(err, db.ErrModelTransferNotFound):
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "model transfer not found")
+		return
+	case errors.Is(err, transfers.ErrNotRetryable), errors.Is(err, transfers.ErrInvalidTransfer),
+		errors.Is(err, transfers.ErrDestNodeOffline), errors.Is(err, transfers.ErrSourceNodeOffline),
+		errors.Is(err, transfers.ErrSourceNotPresent), errors.Is(err, transfers.ErrPeerNotReady):
+		writeError(w, r, http.StatusConflict, "CANNOT_RETRY", err.Error())
+		return
+	case err != nil:
+		a.logger.Printf("httpapi: retry transfer %s: %v", id, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("HX-Redirect", "/transfers")
+	w.WriteHeader(http.StatusNoContent)
 }

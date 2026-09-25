@@ -1573,6 +1573,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   quantization is given); any failure quietly shows "size unknown". The
   Inventory page gains a "Download or copy a model" link. New htmx fragment
   templates under `web/templates/partials/`.
+- A **Retry** button on the Model transfers page for a failed transfer. It
+  starts a new transfer with the same parameters (internet or peer, including
+  the quantization, format and any explicit source interface) and leaves the
+  failed row untouched as history; the new transfer's audit record carries
+  `retry_of`. A retry is re-validated against the current state like any new
+  request, so retrying a peer copy whose source has since gone offline or lost
+  the model is refused with the reason. Only failed transfers can be retried
+  (not running, completed, or deliberately cancelled ones), and the button is
+  shown only to viewers who can start transfers.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

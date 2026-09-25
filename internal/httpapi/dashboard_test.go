@@ -213,11 +213,22 @@ type fakeTransferInitiator struct {
 	err          error
 	calls        []transferInitiateCall
 
+	retryCalls []string
+	retryErr   error
+
 	checkID     string
 	checkErr    error
 	checkCalls  []string
 	checkResult *transfers.ConnectivityResult
 	checkKnown  bool
+}
+
+func (f *fakeTransferInitiator) RetryTransfer(_ context.Context, _ rbac.Actor, id string) (*db.ModelTransfer, error) {
+	f.retryCalls = append(f.retryCalls, id)
+	if f.retryErr != nil {
+		return nil, f.retryErr
+	}
+	return &db.ModelTransfer{ID: "new-" + id}, nil
 }
 
 func (f *fakeTransferInitiator) CheckConnectivity(_ context.Context, _ rbac.Actor, dest, src, iface string) (string, error) {
