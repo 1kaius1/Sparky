@@ -5,8 +5,15 @@
 <div class="form-error">{{.Data.Error}}</div>
 {{end}}
 
-<form method="post" action="/transfers/new">
+<form id="transfer-form" method="post" action="/inventory/transfer/new">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="source_type">Source</label><br>
+    <select id="source_type" name="source_type">
+      <option value="internet" {{if ne .Data.Form.SourceType "peer_node"}}selected{{end}}>Internet (Hugging Face)</option>
+      <option value="peer_node" {{if eq .Data.Form.SourceType "peer_node"}}selected{{end}}>Another node</option>
+    </select>
+  </p>
   <p>
     <label for="dest_node_id">Destination node</label><br>
     <select id="dest_node_id" name="dest_node_id" required>
@@ -15,18 +22,44 @@
       {{end}}
     </select>
   </p>
-  <p>
-    <label for="model_ref">Model</label><br>
-    <input type="text" id="model_ref" name="model_ref" value="{{.Data.Form.ModelRef}}" placeholder="RedHatAI/Qwen2-0.5B-Instruct-FP8" required>
-    <br><small>Hugging Face repo path, ideally with a pinned revision.</small>
-  </p>
-  <p>
-    <label for="quantization">Quantization</label><br>
-    <input type="text" id="quantization" name="quantization" value="{{.Data.Form.Quantization}}" placeholder="Q4_K_M">
-    <br><small>Optional. Restricts the download to the one matching .gguf
-    file - leave blank to download the whole repo (the only sensible choice
-    for vLLM/Aphrodite or a single-file GGUF repo).</small>
-  </p>
-  <p><button type="submit">Start download</button></p>
+
+  <fieldset id="internet-fields" {{if eq .Data.Form.SourceType "peer_node"}}hidden disabled{{end}}>
+    <p>
+      <label for="model_ref">Model</label><br>
+      <input type="text" id="model_ref" name="model_ref" value="{{.Data.Form.ModelRef}}" placeholder="RedHatAI/Qwen2-0.5B-Instruct-FP8" required
+             hx-get="/inventory/transfer/estimate-size" hx-trigger="blur, change" hx-include="#model_ref, #quantization" hx-target="#estimate" hx-swap="innerHTML">
+      <br><small>Hugging Face repo path, ideally with a pinned revision.</small>
+    </p>
+    <p>
+      <label for="quantization">Quantization</label><br>
+      <input type="text" id="quantization" name="quantization" value="{{.Data.Form.Quantization}}" placeholder="Q4_K_M"
+             hx-get="/inventory/transfer/estimate-size" hx-trigger="change" hx-include="#model_ref, #quantization" hx-target="#estimate" hx-swap="innerHTML">
+      <br><small>Optional. Restricts the download to the one matching .gguf
+      file - leave blank to download the whole repo (the only sensible choice
+      for vLLM/Aphrodite or a single-file GGUF repo).</small>
+    </p>
+    <p id="estimate" class="estimate"></p>
+  </fieldset>
+
+  <fieldset id="peer-fields" {{if ne .Data.Form.SourceType "peer_node"}}hidden disabled{{end}}>
+    <p>
+      <label for="source_node_id">Source node</label><br>
+      <select id="source_node_id" name="source_node_id">
+        <option value="">Choose a node</option>
+        {{range .Data.Nodes}}
+        <option value="{{.ID}}" {{if eq $.Data.Form.SourceNodeID .ID}}selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
+    </p>
+    <input type="hidden" id="prefill-entry" name="prefill_entry" value="{{.Data.Form.Entry}}">
+    <input type="hidden" id="prefill-iface" name="prefill_source_interface" value="{{.Data.Form.SourceInterface}}">
+    <div id="peer-options" hx-get="/inventory/transfer/peer-options"
+         hx-trigger="load, change from:#source_node_id, refresh"
+         hx-include="#source_node_id, #dest_node_id, #prefill-entry, #prefill-iface, [name=entry], [name=source_interface]"
+         hx-swap="innerHTML"></div>
+    <div id="check-status" aria-live="polite"></div>
+  </fieldset>
+
+  <p><button type="submit" id="transfer-submit">Start transfer</button></p>
 </form>
 {{end}}

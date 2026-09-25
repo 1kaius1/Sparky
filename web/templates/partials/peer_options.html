@@ -1,0 +1,32 @@
+{{define "peer_options"}}
+{{if .NoSource}}
+<p><small>Choose a source node to see what it has.</small></p>
+{{else}}
+<p>
+  <label for="entry">Model on the source node</label><br>
+  <select id="entry" name="entry">
+    {{range .Entries}}
+    <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+    {{end}}
+  </select>
+  {{if .NoEntriesNotice}}<br><small>This node has no models in its inventory to copy.</small>{{end}}
+</p>
+<p>
+  <label for="source_interface">Source network interface</label><br>
+  <select id="source_interface" name="source_interface">
+    <option value="" {{if eq .SelectedIface ""}}selected{{end}}>{{.DefaultLabel}}</option>
+    {{range .Interfaces}}
+    <option value="{{.Name}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+    {{end}}
+  </select>
+  {{if .CanRescan}}
+  <button type="button" data-rescan hx-post="/nodes/{{.SourceNodeID}}/rescan-interfaces" hx-swap="none" data-toast="Rescan requested">Rescan</button>
+  {{end}}
+</p>
+<p>
+  <button type="button" id="check-destination" hx-post="/inventory/transfer/check-connectivity"
+          hx-include="#dest_node_id, #source_node_id, #source_interface" hx-target="#check-status" hx-swap="innerHTML">Check Destination</button>
+  <small>The destination must be able to reach the source before the transfer can start.</small>
+</p>
+{{end}}
+{{end}}

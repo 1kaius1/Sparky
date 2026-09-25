@@ -8,6 +8,8 @@
   {{if eq .Data.View "advanced"}}Advanced{{else}}<a href="/inventory?view=advanced" hx-get="/inventory?view=advanced" hx-target="#main-content" hx-push-url="true">Advanced</a>{{end}}
 </p>
 
+{{if .Data.CanTransfer}}<p><a href="/inventory/transfer/new">Download or copy a model</a></p>{{end}}
+
 <p><a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true">View transfer history</a></p>
 
 {{if eq .Data.View "simple"}}
@@ -41,6 +43,7 @@
       <th>Status</th>
       <th>Size</th>
       <th>Placed at</th>
+      {{if $.Data.CanTransfer}}<th></th>{{end}}
       {{if $.Data.CanDelete}}<th></th>{{end}}
     </tr>
   </thead>
@@ -51,6 +54,7 @@
       <td><span class="status status-{{.Status}}">{{.Status}}</span></td>
       <td>{{.Size}}</td>
       <td>{{.PlacedAt}}</td>
+      {{if $.Data.CanTransfer}}<td>{{if eq .Status "present"}}<a href="{{.ReplicateURL}}">Replicate to...</a>{{end}}</td>{{end}}
       {{if $.Data.CanDelete}}
       <td>
         <form hx-post="/inventory/delete" hx-swap="none" hx-confirm="Delete {{$group.ModelRef}} ({{$group.Quantization}}, {{$group.Format}}) from {{.NodeName}}? This removes the files from that node." data-toast="Delete requested for {{$group.ModelRef}} on {{.NodeName}}">

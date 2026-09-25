@@ -1555,6 +1555,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could), and the security review's finding - model file names from
   third-party repos are refused if they could be parsed as rsync options.
   Packages now also depend on `rsync`; uninstall removes the drop-in.
+- Inventory-driven transfer initiation - PR 7 of 10 in the Models redesign.
+  The model transfer form moves to `/inventory/transfer/new` (the old
+  `/transfers/new` is gone) and now starts either an internet download or a
+  peer-to-peer copy from another node. Peer mode picks a source node, then one
+  of the models that node actually has (or arrives preselected from the
+  Inventory page's new per-row "Replicate to..." link), then which of the
+  source's network interfaces to pull from (node default, else fastest). A
+  "Check Destination" button tests, from the destination, whether it can reach
+  the source's sshd, and the Start button stays disabled until it passes;
+  changing the source, destination, model or interface invalidates the check.
+  This gate is a convenience, not a guarantee - a passed check proves only that
+  a TCP path was open at that moment. Admins also get a Rescan button to refresh
+  the source's reported interfaces. Internet mode shows an estimated download
+  size before you start (`internal/modelsource`, from the Hugging Face Hub API's
+  per-file sizes, LFS sizes preferred, counting only the matching `.gguf` when a
+  quantization is given); any failure quietly shows "size unknown". The
+  Inventory page gains a "Download or copy a model" link. New htmx fragment
+  templates under `web/templates/partials/`.
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

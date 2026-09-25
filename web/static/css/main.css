@@ -252,6 +252,14 @@ table.data-table:not(.panel .data-table) {
 .status-stopped { background: var(--color-status-stopped); }
 .status-failed, .status-unhealthy { background: var(--color-status-failed); }
 
+/* Model transfer form: Check Destination result and the fieldsets' reset. */
+.check-status { margin: 0.5rem 0; font-weight: 600; }
+.check-passed { color: var(--color-status-running); }
+.check-failed { color: var(--color-status-failed); }
+.check-pending { color: var(--color-status-starting); }
+#transfer-form fieldset { border: 0; padding: 0; margin: 0; }
+#transfer-form fieldset[hidden] { display: none; }
+
 /* Dashboard "Running instances" load strips - a coarse, non-interactive
    at-a-glance GPU utilization / memory indicator per instance, drawn as
    inline SVG by web/static/js/dashboard.js. The Metrics page is where the

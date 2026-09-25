@@ -29,6 +29,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/inventory"
 	"github.com/1kaius1/Sparky/internal/lifecycle"
 	"github.com/1kaius1/Sparky/internal/metrics"
+	"github.com/1kaius1/Sparky/internal/modelsource"
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -240,7 +241,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
