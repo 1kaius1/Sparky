@@ -73,9 +73,14 @@ func (c *Conn) handleAuthorizePeerPull(ctx context.Context, conn *websocket.Conn
 // runPeerTransfer is the destination side: pull the model from the source.
 // Pull reports its own terminal status, so the returned error is only
 // logged for local operator visibility.
-func (c *Conn) runPeerTransfer(ctx context.Context, conn *websocket.Conn, req agentproto.StartPeerTransfer) {
-	progress := c.transferProgressFunc(ctx, conn, req.TransferID)
-	if err := c.puller.Pull(ctx, req, peertransfer.ProgressFunc(progress)); err != nil {
+//
+// ctx is the agent's own context (progress is written with it so the final
+// "cancelled" report survives the cancellation); workCtx is what the pull
+// runs under - cancelling it kills the rsync process, which ends the SSH
+// session on the source and so frees its side too.
+func (c *Conn) runPeerTransfer(ctx, workCtx context.Context, run *transferRun, conn *websocket.Conn, req agentproto.StartPeerTransfer) {
+	progress := cancelAwareProgress(run, c.transferProgressFunc(ctx, conn, req.TransferID))
+	if err := c.puller.Pull(workCtx, req, peertransfer.ProgressFunc(progress)); err != nil {
 		c.logger.Printf("agent connection: peer transfer %s failed: %v", req.TransferID, err)
 	}
 }

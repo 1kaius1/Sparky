@@ -324,6 +324,18 @@ reason back), and a node without sshd can still be a destination.
 The `.deb`/`.rpm` depend on `rsync`, `openssh-server`, and the OpenSSH client; removing
 the package removes the drop-in and grant state, purging also removes the account.
 
+### Cancelling a transfer
+
+`cancel_transfer` from the central app stops a running model transfer, internet
+download or peer pull. Every transfer runs under its own context, registered
+before its goroutine starts (so a cancel arriving right behind the start cannot
+be lost); cancelling it aborts the HTTP download, or for a peer pull signals
+rsync's whole process group - SIGTERM first so rsync saves its partial file
+under the final name (`--partial`), SIGKILL after a 10 second grace - and the
+transfer's last report is `cancelled` (not `failed`). Data already transferred
+stays on disk so a later transfer of the same model resumes it. A cancel for a
+transfer this agent is not running (it just finished) is ignored.
+
 ### Engine binary provisioning
 
 Self-service download/install of a maintainer-built compiled-engine release

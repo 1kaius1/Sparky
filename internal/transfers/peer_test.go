@@ -480,3 +480,141 @@ func TestRetryTransfer_RevalidatesAgainstCurrentState(t *testing.T) {
 		t.Errorf("a peer transfer with no recorded format cannot be retried safely: %v", err)
 	}
 }
+
+func statuses(f *peerFixture) []db.TransferStatus {
+	var out []db.TransferStatus
+	for _, c := range f.store.statusCalls {
+		out = append(out, c.status)
+	}
+	return out
+}
+
+func TestCancelTransfer_PeerStopsDestinationAndRevokesSource(t *testing.T) {
+	for _, status := range []db.TransferStatus{db.TransferStatusQueued, db.TransferStatusTransferring} {
+		f := newPeerFixture()
+		tr := queuedPeerTransfer()
+		tr.Status = status
+		f.store.findByIDResult = tr
+
+		if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+			t.Fatalf("%s: CancelTransfer() error: %v", status, err)
+		}
+		if got := statuses(f); len(got) != 1 || got[0] != db.TransferStatusCancelled || f.store.statusCalls[0].errMsg != nil {
+			t.Errorf("%s: status calls = %v, want a single cancelled with no error text", status, got)
+		}
+		if len(f.dispatch.sent) != 2 {
+			t.Fatalf("%s: sent %v to %v, want a cancel to the destination and a revoke to the source", status, f.dispatch.sent, f.dispatch.sentTo)
+		}
+		byNode := map[string]agentproto.MessageType{}
+		for i, env := range f.dispatch.sent {
+			byNode[f.dispatch.sentTo[i]] = env.Type
+		}
+		if byNode["dest"] != agentproto.TypeCancelTransfer || byNode["src"] != agentproto.TypeRevokePeerPull {
+			t.Errorf("%s: dispatches = %v", status, byNode)
+		}
+		if len(f.audit.calls) != 1 || f.audit.calls[0].action != "cancelled_transfer" || f.audit.calls[0].objectID != "t-1" || f.audit.calls[0].detail["previous_status"] != string(status) {
+			t.Errorf("%s: audit = %+v", status, f.audit.calls)
+		}
+	}
+}
+
+func TestCancelTransfer_InternetOnlyStopsTheDestination(t *testing.T) {
+	f := newPeerFixture()
+	f.store.findByIDResult = &db.ModelTransfer{ID: "t-1", DestNodeID: "dest", ModelRef: "org/m", SourceType: db.TransferSourceInternet, Status: db.TransferStatusTransferring}
+	if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(f.dispatch.sent) != 1 || f.dispatch.sentTo[0] != "dest" || f.dispatch.sent[0].Type != agentproto.TypeCancelTransfer {
+		t.Errorf("sent %v to %v, want one cancel_transfer to the destination", f.dispatch.sent, f.dispatch.sentTo)
+	}
+}
+
+func TestCancelTransfer_RefusalsWriteAndDispatchNothing(t *testing.T) {
+	for _, status := range []db.TransferStatus{db.TransferStatusCompleted, db.TransferStatusFailed, db.TransferStatusCancelled} {
+		f := newPeerFixture()
+		tr := queuedPeerTransfer()
+		tr.Status = status
+		f.store.findByIDResult = tr
+		if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); !errors.Is(err, ErrNotCancelable) {
+			t.Errorf("%s: error = %v, want ErrNotCancelable", status, err)
+		}
+		if len(f.store.statusCalls) != 0 || len(f.dispatch.sent) != 0 || len(f.audit.calls) != 0 {
+			t.Errorf("%s: a refused cancel must change and send nothing", status)
+		}
+	}
+
+	f := newPeerFixture()
+	f.store.findByIDResult = queuedPeerTransfer()
+	if err := f.svc.CancelTransfer(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "d"}, "t-1"); !errors.Is(err, rbac.ErrNotPermitted) {
+		t.Errorf("developer error = %v, want ErrNotPermitted", err)
+	}
+	if len(f.store.statusCalls) != 0 {
+		t.Error("an unpermitted cancel must not touch the transfer")
+	}
+
+	g := newPeerFixture()
+	if err := g.svc.CancelTransfer(context.Background(), adminActor, "nope"); !errors.Is(err, db.ErrModelTransferNotFound) {
+		t.Errorf("unknown transfer error = %v", err)
+	}
+}
+
+func TestCancelTransfer_OfflineDestinationStillCancels(t *testing.T) {
+	f := newPeerFixture()
+	tr := queuedPeerTransfer()
+	tr.Status = db.TransferStatusTransferring
+	f.store.findByIDResult = tr
+	f.dispatch.connectedNodes["dest"] = false
+	if err := f.svc.CancelTransfer(context.Background(), adminActor, "t-1"); err != nil {
+		t.Fatalf("an unreachable node must not stop the operator cancelling: %v", err)
+	}
+	if got := statuses(f); len(got) != 1 || got[0] != db.TransferStatusCancelled {
+		t.Errorf("status calls = %v", got)
+	}
+	for _, to := range f.dispatch.sentTo {
+		if to == "dest" {
+			t.Error("nothing can be sent to an offline node")
+		}
+	}
+}
+
+func TestHandleTransferProgress_LateReportsNeverOverwriteACancelledTransfer(t *testing.T) {
+	for _, late := range []db.TransferStatus{db.TransferStatusFailed, db.TransferStatusCompleted, db.TransferStatusCancelled} {
+		f := newPeerFixture()
+		tr := queuedPeerTransfer()
+		tr.Status = db.TransferStatusCancelled
+		f.store.findByIDResult = tr
+		f.svc.HandleTransferProgress("dest", newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{
+			TransferID: "t-1", BytesTotal: 10, Status: string(late), ErrorMessage: "context canceled",
+		}))
+		if len(f.store.statusCalls) != 0 || len(f.store.progressCalls) != 0 || len(f.inv.calls) != 0 {
+			t.Errorf("late %s: a cancelled transfer was modified (status %v, progress %v, inventory %v) - a completed one would even plant an inventory row", late, f.store.statusCalls, f.store.progressCalls, f.inv.calls)
+		}
+	}
+}
+
+func TestHandleTransferProgress_NodeStillRunningACancelledTransferIsToldAgain(t *testing.T) {
+	f := newPeerFixture()
+	tr := queuedPeerTransfer()
+	tr.Status = db.TransferStatusCancelled
+	f.store.findByIDResult = tr
+	f.svc.HandleTransferProgress("dest", newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{TransferID: "t-1", Status: string(db.TransferStatusTransferring)}))
+	if len(f.dispatch.sent) != 1 || f.dispatch.sentTo[0] != "dest" || f.dispatch.sent[0].Type != agentproto.TypeCancelTransfer {
+		t.Errorf("sent %v to %v, want the cancel re-sent to a node that is still working (it was offline when first cancelled)", f.dispatch.sent, f.dispatch.sentTo)
+	}
+	if len(f.store.statusCalls) != 0 {
+		t.Error("the row must stay cancelled")
+	}
+}
+
+func TestHandleTransferProgress_FinishedTransfersAreNotReopened(t *testing.T) {
+	for _, existing := range []db.TransferStatus{db.TransferStatusCompleted, db.TransferStatusFailed} {
+		f := newPeerFixture()
+		tr := queuedPeerTransfer()
+		tr.Status = existing
+		f.store.findByIDResult = tr
+		f.svc.HandleTransferProgress("dest", newEnvelope(t, agentproto.TypeTransferProgress, agentproto.TransferProgress{TransferID: "t-1", Status: string(db.TransferStatusTransferring)}))
+		if len(f.store.statusCalls) != 0 || len(f.dispatch.sent) != 0 {
+			t.Errorf("%s: a stray report changed a finished transfer", existing)
+		}
+	}
+}

@@ -6,9 +6,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -613,5 +615,118 @@ func TestPrepareServe_TamperedGrantWithOptionShapedFileIsRefusedAndNotConsumed(t
 	}
 	if entries, _ := os.ReadDir(e.used); len(entries) != 0 {
 		t.Error("a refused serve must not consume the grant")
+	}
+}
+
+func alive(pid int) bool { return syscall.Kill(pid, 0) == nil }
+
+func waitDead(t *testing.T, pid int) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		// A killed child is briefly a zombie until its parent reaps it; a
+		// zombie is dead for our purposes.
+		if b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err != nil || strings.Contains(string(b), ") Z") {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("process %d is still running after the group was cancelled", pid)
+}
+
+func TestRunProcess_CancelKillsTheWholeProcessGroupNotJustTheLeader(t *testing.T) {
+	// A leader that starts a helper (like rsync starting ssh) and waits.
+	ctx, cancel := context.WithCancel(context.Background())
+	pidCh := make(chan int, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, err := runProcess(ctx, "bash", []string{"-c", "sleep 300 & echo $!; wait"}, func(line string) {
+			var pid int
+			if _, err := fmt.Sscanf(line, "%d", &pid); err == nil {
+				pidCh <- pid
+			}
+		})
+		done <- err
+	}()
+	var helper int
+	select {
+	case helper = <-pidCh:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the helper process never started")
+	}
+	if !alive(helper) {
+		t.Fatal("helper not running before the cancel")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("runProcess did not return after cancellation")
+	}
+	waitDead(t, helper)
+}
+
+func TestRunProcess_CancelIsGracefulFirstSoRsyncCanSavePartialData(t *testing.T) {
+	oldGrace := cancelGrace
+	cancelGrace = 5 * time.Second
+	defer func() { cancelGrace = oldGrace }()
+
+	marker := filepath.Join(t.TempDir(), "saved-partial")
+	ctx, cancel := context.WithCancel(context.Background())
+	started := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		// Traps SIGTERM the way rsync does: does its cleanup, then exits.
+		runProcess(ctx, "bash", []string{"-c", fmt.Sprintf("trap 'echo saved > %s; exit 0' TERM; echo ready; while :; do sleep 0.1; done", marker)}, func(line string) {
+			if line == "ready" {
+				close(started)
+			}
+		})
+		close(done)
+	}()
+	<-started
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("a process that handles SIGTERM must be allowed to exit on its own")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Error("SIGTERM must be delivered first so the process can save its state - it was killed outright")
+	}
+}
+
+func TestRunProcess_EscalatesToKillIfTheProcessIgnoresTerm(t *testing.T) {
+	oldGrace := cancelGrace
+	cancelGrace = 300 * time.Millisecond
+	defer func() { cancelGrace = oldGrace }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	pidCh := make(chan int, 1)
+	done := make(chan struct{})
+	go func() {
+		runProcess(ctx, "bash", []string{"-c", "trap '' TERM; echo $$; while :; do sleep 0.1; done"}, func(line string) {
+			var pid int
+			if _, err := fmt.Sscanf(line, "%d", &pid); err == nil {
+				pidCh <- pid
+			}
+		})
+		close(done)
+	}()
+	pid := <-pidCh
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("a process ignoring SIGTERM must still be killed after the grace period")
+	}
+	waitDead(t, pid)
+}
+
+func TestRunProcess_NormalCompletionReturnsStderrAndOutput(t *testing.T) {
+	var lines []string
+	tail, err := runProcess(context.Background(), "bash", []string{"-c", "echo one; echo oops >&2; exit 3"}, func(l string) { lines = append(lines, l) })
+	if err == nil || len(lines) != 1 || lines[0] != "one" || !strings.Contains(tail, "oops") {
+		t.Errorf("lines=%v tail=%q err=%v", lines, tail, err)
 	}
 }

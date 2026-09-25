@@ -192,6 +192,79 @@ func (s *Service) InitiateTransfer(ctx context.Context, actor rbac.Actor, params
 	return t, nil
 }
 
+// isTerminal reports whether status ends a transfer's lifecycle.
+func isTerminal(status db.TransferStatus) bool {
+	return status == db.TransferStatusCompleted || status == db.TransferStatusFailed || status == db.TransferStatusCancelled
+}
+
+// CancelTransfer stops a queued or running transfer - internet download or
+// peer pull alike - if actor is permitted to (rbac.CanManageModelStore).
+// The row is marked cancelled first, so any progress report still in flight
+// from the node cannot resurrect it (HandleTransferProgress ignores updates
+// to a finished transfer); then the destination - the node actually doing
+// the work for either kind - is told to stop, and for a peer transfer the
+// source is told to drop its authorization (also automatic, since cancelled
+// is a terminal status). Stopping the node is best-effort: if it is offline
+// the transfer is still cancelled here, and HandleTransferProgress re-sends
+// the cancel if that node later reports activity for it. Partial data is
+// kept, as for a failure, so a later retry can resume it. Audited as
+// "cancelled_transfer".
+func (s *Service) CancelTransfer(ctx context.Context, actor rbac.Actor, transferID string) error {
+	permitted, err := s.canManageModelStore(ctx, actor)
+	if err != nil {
+		return err
+	}
+	if !permitted {
+		return rbac.ErrNotPermitted
+	}
+
+	t, err := s.transfers.FindByID(ctx, transferID)
+	if err != nil {
+		return err
+	}
+	if isTerminal(t.Status) {
+		return ErrNotCancelable
+	}
+	previous := t.Status
+
+	if err := s.transfers.SetStatus(ctx, t.ID, db.TransferStatusCancelled, nil); err != nil {
+		return fmt.Errorf("mark transfer cancelled: %w", err)
+	}
+	s.sendCancel(ctx, t.DestNodeID, t.ID)
+	s.revokePeer(ctx, t)
+
+	var actorID *string
+	if !actor.IsSuperAdmin {
+		actorID = &actor.UserID
+	}
+	detail := map[string]any{
+		"dest_node_id":    t.DestNodeID,
+		"model_ref":       t.ModelRef,
+		"previous_status": string(previous),
+	}
+	if err := s.audit.Record(ctx, actorID, actor.IsSuperAdmin, "cancelled_transfer", "model_transfer", t.ID, detail); err != nil {
+		return fmt.Errorf("record audit: %w", err)
+	}
+	return nil
+}
+
+// sendCancel tells a node to stop running a transfer. Best-effort: an
+// offline node just logs.
+func (s *Service) sendCancel(ctx context.Context, nodeID, transferID string) {
+	if !s.dispatch.Connected(nodeID) {
+		s.logger.Printf("transfers: node %s is offline - cancelled transfer %s will be stopped if it reports activity", nodeID, transferID)
+		return
+	}
+	env, err := agentproto.NewEnvelope(agentproto.TypeCancelTransfer, "", agentproto.CancelTransfer{TransferID: transferID})
+	if err != nil {
+		s.logger.Printf("transfers: build cancel_transfer for %s: %v", transferID, err)
+		return
+	}
+	if err := s.dispatch.Send(ctx, nodeID, env); err != nil {
+		s.logger.Printf("transfers: dispatch cancel_transfer for %s to node %s: %v", transferID, nodeID, err)
+	}
+}
+
 // RetryTransfer re-runs a failed transfer as a new transfer with the same
 // parameters, if actor is permitted to (rbac.CanManageModelStore). It goes
 // through InitiateTransfer, so everything is re-validated against the
@@ -286,6 +359,19 @@ func (s *Service) HandleTransferProgress(nodeID string, env agentproto.Envelope)
 	}
 	if t.DestNodeID != nodeID {
 		s.logger.Printf("transfers: ignoring progress for transfer %s from node %s - not its destination", t.ID, nodeID)
+		return
+	}
+
+	// A finished transfer's row is never touched again. Most importantly a
+	// cancelled one: the node's last reports race the cancel, and a late
+	// "failed" (its own context-cancelled error) or even "completed" must
+	// not overwrite what the operator decided. If the node is still
+	// reporting the transfer as running - it was offline when the cancel was
+	// sent - tell it again.
+	if isTerminal(t.Status) {
+		if t.Status == db.TransferStatusCancelled && status == db.TransferStatusTransferring {
+			s.sendCancel(ctx, nodeID, t.ID)
+		}
 		return
 	}
 

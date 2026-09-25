@@ -225,6 +225,8 @@ type Conn struct {
 	// (agent/peertransfer): the source-side grant writer and the
 	// destination-side rsync puller. dialTimeout is the connectivity
 	// check's TCP dial budget.
+	runs transferRuns
+
 	authorizer *peertransfer.Authorizer
 	puller     peerPuller
 	dial       func(network, address string, timeout time.Duration) (net.Conn, error)
@@ -563,10 +565,12 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			c.logger.Printf("agent connection: received malformed start_transfer payload: %v", err)
 			return
 		}
+		workCtx, run, done := c.registerTransfer(ctx, start.TransferID)
 		c.transferWG.Add(1)
 		go func() {
 			defer c.transferWG.Done()
-			c.runTransfer(ctx, conn, start)
+			defer done()
+			c.runTransfer(ctx, workCtx, run, conn, start)
 		}()
 	case agentproto.TypeStartEngineTransfer:
 		var start agentproto.StartEngineTransfer
@@ -636,10 +640,12 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			c.logger.Printf("agent connection: received malformed start_peer_transfer payload: %v", err)
 			return
 		}
+		workCtx, run, done := c.registerTransfer(ctx, req.TransferID)
 		c.transferWG.Add(1)
 		go func() {
 			defer c.transferWG.Done()
-			c.runPeerTransfer(ctx, conn, req)
+			defer done()
+			c.runPeerTransfer(ctx, workCtx, run, conn, req)
 		}()
 	case agentproto.TypeCheckPeerConnectivity:
 		var req agentproto.CheckPeerConnectivity
@@ -648,6 +654,15 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			return
 		}
 		go c.runConnectivityCheck(ctx, conn, req)
+	case agentproto.TypeCancelTransfer:
+		var req agentproto.CancelTransfer
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed cancel_transfer payload: %v", err)
+			return
+		}
+		if !c.cancelTransfer(req.TransferID) {
+			c.logger.Printf("agent connection: cancel_transfer for %s, which is not running here", req.TransferID)
+		}
 	case agentproto.TypeDeleteModel:
 		var del agentproto.DeleteModel
 		if err := env.DecodePayload(&del); err != nil {
@@ -683,12 +698,17 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 // own timeline - a known, accepted v0.1.0 gap, since nothing yet
 // redirects an in-flight transfer's progress reporting to a newer
 // connection after a reconnect.
-func (c *Conn) runTransfer(ctx context.Context, conn *websocket.Conn, start agentproto.StartTransfer) {
+//
+// ctx is the agent's own context - progress is written with it, so the final
+// "cancelled" report still goes out after the transfer's own workCtx has been
+// cancelled. workCtx is what the download actually runs under
+// (registerTransfer), so a cancel_transfer can stop it.
+func (c *Conn) runTransfer(ctx, workCtx context.Context, run *transferRun, conn *websocket.Conn, start agentproto.StartTransfer) {
 	destDir := filepath.Join(c.cfg.ModelStoragePath, filepath.FromSlash(start.ModelRef))
 
-	progress := c.transferProgressFunc(ctx, conn, start.TransferID)
+	progress := cancelAwareProgress(run, c.transferProgressFunc(ctx, conn, start.TransferID))
 
-	if err := c.transfer.Download(ctx, start.ModelRef, start.Quantization, destDir, progress); err != nil {
+	if err := c.transfer.Download(workCtx, start.ModelRef, start.Quantization, destDir, progress); err != nil {
 		c.logger.Printf("agent connection: transfer %s failed: %v", start.TransferID, err)
 	}
 }

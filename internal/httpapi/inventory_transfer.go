@@ -28,6 +28,7 @@ type transferInitiator interface {
 	CanInitiateTransfer(ctx context.Context, actor rbac.Actor) (bool, error)
 	InitiateTransfer(ctx context.Context, actor rbac.Actor, params transfers.InitiateTransferParams) (*db.ModelTransfer, error)
 	RetryTransfer(ctx context.Context, actor rbac.Actor, transferID string) (*db.ModelTransfer, error)
+	CancelTransfer(ctx context.Context, actor rbac.Actor, transferID string) error
 	CheckConnectivity(ctx context.Context, actor rbac.Actor, destNodeID, sourceNodeID, sourceInterface string) (string, error)
 	GetConnectivityResult(checkID string) (*transfers.ConnectivityResult, bool)
 }
@@ -477,6 +478,47 @@ func (a *API) handleRetryTransfer(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		a.logger.Printf("httpapi: retry transfer %s: %v", id, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("HX-Redirect", "/transfers")
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleCancelTransfer is POST /transfers/{id}/cancel - stops a queued or
+// running transfer. RBAC and the only-unfinished rule live in
+// transfers.Service.CancelTransfer; same hx-post/HX-Redirect shape as
+// handleRetryTransfer.
+func (a *API) handleCancelTransfer(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for cancel transfer: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	err = a.transferInitiatorSvc.CancelTransfer(ctx, actor, id)
+	switch {
+	case errors.Is(err, rbac.ErrNotPermitted):
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "manage_model_store capability required")
+		return
+	case errors.Is(err, db.ErrModelTransferNotFound):
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "model transfer not found")
+		return
+	case errors.Is(err, transfers.ErrNotCancelable):
+		writeError(w, r, http.StatusConflict, "ALREADY_FINISHED", err.Error())
+		return
+	case err != nil:
+		a.logger.Printf("httpapi: cancel transfer %s: %v", id, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
