@@ -1,0 +1,63 @@
+{{define "content"}}
+<div data-sse-topics="report_interfaces" hidden></div>
+<h1>Edit node: {{.Data.NodeName}}</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<h2>SSH identity</h2>
+<p><small>Public keys only - this node's private key never leaves the node. Used for peer-to-peer model transfer.</small></p>
+<table class="data-table">
+  <tbody>
+    <tr>
+      <th>Client public key</th>
+      <td>{{if .Data.SSHPublicKey}}<code>{{.Data.SSHPublicKey}}</code>{{else}}Not reported yet - run <code>sparky-agent setup</code> on the node and restart the agent.{{end}}</td>
+    </tr>
+    <tr>
+      <th>Host public key</th>
+      <td>{{if .Data.SSHHostPublicKey}}<code>{{.Data.SSHHostPublicKey}}</code>{{else}}Not reported (no sshd host key found on the node).{{end}}</td>
+    </tr>
+  </tbody>
+</table>
+
+<h2>Network interfaces</h2>
+<form hx-post="/nodes/{{.Data.NodeID}}/rescan-interfaces" hx-swap="none" data-toast="Rescan requested">
+  <button type="submit">Rescan</button>
+</form>
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Interface</th>
+      <th>IP address</th>
+      <th>Link speed</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Interfaces}}
+    <tr>
+      <td>{{.Name}}</td>
+      <td>{{.IPAddress}}</td>
+      <td>{{.Speed}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="3" class="empty">No interfaces reported yet.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+
+<h2>Default transfer interface</h2>
+<form method="post" action="/nodes/{{.Data.NodeID}}/edit">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="default_transfer_interface">Interface used when this node is the source of a peer-to-peer transfer</label><br>
+    <select id="default_transfer_interface" name="default_transfer_interface">
+      <option value="" {{if eq .Data.DefaultInterface ""}}selected{{end}}>Fastest (highest reported link speed)</option>
+      {{range .Data.Interfaces}}
+      <option value="{{.Name}}" {{if eq $.Data.DefaultInterface .Name}}selected{{end}}>{{.Name}} ({{.IPAddress}}, {{.Speed}})</option>
+      {{end}}
+    </select>
+  </p>
+  <p><button type="submit">Save</button></p>
+</form>
+{{end}}

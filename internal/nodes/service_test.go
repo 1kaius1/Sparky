@@ -5,8 +5,11 @@ package nodes
 import (
 	"context"
 	"errors"
+	"io"
+	"log"
 	"testing"
 
+	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -26,6 +29,51 @@ type fakeNodeStore struct {
 
 	listResult []*db.Node
 	listErr    error
+
+	findResult *db.Node
+	findErr    error
+
+	defaultIfaceCalls []*string
+}
+
+func (f *fakeNodeStore) FindByID(_ context.Context, id string) (*db.Node, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	if f.findResult != nil {
+		return f.findResult, nil
+	}
+	return nil, db.ErrNodeNotFound
+}
+
+func (f *fakeNodeStore) SetDefaultTransferInterface(_ context.Context, _ string, name *string) error {
+	f.defaultIfaceCalls = append(f.defaultIfaceCalls, name)
+	return nil
+}
+
+type fakeInterfaceStore struct {
+	replaced [][]db.NodeNetworkInterface
+	listed   []*db.NodeNetworkInterface
+}
+
+func (f *fakeInterfaceStore) ReplaceForNode(_ context.Context, _ string, ifaces []db.NodeNetworkInterface) error {
+	f.replaced = append(f.replaced, ifaces)
+	return nil
+}
+
+func (f *fakeInterfaceStore) ListByNode(context.Context, string) ([]*db.NodeNetworkInterface, error) {
+	return f.listed, nil
+}
+
+type fakeDispatcher struct {
+	connected bool
+	sent      []agentproto.Envelope
+}
+
+func (f *fakeDispatcher) Connected(string) bool { return f.connected }
+func (f *fakeDispatcher) Send(_ context.Context, _ string, env agentproto.Envelope) error {
+	f.sent = append(f.sent, env)
+	return nil
 }
 
 func (f *fakeNodeStore) List(_ context.Context) ([]*db.Node, error) {
@@ -86,7 +134,7 @@ func (f *fakeAuditRecorder) Record(_ context.Context, actorID *string, isSuperAd
 func TestService_RegisterNode_PermittedByAdmin(t *testing.T) {
 	store := &fakeNodeStore{nextID: "node-1"}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, audit, log.New(io.Discard, "", 0))
 	actor := rbac.Actor{Tier: db.TierAdmin, UserID: "admin-1"}
 
 	n, token, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
@@ -132,7 +180,7 @@ func TestService_RegisterNode_PermittedByAdmin(t *testing.T) {
 func TestService_RegisterNode_PermittedBySuperAdmin_NilRegisteredBy(t *testing.T) {
 	store := &fakeNodeStore{nextID: "node-1"}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, audit, log.New(io.Discard, "", 0))
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
@@ -160,7 +208,7 @@ func TestService_RegisterNode_NotPermitted(t *testing.T) {
 		t.Run(string(tier), func(t *testing.T) {
 			store := &fakeNodeStore{}
 			audit := &fakeAuditRecorder{}
-			svc := NewService(store, audit)
+			svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, audit, log.New(io.Discard, "", 0))
 			actor := rbac.Actor{Tier: tier, UserID: "user-1"}
 
 			_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
@@ -180,7 +228,7 @@ func TestService_RegisterNode_NotPermitted(t *testing.T) {
 func TestService_RegisterNode_InvalidParamsNotPersistedOrAudited(t *testing.T) {
 	store := &fakeNodeStore{}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, audit, log.New(io.Discard, "", 0))
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	params := validBareMetalParams()
@@ -201,7 +249,7 @@ func TestService_RegisterNode_InvalidParamsNotPersistedOrAudited(t *testing.T) {
 func TestService_RegisterNode_CreateFails(t *testing.T) {
 	store := &fakeNodeStore{createErr: errors.New("database unreachable")}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, audit)
+	svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, audit, log.New(io.Discard, "", 0))
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
@@ -216,7 +264,7 @@ func TestService_RegisterNode_CreateFails(t *testing.T) {
 func TestService_RegisterNode_AuditFailurePropagates(t *testing.T) {
 	store := &fakeNodeStore{nextID: "node-1"}
 	audit := &fakeAuditRecorder{recordErr: errors.New("database unreachable")}
-	svc := NewService(store, audit)
+	svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, audit, log.New(io.Discard, "", 0))
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, _, err := svc.RegisterNode(context.Background(), actor, validBareMetalParams())
@@ -234,7 +282,7 @@ func TestService_RegisterNode_AuditFailurePropagates(t *testing.T) {
 func TestService_ListNodes(t *testing.T) {
 	want := []*db.Node{{ID: "node-1", Name: "spark-1"}, {ID: "node-2", Name: "spark-2"}}
 	store := &fakeNodeStore{listResult: want}
-	svc := NewService(store, &fakeAuditRecorder{})
+	svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, log.New(io.Discard, "", 0))
 
 	got, err := svc.ListNodes(context.Background())
 	if err != nil {
@@ -247,9 +295,133 @@ func TestService_ListNodes(t *testing.T) {
 
 func TestService_ListNodes_StoreError(t *testing.T) {
 	store := &fakeNodeStore{listErr: errors.New("database unreachable")}
-	svc := NewService(store, &fakeAuditRecorder{})
+	svc := NewService(store, &fakeInterfaceStore{}, &fakeDispatcher{}, &fakeAuditRecorder{}, log.New(io.Discard, "", 0))
 
 	if _, err := svc.ListNodes(context.Background()); err == nil {
 		t.Fatal("ListNodes() succeeded despite a store failure")
+	}
+}
+
+func reportEnv(t *testing.T, ifaces ...agentproto.NetworkInterface) agentproto.Envelope {
+	t.Helper()
+	env, err := agentproto.NewEnvelope(agentproto.TypeReportInterfaces, "", agentproto.ReportInterfaces{Interfaces: ifaces})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return env
+}
+
+func newIfaceService(ifaces *fakeInterfaceStore, disp *fakeDispatcher, store *fakeNodeStore, audit *fakeAuditRecorder) *Service {
+	return NewService(store, ifaces, disp, audit, log.New(io.Discard, "", 0))
+}
+
+func TestService_HandleReportInterfaces_StoresValidAndSkipsInvalid(t *testing.T) {
+	ifaces := &fakeInterfaceStore{}
+	svc := newIfaceService(ifaces, &fakeDispatcher{}, &fakeNodeStore{}, &fakeAuditRecorder{})
+	speed, neg := 10000, -1
+
+	svc.HandleReportInterfaces("node-1", reportEnv(t,
+		agentproto.NetworkInterface{Name: "eth0", IPAddress: "10.0.0.5", LinkSpeedMbps: &speed},
+		agentproto.NetworkInterface{Name: "eth1", IPAddress: "10.0.1.5", LinkSpeedMbps: &neg},
+		agentproto.NetworkInterface{Name: "bad name;rm", IPAddress: "10.0.2.5"},
+		agentproto.NetworkInterface{Name: "eth3", IPAddress: "not-an-ip"},
+		agentproto.NetworkInterface{Name: "eth0", IPAddress: "10.9.9.9"},
+	))
+
+	if len(ifaces.replaced) != 1 {
+		t.Fatalf("ReplaceForNode called %d times, want 1", len(ifaces.replaced))
+	}
+	got := ifaces.replaced[0]
+	if len(got) != 2 || got[0].InterfaceName != "eth0" || got[0].IPAddress != "10.0.0.5" || got[0].NodeID != "node-1" {
+		t.Fatalf("stored = %+v, want eth0 (first duplicate kept) and eth1 only", got)
+	}
+	if got[1].InterfaceName != "eth1" || got[1].LinkSpeedMbps != nil {
+		t.Errorf("eth1 = %+v, want a non-positive speed normalized to nil", got[1])
+	}
+}
+
+func TestService_HandleReportInterfaces_EmptyReportClearsInterfaces(t *testing.T) {
+	ifaces := &fakeInterfaceStore{}
+	svc := newIfaceService(ifaces, &fakeDispatcher{}, &fakeNodeStore{}, &fakeAuditRecorder{})
+	svc.HandleReportInterfaces("node-1", reportEnv(t))
+	if len(ifaces.replaced) != 1 || len(ifaces.replaced[0]) != 0 {
+		t.Errorf("replaced = %+v, want one empty replace", ifaces.replaced)
+	}
+}
+
+func TestService_HandleReportInterfaces_CapsCount(t *testing.T) {
+	ifaces := &fakeInterfaceStore{}
+	svc := newIfaceService(ifaces, &fakeDispatcher{}, &fakeNodeStore{}, &fakeAuditRecorder{})
+	var many []agentproto.NetworkInterface
+	for i := 0; i < 100; i++ {
+		many = append(many, agentproto.NetworkInterface{Name: "if" + string(rune('a'+i%26)) + string(rune('a'+i/26)), IPAddress: "10.0.0.1"})
+	}
+	svc.HandleReportInterfaces("node-1", reportEnv(t, many...))
+	if got := len(ifaces.replaced[0]); got != maxReportedInterfaces {
+		t.Errorf("stored %d, want cap %d", got, maxReportedInterfaces)
+	}
+}
+
+func TestService_RescanInterfaces(t *testing.T) {
+	admin := rbac.Actor{Tier: db.TierAdmin, UserID: "a"}
+	disp := &fakeDispatcher{connected: true}
+	svc := newIfaceService(&fakeInterfaceStore{}, disp, &fakeNodeStore{}, &fakeAuditRecorder{})
+
+	if err := svc.RescanInterfaces(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "d"}, "node-1"); !errors.Is(err, rbac.ErrNotPermitted) {
+		t.Errorf("developer error = %v, want ErrNotPermitted", err)
+	}
+	if err := svc.RescanInterfaces(context.Background(), admin, "node-1"); err != nil {
+		t.Fatal(err)
+	}
+	if len(disp.sent) != 1 || disp.sent[0].Type != agentproto.TypeRescanInterfaces {
+		t.Errorf("sent = %+v", disp.sent)
+	}
+	disp.connected = false
+	if err := svc.RescanInterfaces(context.Background(), admin, "node-1"); !errors.Is(err, ErrNodeNotConnected) {
+		t.Errorf("offline error = %v, want ErrNodeNotConnected", err)
+	}
+}
+
+func TestService_SetDefaultTransferInterface(t *testing.T) {
+	admin := rbac.Actor{Tier: db.TierAdmin, UserID: "a"}
+	store := &fakeNodeStore{findResult: &db.Node{ID: "node-1"}}
+	ifaces := &fakeInterfaceStore{listed: []*db.NodeNetworkInterface{{InterfaceName: "eth0"}}}
+	audit := &fakeAuditRecorder{}
+	svc := newIfaceService(ifaces, &fakeDispatcher{}, store, audit)
+	ctx := context.Background()
+
+	if err := svc.SetDefaultTransferInterface(ctx, rbac.Actor{Tier: db.TierDeveloper, UserID: "d"}, "node-1", "eth0"); !errors.Is(err, rbac.ErrNotPermitted) {
+		t.Errorf("developer error = %v, want ErrNotPermitted", err)
+	}
+	if err := svc.SetDefaultTransferInterface(ctx, admin, "node-1", "eth9"); !errors.Is(err, ErrUnknownInterface) {
+		t.Errorf("unknown interface error = %v, want ErrUnknownInterface", err)
+	}
+	if len(store.defaultIfaceCalls) != 0 || len(audit.calls) != 0 {
+		t.Fatal("rejected calls must not write or audit")
+	}
+
+	if err := svc.SetDefaultTransferInterface(ctx, admin, "node-1", "eth0"); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.defaultIfaceCalls) != 1 || store.defaultIfaceCalls[0] == nil || *store.defaultIfaceCalls[0] != "eth0" {
+		t.Errorf("stored = %v, want eth0", store.defaultIfaceCalls)
+	}
+	if len(audit.calls) != 1 || audit.calls[0].action != "set_default_transfer_interface" || audit.calls[0].objectID != "node-1" {
+		t.Errorf("audit = %+v", audit.calls)
+	}
+
+	if err := svc.SetDefaultTransferInterface(ctx, admin, "node-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if last := store.defaultIfaceCalls[len(store.defaultIfaceCalls)-1]; last != nil {
+		t.Errorf("empty name stored %q, want nil (Fastest)", *last)
+	}
+}
+
+func TestService_SetDefaultTransferInterface_UnknownNode(t *testing.T) {
+	svc := newIfaceService(&fakeInterfaceStore{}, &fakeDispatcher{}, &fakeNodeStore{}, &fakeAuditRecorder{})
+	err := svc.SetDefaultTransferInterface(context.Background(), rbac.Actor{Tier: db.TierAdmin, UserID: "a"}, "nope", "")
+	if !errors.Is(err, db.ErrNodeNotFound) {
+		t.Errorf("error = %v, want ErrNodeNotFound", err)
 	}
 }

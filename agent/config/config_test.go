@@ -55,6 +55,26 @@ func TestLoad_DefaultsApply(t *testing.T) {
 	if cfg.LogFormat != "json" {
 		t.Errorf("LogFormat = %q, want default %q", cfg.LogFormat, "json")
 	}
+	if cfg.SSHKeyPath != "/opt/sparky/serviceloop/.ssh/id_ed25519" {
+		t.Errorf("SSHKeyPath = %q, want the serviceloop default", cfg.SSHKeyPath)
+	}
+	if cfg.SSHHostKeyPath != "/etc/ssh/ssh_host_ed25519_key.pub" {
+		t.Errorf("SSHHostKeyPath = %q, want the sshd default", cfg.SSHHostKeyPath)
+	}
+}
+
+func TestLoad_SSHPathOverrides(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("SPARKY_SSH_KEY_PATH", "/keys/id")
+	t.Setenv("SPARKY_SSH_HOST_KEY_PATH", "/keys/host.pub")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if cfg.SSHKeyPath != "/keys/id" || cfg.SSHHostKeyPath != "/keys/host.pub" {
+		t.Errorf("paths = %q, %q", cfg.SSHKeyPath, cfg.SSHHostKeyPath)
+	}
 }
 
 func TestLoad_OverridesDefaults(t *testing.T) {

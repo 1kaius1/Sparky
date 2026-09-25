@@ -15,6 +15,7 @@ import (
 	"github.com/1kaius1/Sparky/agent/config"
 	"github.com/1kaius1/Sparky/agent/connection"
 	"github.com/1kaius1/Sparky/agent/enginetransfer"
+	"github.com/1kaius1/Sparky/agent/provision"
 	"github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/runtime/baremetal"
 	"github.com/1kaius1/Sparky/agent/runtime/containers"
@@ -68,6 +69,10 @@ func main() {
 		CentralURL:  cfg.CentralURL,
 		BearerToken: cfg.BearerToken,
 		NodeName:    cfg.NodeName,
+		// Read once at startup; best-effort, "" if absent - see
+		// provision.ReadSSHPublicKey.
+		SSHPublicKey:     provision.ReadSSHPublicKey(cfg.SSHKeyPath + ".pub"),
+		SSHHostPublicKey: provision.ReadSSHPublicKey(cfg.SSHHostKeyPath),
 		EngineBinaryPaths: map[string]string{
 			"llamacpp": cfg.LlamaCPPBinaryPath,
 			"vllm":     cfg.VLLMBinaryPath,

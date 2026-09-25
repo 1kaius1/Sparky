@@ -52,6 +52,14 @@ type fakeNodeRegistrar struct {
 	bearerToken string
 	err         error
 	calls       []registerCall
+
+	getNode         *db.Node
+	getNodeErr      error
+	interfaces      []*db.NodeNetworkInterface
+	rescanErr       error
+	rescanCalls     []string
+	setDefaultErr   error
+	setDefaultCalls []string
 }
 
 type registerCall struct {
@@ -69,6 +77,30 @@ func (f *fakeNodeRegistrar) RegisterNode(_ context.Context, actor rbac.Actor, pa
 		node = &db.Node{Name: params.Name}
 	}
 	return node, f.bearerToken, nil
+}
+
+func (f *fakeNodeRegistrar) GetNode(context.Context, string) (*db.Node, error) {
+	if f.getNodeErr != nil {
+		return nil, f.getNodeErr
+	}
+	if f.getNode == nil {
+		return nil, db.ErrNodeNotFound
+	}
+	return f.getNode, nil
+}
+
+func (f *fakeNodeRegistrar) ListInterfaces(context.Context, string) ([]*db.NodeNetworkInterface, error) {
+	return f.interfaces, nil
+}
+
+func (f *fakeNodeRegistrar) RescanInterfaces(_ context.Context, _ rbac.Actor, nodeID string) error {
+	f.rescanCalls = append(f.rescanCalls, nodeID)
+	return f.rescanErr
+}
+
+func (f *fakeNodeRegistrar) SetDefaultTransferInterface(_ context.Context, _ rbac.Actor, nodeID, name string) error {
+	f.setDefaultCalls = append(f.setDefaultCalls, nodeID+"|"+name)
+	return f.setDefaultErr
 }
 
 // fakeProfileLister implements profileLister for tests.

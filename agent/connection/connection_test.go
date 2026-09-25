@@ -24,6 +24,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/1kaius1/Sparky/agent/enginetransfer"
+	"github.com/1kaius1/Sparky/agent/netinfo"
 	agentruntime "github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
@@ -286,6 +287,11 @@ type testCentralApp struct {
 	receivedHello   chan agentproto.Hello
 	sendAfterAccept *agentproto.Envelope
 	receivedMsgs    chan agentproto.Envelope
+	// receivedInterfaces gets every report_interfaces message, which is
+	// deliberately kept out of receivedMsgs: the agent sends one
+	// unprompted after every handshake, and the many tests that count or
+	// order receivedMsgs are about other message types.
+	receivedInterfaces chan agentproto.Envelope
 }
 
 func newTestCentralApp(accept bool, reason string) *testCentralApp {
@@ -349,11 +355,17 @@ func (a *testCentralApp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		if a.receivedMsgs == nil {
+		var msgEnv agentproto.Envelope
+		if err := json.Unmarshal(msgRaw, &msgEnv); err != nil {
 			continue
 		}
-		var msgEnv agentproto.Envelope
-		if err := json.Unmarshal(msgRaw, &msgEnv); err == nil {
+		if msgEnv.Type == agentproto.TypeReportInterfaces {
+			if a.receivedInterfaces != nil {
+				a.receivedInterfaces <- msgEnv
+			}
+			continue
+		}
+		if a.receivedMsgs != nil {
 			a.receivedMsgs <- msgEnv
 		}
 	}
@@ -1972,6 +1984,88 @@ func TestJitter_SmallDuration_NoDivideByZero(t *testing.T) {
 	for _, d := range []time.Duration{0, 1} {
 		if got := jitter(d); got != d {
 			t.Errorf("jitter(%s) = %s, want %s unchanged", d, got, d)
+		}
+	}
+}
+
+func TestConn_Handshake_ReportsSSHIdentity(t *testing.T) {
+	app := newTestCentralApp(true, "")
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	cfg := Config{CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1", SSHPublicKey: "ssh-ed25519 AAAAkey", SSHHostPublicKey: "ssh-ed25519 AAAAhost"}
+	conn := New(cfg, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go conn.Run(ctx)
+
+	select {
+	case hello := <-app.receivedHello:
+		if hello.SSHPublicKey != "ssh-ed25519 AAAAkey" || hello.SSHHostPublicKey != "ssh-ed25519 AAAAhost" {
+			t.Errorf("hello = %+v, want the SSH identity from config", hello)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for hello")
+	}
+}
+
+func TestConn_ReportsInterfacesAfterHandshake(t *testing.T) {
+	app := newTestCentralApp(true, "")
+	app.receivedInterfaces = make(chan agentproto.Envelope, 4)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	speed := 10000
+	conn := New(Config{CentralURL: wsURL(srv), BearerToken: "t", NodeName: "spark-1"}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.listInterfaces = func() ([]netinfo.Interface, error) {
+		return []netinfo.Interface{{Name: "eth0", IPAddress: "10.0.0.5", LinkSpeedMbps: &speed}, {Name: "eth1", IPAddress: "10.0.1.5"}}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go conn.Run(ctx)
+
+	select {
+	case env := <-app.receivedInterfaces:
+		var report agentproto.ReportInterfaces
+		if err := env.DecodePayload(&report); err != nil {
+			t.Fatal(err)
+		}
+		if len(report.Interfaces) != 2 || report.Interfaces[0].Name != "eth0" || *report.Interfaces[0].LinkSpeedMbps != 10000 || report.Interfaces[1].LinkSpeedMbps != nil {
+			t.Errorf("report = %+v", report)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for report_interfaces")
+	}
+}
+
+func TestConn_RescanInterfaces_RepliesWithRequestID(t *testing.T) {
+	rescan, err := agentproto.NewEnvelope(agentproto.TypeRescanInterfaces, "req-rescan", agentproto.RescanInterfaces{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &rescan
+	app.receivedInterfaces = make(chan agentproto.Envelope, 4)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	conn := New(Config{CentralURL: wsURL(srv), BearerToken: "t", NodeName: "spark-1"}, &fakeRuntimeBackend{}, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.listInterfaces = func() ([]netinfo.Interface, error) {
+		return []netinfo.Interface{{Name: "eth0", IPAddress: "10.0.0.5"}}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go conn.Run(ctx)
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case env := <-app.receivedInterfaces:
+			if env.RequestID == "req-rescan" {
+				return
+			}
+		case <-deadline:
+			t.Fatal("no report_interfaces carried the rescan's request id")
 		}
 	}
 }

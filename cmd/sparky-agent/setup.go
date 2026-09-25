@@ -12,8 +12,8 @@ import (
 )
 
 // runSetup implements `sparky-agent setup` - creates/verifies the
-// serviceloop system account, its model storage home directory, and its
-// GPU-passthrough group membership. Idempotent and safe to re-run - see
+// serviceloop system account, its model storage home directory, its
+// GPU-passthrough group membership, and its SSH identity. Idempotent and safe to re-run - see
 // PLANNING.md's 2026-08-07 Decisions Log entry for why this logic lives in
 // the binary rather than only in scripts/packaging/lib/agent-common.sh:
 // real go test coverage (see agent/provision), and one implementation
@@ -48,6 +48,11 @@ func runSetup(logger *log.Logger) {
 		logger.Fatalf("setup: %v", err)
 	}
 	fmt.Println("GPU-passthrough group membership (video/render): OK")
+
+	if err := p.EnsureSSHKeypair(ctx); err != nil {
+		logger.Fatalf("setup: %v", err)
+	}
+	fmt.Println("SSH identity for peer-to-peer model transfer (/opt/sparky/serviceloop/.ssh): OK")
 
 	fmt.Println()
 	fmt.Println("Setup complete.")
