@@ -25,6 +25,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/1kaius1/Sparky/agent/enginetransfer"
+	"github.com/1kaius1/Sparky/agent/netinfo"
 	"github.com/1kaius1/Sparky/agent/runtime"
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
@@ -89,6 +90,14 @@ type Config struct {
 	CentralURL  string
 	BearerToken string
 	NodeName    string
+
+	// SSHPublicKey / SSHHostPublicKey are this node's own SSH client
+	// identity and its system sshd's host public key, reported in the
+	// hello handshake for peer-to-peer model transfer (SCHEMA.md Nodes).
+	// Both optional - empty means "not available", and the node connects
+	// and works normally without participating in peer transfer.
+	SSHPublicKey     string
+	SSHHostPublicKey string
 
 	// ModelStoragePath is where a TypeStartTransfer download lands -
 	// SPARKY_MODEL_STORAGE_PATH, per docs/AGENT.md Configuration. Not
@@ -200,6 +209,9 @@ type Conn struct {
 	// are only ever touched by the one goroutine that owns them.
 	activeMu        sync.Mutex
 	activeInstances map[string]activeInstance
+
+	// listInterfaces is a fakeable seam over netinfo.List.
+	listInterfaces func() ([]netinfo.Interface, error)
 }
 
 // New constructs a Conn.
@@ -214,6 +226,7 @@ func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, engi
 		minBackoff:      defaultMinBackoff,
 		maxBackoff:      defaultMaxBackoff,
 		activeInstances: make(map[string]activeInstance),
+		listInterfaces:  netinfo.List,
 	}
 }
 
@@ -319,6 +332,7 @@ func (c *Conn) runOnce(ctx context.Context) (connected bool, err error) {
 
 	readCtx, cancelBackgroundSenders := context.WithCancel(ctx)
 	defer cancelBackgroundSenders()
+	go c.sendInterfaces(readCtx, conn, "")
 	go c.sendHeartbeats(readCtx, conn)
 	go c.sendTelemetry(readCtx, conn)
 	go c.sendInstanceHealth(readCtx, conn)
@@ -333,8 +347,10 @@ func (c *Conn) handshake(ctx context.Context, conn *websocket.Conn) error {
 	defer cancel()
 
 	env, err := agentproto.NewEnvelope(agentproto.TypeHello, "", agentproto.Hello{
-		NodeName:    c.cfg.NodeName,
-		BearerToken: c.cfg.BearerToken,
+		NodeName:         c.cfg.NodeName,
+		BearerToken:      c.cfg.BearerToken,
+		SSHPublicKey:     c.cfg.SSHPublicKey,
+		SSHHostPublicKey: c.cfg.SSHHostPublicKey,
 	})
 	if err != nil {
 		return fmt.Errorf("build hello: %w", err)
@@ -565,6 +581,8 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.instanceWG.Done()
 			c.runCheckInstance(ctx, conn, check)
 		}()
+	case agentproto.TypeRescanInterfaces:
+		go c.sendInterfaces(ctx, conn, env.RequestID)
 	case agentproto.TypeDeleteModel:
 		var del agentproto.DeleteModel
 		if err := env.DecodePayload(&del); err != nil {

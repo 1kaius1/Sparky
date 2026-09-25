@@ -10,6 +10,7 @@ import (
 	"log"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -44,6 +45,28 @@ type statusCall struct {
 // lifecycle transitions without a sleep-based poll.
 type fakeStatusStore struct {
 	calls chan statusCall
+
+	mu         sync.Mutex
+	sshUpdates []sshUpdate
+}
+
+type sshUpdate struct {
+	nodeID  string
+	pub     string
+	hostPub *string
+}
+
+func (f *fakeStatusStore) UpdateSSHIdentity(_ context.Context, nodeID string, pub, hostPub *string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.sshUpdates = append(f.sshUpdates, sshUpdate{nodeID, *pub, hostPub})
+	return nil
+}
+
+func (f *fakeStatusStore) updates() []sshUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]sshUpdate(nil), f.sshUpdates...)
 }
 
 func newFakeStatusStore() *fakeStatusStore {
@@ -110,7 +133,12 @@ func dialTestServer(t *testing.T, h *Handler) *websocket.Conn {
 
 func writeHello(t *testing.T, conn *websocket.Conn, requestID, nodeName, token string) {
 	t.Helper()
-	env, err := agentproto.NewEnvelope(agentproto.TypeHello, requestID, agentproto.Hello{NodeName: nodeName, BearerToken: token})
+	writeHelloPayload(t, conn, requestID, agentproto.Hello{NodeName: nodeName, BearerToken: token})
+}
+
+func writeHelloPayload(t *testing.T, conn *websocket.Conn, requestID string, hello agentproto.Hello) {
+	t.Helper()
+	env, err := agentproto.NewEnvelope(agentproto.TypeHello, requestID, hello)
 	if err != nil {
 		t.Fatalf("NewEnvelope() error: %v", err)
 	}
@@ -540,5 +568,52 @@ func TestHandler_Unreachable_ReportedOnceNotEveryTick(t *testing.T) {
 	case c := <-status.calls:
 		t.Errorf("a second SetAgentStatus call (%+v) was made for continued silence, want exactly one per silence", c)
 	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+const (
+	testClientKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl"
+	testHostKey   = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHostHostHostHostHostHostHostHostHostHost"
+)
+
+func handshakeWith(t *testing.T, hello agentproto.Hello) *fakeStatusStore {
+	t.Helper()
+	h, status, _ := testHandler(t, &fakeAuthenticator{node: &db.Node{ID: "node-1", Name: "spark-1"}})
+	conn := dialTestServer(t, h)
+	hello.NodeName, hello.BearerToken = "spark-1", "spk_validtoken"
+	writeHelloPayload(t, conn, "req-1", hello)
+	if _, ack := readHelloAck(t, conn); !ack.Accepted {
+		t.Fatalf("handshake rejected: %q", ack.Reason)
+	}
+	return status
+}
+
+func TestHandler_Handshake_PersistsSSHIdentity(t *testing.T) {
+	status := handshakeWith(t, agentproto.Hello{SSHPublicKey: testClientKey, SSHHostPublicKey: testHostKey})
+	got := status.updates()
+	if len(got) != 1 || got[0].nodeID != "node-1" || got[0].pub != testClientKey || got[0].hostPub == nil || *got[0].hostPub != testHostKey {
+		t.Errorf("updates = %+v, want the reported identity stored for node-1", got)
+	}
+}
+
+func TestHandler_Handshake_NoSSHIdentity_LeavesStoredValueAlone(t *testing.T) {
+	status := handshakeWith(t, agentproto.Hello{})
+	if got := status.updates(); len(got) != 0 {
+		t.Errorf("updates = %+v, want none - omission must not clear a stored key", got)
+	}
+}
+
+func TestHandler_Handshake_MalformedClientKey_NotStoredButStillAccepted(t *testing.T) {
+	status := handshakeWith(t, agentproto.Hello{SSHPublicKey: `command="x" ` + testClientKey, SSHHostPublicKey: testHostKey})
+	if got := status.updates(); len(got) != 0 {
+		t.Errorf("updates = %+v, want none for a malformed client key", got)
+	}
+}
+
+func TestHandler_Handshake_MalformedHostKey_ClientKeyStillStored(t *testing.T) {
+	status := handshakeWith(t, agentproto.Hello{SSHPublicKey: testClientKey, SSHHostPublicKey: "garbage\nssh-ed25519 AAAA"})
+	got := status.updates()
+	if len(got) != 1 || got[0].hostPub != nil {
+		t.Errorf("updates = %+v, want the client key stored with no host key", got)
 	}
 }

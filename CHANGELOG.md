@@ -1511,6 +1511,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   hidden from the Inventory page) only on confirmed success. Refused with a
   clear error if a Model profile still targets that model on that node, or
   if the node is offline. Audited as `deleted_model_copy`.
+- Node SSH identity, network-interface reporting, and a Node edit page -
+  PR 5 of 10 in the Models redesign; groundwork for peer-to-peer model
+  transfer (not built yet). `sparky-agent setup` now generates the node's
+  ed25519 keypair (never overwriting an existing one); the agent reports its
+  public key and its sshd host public key in the `hello` handshake, and its
+  network interfaces with link speeds via `report_interfaces` after every
+  connect (also on demand via `rescan_interfaces`). The central app stores
+  the keys only if each is a bare `<type> <base64>` line
+  (`agentproto.ValidSSHPublicKey`, shared by both binaries) - a stricter check
+  than the wire needs, because the client key will later be written into a
+  peer's `authorized_keys` - and never lets an absent or invalid value clear
+  or fail anything. New Admin-only page `/nodes/{id}/edit` shows the SSH public
+  keys and reported interfaces, has a Rescan action, and sets the node's
+  default transfer interface (must be a currently-reported interface, or
+  "Fastest"); the change is audited as `set_default_transfer_interface`.
+  New env vars `SPARKY_SSH_KEY_PATH` / `SPARKY_SSH_HOST_KEY_PATH`; the
+  `.deb`/`.rpm` now depend on `openssh-client`/`openssh-clients` (for
+  `ssh-keygen`) and the tarball installer checks for it. Central app must be
+  deployed before upgraded agents (an old central app rejects the extended
+  `hello`).
 
 ### Fixed
 - The Nodes and Dashboard pages now update without a manual reload when a

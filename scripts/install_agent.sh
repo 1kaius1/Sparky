@@ -24,6 +24,15 @@ if ! command -v systemctl >/dev/null 2>&1; then
     exit 1
 fi
 
+# ssh-keygen (openssh-client) is what `sparky-agent setup` uses to generate
+# this node's SSH identity for peer-to-peer model transfer. The .deb/.rpm
+# packages declare it as a dependency; a tarball install has no package
+# manager to do that, so check for it here instead.
+if ! command -v ssh-keygen >/dev/null 2>&1; then
+    echo "sparky-agent: ssh-keygen not found - install openssh-client (Debian/Ubuntu) or openssh-clients (RHEL/Fedora) first" >&2
+    exit 1
+fi
+
 script_dir=$(cd "$(dirname "$0")" && pwd)
 
 . "$script_dir/lib/agent-common.sh"

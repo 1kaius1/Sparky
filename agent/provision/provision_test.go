@@ -5,6 +5,8 @@ package provision
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 )
@@ -188,5 +190,74 @@ func TestEnsureGPUGroupMembership_UsermodFails_ReturnsError(t *testing.T) {
 
 	if err := p.EnsureGPUGroupMembership(context.Background()); err == nil {
 		t.Fatal("EnsureGPUGroupMembership() succeeded despite a usermod failure")
+	}
+}
+
+func TestEnsureSSHKeypair_GeneratesWhenMissing(t *testing.T) {
+	fake := &fakeRunner{}
+	p := &Provisioner{run: fake.run, sshKeyPath: DefaultSSHKeyPath}
+
+	if err := p.EnsureSSHKeypair(context.Background()); err != nil {
+		t.Fatalf("EnsureSSHKeypair() error: %v", err)
+	}
+
+	var names []string
+	for _, c := range fake.calls {
+		names = append(names, c.name)
+	}
+	if want := []string{"install", "ssh-keygen", "chown", "chown", "chmod"}; !reflect.DeepEqual(names, want) {
+		t.Fatalf("commands = %v, want %v", names, want)
+	}
+	wantKeygen := []string{"-q", "-t", "ed25519", "-N", "", "-C", "sparky-agent", "-f", DefaultSSHKeyPath}
+	if !reflect.DeepEqual(fake.calls[1].args, wantKeygen) {
+		t.Errorf("ssh-keygen args = %v, want %v", fake.calls[1].args, wantKeygen)
+	}
+	if fake.calls[0].args[len(fake.calls[0].args)-2] != "0700" {
+		t.Errorf("ssh dir mode args = %v, want 0700", fake.calls[0].args)
+	}
+}
+
+func TestReadSSHPublicKey(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	if got := ReadSSHPublicKey(write("a.pub", "ssh-ed25519 AAAAC3Nza comment here\n")); got != "ssh-ed25519 AAAAC3Nza" {
+		t.Errorf("comment not stripped: %q", got)
+	}
+	if got := ReadSSHPublicKey(write("b.pub", "# note\nssh-ed25519 AAAAB\n")); got != "ssh-ed25519 AAAAB" {
+		t.Errorf("comment line not skipped: %q", got)
+	}
+	if got := ReadSSHPublicKey(write("empty.pub", "")); got != "" {
+		t.Errorf("empty file = %q, want empty", got)
+	}
+	if got := ReadSSHPublicKey(filepath.Join(dir, "missing.pub")); got != "" {
+		t.Errorf("missing file = %q, want empty", got)
+	}
+}
+
+func TestEnsureSSHKeypair_NeverOverwritesExistingKey(t *testing.T) {
+	keyPath := filepath.Join(t.TempDir(), ".ssh", "id_ed25519")
+	if err := os.MkdirAll(filepath.Dir(keyPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, []byte("existing"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakeRunner{}
+	p := &Provisioner{run: fake.run, sshKeyPath: keyPath}
+
+	if err := p.EnsureSSHKeypair(context.Background()); err != nil {
+		t.Fatalf("EnsureSSHKeypair() error: %v", err)
+	}
+	for _, c := range fake.calls {
+		if c.name == "ssh-keygen" {
+			t.Fatal("ssh-keygen ran despite an existing private key - identity would be rotated")
+		}
 	}
 }

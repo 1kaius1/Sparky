@@ -310,6 +310,11 @@ func (a *API) Router() http.Handler {
 	// enforcement boundary that never trusts what the GET rendered.
 	r.With(a.RequireSession).Get("/nodes/register", a.handleRegisterNodeForm)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/nodes/register", a.handleRegisterNode)
+	// The edit page and its actions are Admin-only (rbac.CanManageNodes),
+	// checked in each handler and again inside nodes.Service.
+	r.With(a.RequireSession).Get("/nodes/{id}/edit", a.handleEditNodeForm)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/nodes/{id}/edit", a.handleUpdateNode)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/nodes/{id}/rescan-interfaces", a.handleRescanInterfaces)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
 	// The create/edit form's own RBAC gate (rbac.CanManageProfiles) is
 	// checked directly in each handler - GET to decide whether to show

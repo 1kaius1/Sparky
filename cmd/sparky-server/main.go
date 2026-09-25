@@ -116,7 +116,7 @@ func main() {
 	// and, as of Dashboard UI Phase 9, the registration form's own write
 	// (RegisterNode) - the same value is passed twice below, once per
 	// narrow interface httpapi expects (nodeLister, nodeRegistrar).
-	nodeService := nodes.NewService(nodeRepo, auditRecorder)
+	nodeService := nodes.NewService(nodeRepo, db.NewNodeNetworkInterfaceRepository(pool), agentRegistry, auditRecorder, logger)
 	// profileService backs both the Model profiles page's unguarded
 	// ListProfiles read and, as of Dashboard UI Phase 10, the create/edit
 	// form's own writes (CreateProfile/UpdateProfile/GetProfile) - same
@@ -196,6 +196,9 @@ func main() {
 		switch env.Type {
 		case agentproto.TypeTransferProgress:
 			transferService.HandleTransferProgress(nodeID, env)
+			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypeReportInterfaces:
+			nodeService.HandleReportInterfaces(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
 		case agentproto.TypeDeleteModelResult:
 			inventoryService.HandleDeleteModelResult(nodeID, env)

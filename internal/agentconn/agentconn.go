@@ -107,6 +107,7 @@ type authenticator interface {
 // statusStore is the subset of *db.NodeRepository this package needs.
 type statusStore interface {
 	SetAgentStatus(ctx context.Context, nodeID string, status db.AgentStatus, bumpHeartbeat bool) error
+	UpdateSSHIdentity(ctx context.Context, nodeID string, sshPublicKey, sshHostPublicKey *string) error
 }
 
 // OnMessageFunc handles a message this package does not handle internally
@@ -182,12 +183,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	node, requestID, err := h.handshake(r.Context(), conn)
+	node, hello, requestID, err := h.handshake(r.Context(), conn)
 	if err != nil {
 		h.logger.Printf("agentconn: handshake failed: %v", err)
 		conn.Close(websocket.StatusPolicyViolation, "handshake failed")
 		return
 	}
+
+	h.recordSSHIdentity(r.Context(), node.ID, hello)
 
 	// Register and mark online before acking success, so the agent never
 	// observes acceptance before this layer's own state reflects it.
@@ -280,28 +283,27 @@ func (h *Handler) watchLiveness(ctx context.Context, nodeID string, tracker *liv
 // HelloAck is deliberately not sent here - see ServeHTTP, which sends it
 // only after this node is registered and marked online, so the agent
 // never observes acceptance before this layer's own state reflects it.
-func (h *Handler) handshake(ctx context.Context, conn *websocket.Conn) (node *db.Node, requestID string, err error) {
+func (h *Handler) handshake(ctx context.Context, conn *websocket.Conn) (node *db.Node, hello agentproto.Hello, requestID string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, handshakeTimeout)
 	defer cancel()
 
 	_, raw, err := conn.Read(ctx)
 	if err != nil {
-		return nil, "", fmt.Errorf("read hello: %w", err)
+		return nil, agentproto.Hello{}, "", fmt.Errorf("read hello: %w", err)
 	}
 
 	var env agentproto.Envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, "", fmt.Errorf("decode envelope: %w", err)
+		return nil, agentproto.Hello{}, "", fmt.Errorf("decode envelope: %w", err)
 	}
 	if env.Type != agentproto.TypeHello {
 		_ = h.sendHelloAck(ctx, conn, env.RequestID, false, "expected hello")
-		return nil, "", fmt.Errorf("first message type = %q, want %q", env.Type, agentproto.TypeHello)
+		return nil, agentproto.Hello{}, "", fmt.Errorf("first message type = %q, want %q", env.Type, agentproto.TypeHello)
 	}
 
-	var hello agentproto.Hello
 	if err := env.DecodePayload(&hello); err != nil {
 		_ = h.sendHelloAck(ctx, conn, env.RequestID, false, "malformed hello")
-		return nil, "", fmt.Errorf("decode hello payload: %w", err)
+		return nil, agentproto.Hello{}, "", fmt.Errorf("decode hello payload: %w", err)
 	}
 
 	node, err = h.auth.Authenticate(ctx, hello.NodeName, hello.BearerToken)
@@ -310,10 +312,10 @@ func (h *Handler) handshake(ctx context.Context, conn *websocket.Conn) (node *db
 		// nodes.ErrInvalidCredentials's doc comment: this must not let a
 		// caller distinguish an unknown node name from a wrong token.
 		_ = h.sendHelloAck(ctx, conn, env.RequestID, false, "invalid credentials")
-		return nil, "", fmt.Errorf("authenticate node %q: %w", hello.NodeName, err)
+		return nil, agentproto.Hello{}, "", fmt.Errorf("authenticate node %q: %w", hello.NodeName, err)
 	}
 
-	return node, env.RequestID, nil
+	return node, hello, env.RequestID, nil
 }
 
 func (h *Handler) sendHelloAck(ctx context.Context, conn *websocket.Conn, requestID string, accepted bool, reason string) error {
@@ -376,5 +378,36 @@ func (h *Handler) readLoop(ctx context.Context, nodeID string, conn *websocket.C
 				h.onMessage(nodeID, env)
 			}
 		}
+	}
+}
+
+// recordSSHIdentity persists the SSH identity an agent reported in its
+// hello, if any. An agent that sent nothing (not yet upgraded, or no
+// keypair generated yet) leaves whatever is already stored untouched -
+// omission is never treated as "clear it". Each reported key is validated
+// with agentproto.ValidSSHPublicKey before storing, because the client
+// key is later written into a peer's authorized_keys; an invalid value is
+// dropped and logged, not stored, and never fails the connection (the
+// agent is still authenticated and fully usable for everything else). The
+// host key is stored only alongside a valid client key, matching the
+// single UpdateSSHIdentity write.
+func (h *Handler) recordSSHIdentity(ctx context.Context, nodeID string, hello agentproto.Hello) {
+	if hello.SSHPublicKey == "" {
+		return
+	}
+	if !agentproto.ValidSSHPublicKey(hello.SSHPublicKey) {
+		h.logger.Printf("agentconn: node %s reported a malformed SSH public key - ignoring it", nodeID)
+		return
+	}
+	var hostKey *string
+	if hello.SSHHostPublicKey != "" {
+		if agentproto.ValidSSHPublicKey(hello.SSHHostPublicKey) {
+			hostKey = &hello.SSHHostPublicKey
+		} else {
+			h.logger.Printf("agentconn: node %s reported a malformed SSH host public key - ignoring it", nodeID)
+		}
+	}
+	if err := h.status.UpdateSSHIdentity(ctx, nodeID, &hello.SSHPublicKey, hostKey); err != nil {
+		h.logger.Printf("agentconn: record SSH identity for node %s: %v", nodeID, err)
 	}
 }
