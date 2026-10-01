@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Models redesign cleanup: trued up stale documentation left behind across
+  the ten-PR effort - CLAUDE.md's sidebar-tier sentence (Models group is now
+  Inventory + Profiles, not Profiles + a sidebar-level Transfers entry) and
+  its repo-layout tree (`internal/inventory`, `internal/modelsource`, and
+  `internal/transfers`' updated description), docs/AGENT.md's "SSH identity
+  and network interfaces" section (dropped a leftover "the transfer itself is
+  not built yet" sentence from before peer-to-peer transfer existed), and
+  ARCHITECTURE.md's Manual Tests checklist and PLANNING.md's Future Ideas
+  (both still named the redesign as in-flight work). No code changes.
 - Model profiles: the create/edit form's model_ref/quantization/format are no
   longer free-typed - a target node is chosen first, then the form offers only
   that node's own present Inventory entries as a picker, encoded as one
