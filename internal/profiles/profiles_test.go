@@ -17,6 +17,7 @@ func validFields() Fields {
 		EngineType:   db.ProfileEngineVLLM,
 		EngineParams: json.RawMessage(`{}`),
 		TargetNodeID: "node-1",
+		Format:       db.ModelFormatSafetensors,
 		Port:         8000,
 	}
 }
@@ -50,6 +51,8 @@ func TestFields_Validate_Invalid(t *testing.T) {
 		"zero port":            func() Fields { f := validFields(); f.Port = 0; return f }(),
 		"negative port":        func() Fields { f := validFields(); f.Port = -1; return f }(),
 		"port too high":        func() Fields { f := validFields(); f.Port = 65536; return f }(),
+		"empty format":         func() Fields { f := validFields(); f.Format = ""; return f }(),
+		"unknown format":       func() Fields { f := validFields(); f.Format = db.ModelFormat("bogus"); return f }(),
 		"negative required_memory_gb": func() Fields {
 			f := validFields()
 			f.RequiredMemoryGB = &negativeMemory

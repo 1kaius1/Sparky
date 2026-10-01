@@ -1,0 +1,16 @@
+{{define "profile_inventory_options"}}
+{{if eq .NodeID ""}}
+<p><small>Choose a target node to see what it has.</small></p>
+{{else if .Empty}}
+<p><small>This node has no models in its inventory yet.
+  <a href="/inventory/transfer/new?dest_node_id={{.NodeID}}">Download or copy one first</a>.</small></p>
+{{else}}
+<label for="entry">Model</label><br>
+<select id="entry" name="entry" required>
+  <option value="">(select a model)</option>
+  {{range .Options}}
+  <option value="{{.Value}}" {{if .Selected}}selected{{end}}>{{.Label}}</option>
+  {{end}}
+</select>
+{{end}}
+{{end}}

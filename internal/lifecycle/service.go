@@ -159,17 +159,12 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 		engineVersion = *profile.EngineVersion
 	}
 
-	var quantization string
-	if profile.Quantization != nil {
-		quantization = *profile.Quantization
-	}
-
 	env, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
 		InstanceID:               inst.ID,
 		ModelRef:                 profile.ModelRef,
 		EngineType:               string(profile.EngineType),
 		EngineVersion:            engineVersion,
-		Quantization:             quantization,
+		Quantization:             profile.Quantization,
 		Image:                    spec.Image,
 		Args:                     spec.Args,
 		Port:                     profile.Port,

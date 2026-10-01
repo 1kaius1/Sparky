@@ -122,17 +122,19 @@ func main() {
 	// ListProfiles read and, as of Dashboard UI Phase 10, the create/edit
 	// form's own writes (CreateProfile/UpdateProfile/GetProfile) - same
 	// twice-passed-value reasoning as nodeService above.
-	profileService := profiles.NewService(profileRepo, nodeRepo, engineRegistry, auditRecorder)
+	// inventoryService backs the Inventory page's unguarded ListGrouped/
+	// ListGroupedSimple reads (PLANNING.md's Models redesign) - the first
+	// read path node_model_inventory has ever had; internal/transfers'
+	// own inventoryRepo dependency above remains the only write path.
+	// Constructed ahead of profileService, which depends on it (the
+	// Inventory-driven picker's presence check).
+	inventoryService := inventory.NewService(inventoryRepo, profileRepo, overrideRepo, agentRegistry, auditRecorder, logger)
+	profileService := profiles.NewService(profileRepo, nodeRepo, inventoryService, engineRegistry, auditRecorder)
 	// lifecycleService backs both the Model profiles page's unguarded
 	// ListInstances read and, as of Dashboard UI Phase 11, the Load/Unload
 	// controls' own writes (LoadInstance/UnloadInstance) - same
 	// twice-passed-value reasoning as nodeService/profileService above.
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
-	// inventoryService backs the Inventory page's unguarded ListGrouped/
-	// ListGroupedSimple reads (PLANNING.md's Models redesign) - the first
-	// read path node_model_inventory has ever had; internal/transfers'
-	// own inventoryRepo dependency above remains the only write path.
-	inventoryService := inventory.NewService(inventoryRepo, profileRepo, overrideRepo, agentRegistry, auditRecorder, logger)
 	// transferService additionally gets nodeService (SSH identity and
 	// interface resolution) and inventoryService (source-presence check) for
 	// peer_node transfers.

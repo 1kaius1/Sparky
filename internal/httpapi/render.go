@@ -110,7 +110,7 @@ func loadPageTemplates() (map[string]*template.Template, error) {
 // name via renderPartial. Fragments are standalone - no base layout - and
 // each file defines a template named after itself.
 func loadPartialTemplates() (map[string]*template.Template, error) {
-	names := []string{"estimate_size", "peer_options", "connectivity"}
+	names := []string{"estimate_size", "peer_options", "connectivity", "profile_inventory_options"}
 	result := make(map[string]*template.Template, len(names))
 	for _, name := range names {
 		t, err := template.ParseFS(web.FS, "templates/partials/"+name+".html")

@@ -49,12 +49,16 @@ type Profile struct {
 	RequiresFullGPUResidency bool
 	RequiredMemoryGB         *float64
 	EngineVersion            *string
-	Quantization             *string
+	// Quantization is the quantization of the Node model inventory entry
+	// this profile was created from - "" means "whole repo", the same
+	// sentinel NodeModelInventory.Quantization uses, never a distinct
+	// "not specified" meaning (migrations/000034_model_profiles_
+	// quantization_not_null.up.sql). Historical rows predating the
+	// Inventory-driven picker hold the literal sentinel "UNKNOWN".
+	Quantization string
 	// Format mirrors the model_format Postgres enum - see ModelFormat
-	// (internal/db/node_model_inventory.go). Not yet settable via
-	// Create/Update (migrations/000030_add_model_format.up.sql's
-	// DEFAULT 'safetensors' covers every row created before the Go layer
-	// threads a real value through - see PLANNING.md's Decisions Log).
+	// (internal/db/node_model_inventory.go). Set from the chosen
+	// inventory entry's own Format by the Inventory-driven picker.
 	Format       ModelFormat
 	Image        *string
 	Topology     ProfileTopology
@@ -105,12 +109,12 @@ func scanProfile(row pgx.Row) (*Profile, error) {
 // the database's model_profiles_single_node_only CHECK constraint.
 // createdBy is nil only for the break-glass SuperAdmin, which is not a
 // Users row - see SCHEMA.md Break-glass credential.
-func (r *ProfileRepository) Create(ctx context.Context, name, modelRef string, engineType ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, createdBy *string) (*Profile, error) {
+func (r *ProfileRepository) Create(ctx context.Context, name, modelRef string, engineType ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*Profile, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO model_profiles (name, model_ref, engine_type, engine_params, requires_full_gpu_residency, required_memory_gb, engine_version, quantization, image, target_node_id, port, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		`INSERT INTO model_profiles (name, model_ref, engine_type, engine_params, requires_full_gpu_residency, required_memory_gb, engine_version, quantization, format, image, target_node_id, port, created_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
 		 RETURNING `+profileColumns,
-		name, modelRef, engineType, engineParams, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, image, targetNodeID, port, createdBy)
+		name, modelRef, engineType, engineParams, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, format, image, targetNodeID, port, createdBy)
 
 	p, err := scanProfile(row)
 	if err != nil {
@@ -154,14 +158,14 @@ func (r *ProfileRepository) List(ctx context.Context) ([]*Profile, error) {
 // migrations/000007_create_model_profiles.up.sql's CHECK constraint.
 // updatedBy is nil only for the break-glass SuperAdmin. Returns
 // ErrProfileNotFound if no row matches id.
-func (r *ProfileRepository) Update(ctx context.Context, id, name, modelRef string, engineType ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, updatedBy *string) (*Profile, error) {
+func (r *ProfileRepository) Update(ctx context.Context, id, name, modelRef string, engineType ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*Profile, error) {
 	row := r.pool.QueryRow(ctx,
 		`UPDATE model_profiles
 		 SET name = $2, model_ref = $3, engine_type = $4, engine_params = $5, requires_full_gpu_residency = $6,
-		     required_memory_gb = $7, engine_version = $8, quantization = $9, image = $10, target_node_id = $11, port = $12, updated_by = $13, updated_at = now()
+		     required_memory_gb = $7, engine_version = $8, quantization = $9, format = $10, image = $11, target_node_id = $12, port = $13, updated_by = $14, updated_at = now()
 		 WHERE id = $1
 		 RETURNING `+profileColumns,
-		id, name, modelRef, engineType, engineParams, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, image, targetNodeID, port, updatedBy)
+		id, name, modelRef, engineType, engineParams, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, format, image, targetNodeID, port, updatedBy)
 
 	// Not wrapped: ErrProfileNotFound (id doesn't exist) is an expected,
 	// common outcome here, not an edge case - callers compare against it

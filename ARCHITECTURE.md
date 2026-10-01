@@ -158,7 +158,13 @@ Fabric groups.
 #### Model Profile Management
 CRUD for Model profiles and Profile cluster nodes. Validates that a clustered
 profile's node set actually belongs to its declared fabric group, and that
-`engine_params` matches the shape the selected engine adapter expects.
+`engine_params` matches the shape the selected engine adapter expects. A
+profile's model (`model_ref`/`quantization`/`format`) is chosen from the
+target node's own Node model inventory, not free-typed - the create/edit
+form offers only that node's present entries, and `Service.resolve` confirms
+the choice still names a present entry before persisting, ahead of the
+database's own `model_profiles_target_inventory_fkey` (`SCHEMA.md` Model
+profiles).
 
 #### Model Lifecycle Orchestrator
 Owns "load" and "unload." Computes launch eligibility per node - Green (in cluster,

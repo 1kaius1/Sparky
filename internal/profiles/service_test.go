@@ -40,7 +40,7 @@ func (f *fakeProfileStore) List(_ context.Context) ([]*db.Profile, error) {
 	return f.listResult, nil
 }
 
-func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -50,20 +50,20 @@ func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engi
 	}
 	p := &db.Profile{
 		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
-		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization, Image: image,
+		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization, Format: format, Image: image,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, CreatedBy: createdBy,
 	}
 	f.created = append(f.created, p)
 	return p, nil
 }
 
-func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
 	p := &db.Profile{
 		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
-		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization, Image: image,
+		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization, Format: format, Image: image,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, UpdatedBy: updatedBy,
 	}
 	f.updated = append(f.updated, p)
@@ -99,6 +99,22 @@ func (f *fakeNodeLookup) FindByID(_ context.Context, id string) (*db.Node, error
 		return nil, db.ErrNodeNotFound
 	}
 	return f.node, nil
+}
+
+// fakeInventoryLookup implements inventoryLookup.
+type fakeInventoryLookup struct {
+	entry   *db.NodeModelInventory
+	findErr error
+}
+
+func (f *fakeInventoryLookup) Get(_ context.Context, _, _, _ string, _ db.ModelFormat) (*db.NodeModelInventory, error) {
+	if f.findErr != nil {
+		return nil, f.findErr
+	}
+	if f.entry == nil {
+		return nil, db.ErrNodeModelInventoryNotFound
+	}
+	return f.entry, nil
 }
 
 // fakeAdapter implements engines.Adapter.
@@ -149,16 +165,20 @@ func (f *fakeAuditRecorder) Record(_ context.Context, actorID *string, isSuperAd
 	return nil
 }
 
-func testDeps() (*fakeProfileStore, *fakeNodeLookup, *fakeAdapterRegistry, *fakeAuditRecorder) {
+func testDeps() (*fakeProfileStore, *fakeNodeLookup, *fakeInventoryLookup, *fakeAdapterRegistry, *fakeAuditRecorder) {
 	return &fakeProfileStore{nextID: "profile-1"},
 		&fakeNodeLookup{node: &db.Node{ID: "node-1", Name: "spark-1"}},
+		&fakeInventoryLookup{entry: &db.NodeModelInventory{
+			NodeID: "node-1", ModelRef: "Qwen/Qwen2.5-0.5B-Instruct", Quantization: "", Format: db.ModelFormatSafetensors,
+			Status: db.InventoryStatusPresent,
+		}},
 		&fakeAdapterRegistry{adapter: fakeAdapter{requiresFullGPU: true}},
 		&fakeAuditRecorder{}
 }
 
 func TestService_CreateProfile_PermittedByPowerDev(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
 
 	p, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -188,8 +208,8 @@ func TestService_CreateProfile_PermittedByPowerDev(t *testing.T) {
 }
 
 func TestService_CreateProfile_EngineVersion_RoundTrips(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
 
 	version := "b4610"
@@ -215,8 +235,8 @@ func TestService_CreateProfile_EngineVersion_RoundTrips(t *testing.T) {
 }
 
 func TestService_CreateProfile_EngineVersion_NilWhenUnset(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
 
 	p, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -229,8 +249,8 @@ func TestService_CreateProfile_EngineVersion_NilWhenUnset(t *testing.T) {
 }
 
 func TestService_CreateProfile_PermittedBySuperAdmin_NilCreatedBy(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -248,8 +268,8 @@ func TestService_CreateProfile_PermittedBySuperAdmin_NilCreatedBy(t *testing.T) 
 func TestService_CreateProfile_NotPermitted(t *testing.T) {
 	for _, tier := range []db.Tier{db.TierReadOnly, db.TierDeveloper} {
 		t.Run(string(tier), func(t *testing.T) {
-			store, nodes, adapters, audit := testDeps()
-			svc := NewService(store, nodes, adapters, audit)
+			store, nodes, inventory, adapters, audit := testDeps()
+			svc := NewService(store, nodes, inventory, adapters, audit)
 			actor := rbac.Actor{Tier: tier, UserID: "user-1"}
 
 			_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -267,8 +287,8 @@ func TestService_CreateProfile_NotPermitted(t *testing.T) {
 }
 
 func TestService_CreateProfile_InvalidFieldsNotPersistedOrAudited(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	fields := validFields()
@@ -287,9 +307,9 @@ func TestService_CreateProfile_InvalidFieldsNotPersistedOrAudited(t *testing.T) 
 }
 
 func TestService_CreateProfile_AdapterValidationFailure(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	adapters.adapter = fakeAdapter{validateErr: errors.New("bad engine_params")}
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -305,9 +325,9 @@ func TestService_CreateProfile_AdapterValidationFailure(t *testing.T) {
 }
 
 func TestService_CreateProfile_UnknownEngineType(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	adapters.err = engines.ErrUnknownEngineType
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -320,9 +340,9 @@ func TestService_CreateProfile_UnknownEngineType(t *testing.T) {
 }
 
 func TestService_CreateProfile_TargetNodeNotFound(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	nodes.node = nil
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -335,9 +355,9 @@ func TestService_CreateProfile_TargetNodeNotFound(t *testing.T) {
 }
 
 func TestService_CreateProfile_NodeLookupInfraFailure(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	nodes.findErr = errors.New("database unreachable")
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -349,10 +369,55 @@ func TestService_CreateProfile_NodeLookupInfraFailure(t *testing.T) {
 	}
 }
 
+func TestService_CreateProfile_InventoryEntryNotFound(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	inventory.entry = nil
+	svc := NewService(store, nodes, inventory, adapters, audit)
+	actor := rbac.Actor{IsSuperAdmin: true}
+
+	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Errorf("CreateProfile() error = %v, want ErrInvalidProfile", err)
+	}
+	if len(store.created) != 0 {
+		t.Error("profileStore.Create was called despite no matching inventory entry")
+	}
+}
+
+func TestService_CreateProfile_InventoryEntryNotPresent(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	inventory.entry.Status = db.InventoryStatusRemoved
+	svc := NewService(store, nodes, inventory, adapters, audit)
+	actor := rbac.Actor{IsSuperAdmin: true}
+
+	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Errorf("CreateProfile() error = %v, want ErrInvalidProfile", err)
+	}
+	if len(store.created) != 0 {
+		t.Error("profileStore.Create was called despite a non-present inventory entry")
+	}
+}
+
+func TestService_CreateProfile_InventoryLookupInfraFailure(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	inventory.findErr = errors.New("database unreachable")
+	svc := NewService(store, nodes, inventory, adapters, audit)
+	actor := rbac.Actor{IsSuperAdmin: true}
+
+	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
+	if err == nil {
+		t.Fatal("CreateProfile() succeeded despite an inventory lookup failure")
+	}
+	if errors.Is(err, ErrInvalidProfile) {
+		t.Error("CreateProfile() returned ErrInvalidProfile for an infrastructure failure, want a distinct error")
+	}
+}
+
 func TestService_CreateProfile_CreateFails(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	store.createErr = errors.New("database unreachable")
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -365,9 +430,9 @@ func TestService_CreateProfile_CreateFails(t *testing.T) {
 }
 
 func TestService_CreateProfile_AuditFailurePropagates(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	audit.recordErr = errors.New("database unreachable")
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: validFields()})
@@ -399,8 +464,12 @@ func TestService_CreateProfile_RealAdapterRegistry_BothEngineTypes(t *testing.T)
 		t.Run(string(tt.engineType), func(t *testing.T) {
 			store := &fakeProfileStore{nextID: "profile-1"}
 			nodes := &fakeNodeLookup{node: &db.Node{ID: "node-1", Name: "spark-1"}}
+			inventory := &fakeInventoryLookup{entry: &db.NodeModelInventory{
+				NodeID: "node-1", ModelRef: "Qwen/Qwen2.5-0.5B-Instruct", Quantization: "", Format: db.ModelFormatSafetensors,
+				Status: db.InventoryStatusPresent,
+			}}
 			audit := &fakeAuditRecorder{}
-			svc := NewService(store, nodes, engines.NewRegistry(), audit)
+			svc := NewService(store, nodes, inventory, engines.NewRegistry(), audit)
 			actor := rbac.Actor{IsSuperAdmin: true}
 
 			fields := validFields()
@@ -427,8 +496,12 @@ func TestService_CreateProfile_RealAdapterRegistry_BothEngineTypes(t *testing.T)
 func TestService_CreateProfile_RealAdapterRegistry_UnknownEngineParamsKey(t *testing.T) {
 	store := &fakeProfileStore{nextID: "profile-1"}
 	nodes := &fakeNodeLookup{node: &db.Node{ID: "node-1", Name: "spark-1"}}
+	inventory := &fakeInventoryLookup{entry: &db.NodeModelInventory{
+		NodeID: "node-1", ModelRef: "Qwen/Qwen2.5-0.5B-Instruct", Quantization: "", Format: db.ModelFormatSafetensors,
+		Status: db.InventoryStatusPresent,
+	}}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(store, nodes, engines.NewRegistry(), audit)
+	svc := NewService(store, nodes, inventory, engines.NewRegistry(), audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	fields := validFields()
@@ -448,8 +521,8 @@ func TestService_CreateProfile_RealAdapterRegistry_UnknownEngineParamsKey(t *tes
 }
 
 func TestService_UpdateProfile_Success(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierAdmin, UserID: "admin-1"}
 
 	p, err := svc.UpdateProfile(context.Background(), actor, UpdateParams{ID: "profile-1", Fields: validFields()})
@@ -471,8 +544,8 @@ func TestService_UpdateProfile_Success(t *testing.T) {
 }
 
 func TestService_UpdateProfile_EngineVersion_RoundTrips(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierAdmin, UserID: "admin-1"}
 
 	version := "b4523"
@@ -489,8 +562,8 @@ func TestService_UpdateProfile_EngineVersion_RoundTrips(t *testing.T) {
 }
 
 func TestService_UpdateProfile_NotPermitted(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "user-1"}
 
 	_, err := svc.UpdateProfile(context.Background(), actor, UpdateParams{ID: "profile-1", Fields: validFields()})
@@ -503,9 +576,9 @@ func TestService_UpdateProfile_NotPermitted(t *testing.T) {
 }
 
 func TestService_UpdateProfile_NotFound(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	store.updateErr = db.ErrProfileNotFound
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.UpdateProfile(context.Background(), actor, UpdateParams{ID: "no-such-profile", Fields: validFields()})
@@ -518,8 +591,8 @@ func TestService_UpdateProfile_NotFound(t *testing.T) {
 }
 
 func TestService_DeleteProfile_Success(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
 
 	if err := svc.DeleteProfile(context.Background(), actor, "profile-1"); err != nil {
@@ -534,8 +607,8 @@ func TestService_DeleteProfile_Success(t *testing.T) {
 }
 
 func TestService_DeleteProfile_NotPermitted(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
-	svc := NewService(store, nodes, adapters, audit)
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{Tier: db.TierReadOnly, UserID: "user-1"}
 
 	err := svc.DeleteProfile(context.Background(), actor, "profile-1")
@@ -548,9 +621,9 @@ func TestService_DeleteProfile_NotPermitted(t *testing.T) {
 }
 
 func TestService_DeleteProfile_NotFound(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	store.deleteErr = db.ErrProfileNotFound
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	err := svc.DeleteProfile(context.Background(), actor, "no-such-profile")
@@ -563,10 +636,10 @@ func TestService_DeleteProfile_NotFound(t *testing.T) {
 }
 
 func TestService_ListProfiles(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	want := []*db.Profile{{ID: "profile-1", Name: "a"}, {ID: "profile-2", Name: "b"}}
 	store.listResult = want
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 
 	got, err := svc.ListProfiles(context.Background())
 	if err != nil {
@@ -578,9 +651,9 @@ func TestService_ListProfiles(t *testing.T) {
 }
 
 func TestService_ListProfiles_StoreError(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	store.listErr = errors.New("database unreachable")
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 
 	if _, err := svc.ListProfiles(context.Background()); err == nil {
 		t.Fatal("ListProfiles() succeeded despite a store failure")
@@ -588,9 +661,9 @@ func TestService_ListProfiles_StoreError(t *testing.T) {
 }
 
 func TestService_GetProfile(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	store.findResult = &db.Profile{ID: "profile-1", Name: "llama-70b"}
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 
 	got, err := svc.GetProfile(context.Background(), "profile-1")
 	if err != nil {
@@ -602,9 +675,9 @@ func TestService_GetProfile(t *testing.T) {
 }
 
 func TestService_GetProfile_NotFound(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	store.findErr = db.ErrProfileNotFound
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 
 	_, err := svc.GetProfile(context.Background(), "does-not-exist")
 	if !errors.Is(err, db.ErrProfileNotFound) {
@@ -613,9 +686,9 @@ func TestService_GetProfile_NotFound(t *testing.T) {
 }
 
 func TestService_GetProfile_StoreError(t *testing.T) {
-	store, nodes, adapters, audit := testDeps()
+	store, nodes, inventory, adapters, audit := testDeps()
 	store.findErr = errors.New("database unreachable")
-	svc := NewService(store, nodes, adapters, audit)
+	svc := NewService(store, nodes, inventory, adapters, audit)
 
 	_, err := svc.GetProfile(context.Background(), "profile-1")
 	if err == nil {

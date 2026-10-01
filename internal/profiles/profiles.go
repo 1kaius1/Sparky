@@ -46,15 +46,21 @@ type Fields struct {
 	// out from under it anyway.
 	EngineVersion *string
 
-	// Quantization selects which .gguf file to download/load when the
-	// target repo contains more than one quantization - only meaningful
-	// for llama.cpp (partial-offload) profiles; nil/empty means "not
-	// applicable" (vLLM/Aphrodite) or "the repo has only one .gguf file"
-	// (today's unchanged behavior). Deliberately not validated against the
-	// repo's actual contents here or in Service, same "attempt and report
-	// failure" philosophy as EngineVersion above - a value that doesn't
-	// match any file in the repo fails clearly at download/launch time.
-	Quantization *string
+	// ModelRef, Quantization, and Format together name the Node model
+	// inventory entry (SCHEMA.md Node model inventory) this profile
+	// targets - set by the create/edit form's Inventory-driven picker
+	// (TargetNodeID selects a node, which offers only that node's
+	// actually-present entries to choose from), not free-typed.
+	// Quantization "" means "whole repo" (vLLM/Aphrodite, or a
+	// single-file GGUF repo), the same sentinel
+	// db.NodeModelInventory.Quantization uses - never a distinct "not
+	// specified" meaning. Service.resolve confirms the triple actually
+	// names a present entry on TargetNodeID before persisting - the
+	// database's own model_profiles_target_inventory_fkey (migration
+	// 000035) backs this up at the storage layer, but only checks
+	// existence, not status = 'present'.
+	Quantization string
+	Format       db.ModelFormat
 
 	// Image optionally overrides the engine type's own default container
 	// image (internal/engines' per-adapter hardcoded constant) - nil/empty
@@ -84,6 +90,9 @@ func (f Fields) validate() error {
 	}
 	if f.TargetNodeID == "" {
 		return fmt.Errorf("%w: target_node_id is required", ErrInvalidProfile)
+	}
+	if f.Format != db.ModelFormatSafetensors && f.Format != db.ModelFormatGGUF {
+		return fmt.Errorf("%w: format must be a model selected from that node's inventory", ErrInvalidProfile)
 	}
 	if f.Port <= 0 || f.Port > 65535 {
 		return fmt.Errorf("%w: port must be between 1 and 65535", ErrInvalidProfile)
