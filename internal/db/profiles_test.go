@@ -41,6 +41,15 @@ func createTestNode(t *testing.T, nodes *NodeRepository, name string) *Node {
 		t.Fatalf("create test node: %v", err)
 	}
 	t.Cleanup(func() {
+		// node_network_interfaces has no ON DELETE CASCADE on its node_id FK
+		// (migrations/000029_create_node_network_interfaces.up.sql), so a
+		// test that reports interfaces for this node (TestNodeNetworkInterfaceRepository_*)
+		// would otherwise leave the node delete below silently rejected (the
+		// error is discarded, matching this cleanup's own existing style) -
+		// leaking both the interface rows and the node itself across test
+		// runs against the same database. Harmless no-op for every other
+		// caller of createTestNode, which never reports interfaces.
+		_, _ = nodes.pool.Exec(context.Background(), `DELETE FROM node_network_interfaces WHERE node_id = $1`, n.ID)
 		_, _ = nodes.pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, n.ID)
 	})
 	return n
