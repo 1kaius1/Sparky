@@ -487,9 +487,11 @@ func TestRunningInstanceRepository_UpdateHealth_HealthyWithDetail(t *testing.T) 
 	if got.LastHealthCheckAt == nil || !got.LastHealthCheckAt.Equal(checkedAt) {
 		t.Errorf("LastHealthCheckAt = %v, want %v", got.LastHealthCheckAt, checkedAt)
 	}
-	if string(got.HealthDetail) != string(detail) {
-		t.Errorf("HealthDetail = %s, want %s", got.HealthDetail, detail)
-	}
+	// assertJSONEqual (profiles_test.go), not a raw byte comparison -
+	// Postgres's jsonb column reformats on storage (e.g. adds a space after
+	// each ":"), so got.HealthDetail is never byte-identical to detail even
+	// when they're the same JSON value.
+	assertJSONEqual(t, got.HealthDetail, detail)
 }
 
 func TestRunningInstanceRepository_UpdateHealth_UnhealthyNilDetail(t *testing.T) {

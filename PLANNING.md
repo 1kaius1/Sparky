@@ -1881,7 +1881,7 @@ Releases; and per-profile engine version pinning.
   - [ ] Complete documentation
   - [ ] Cross-platform verification (Debian/Ubuntu + RHEL/Fedora)
   - [ ] Security review pass
-  - [ ] Live-page data-refresh UX, "Level A + Tier 0" (2026-09-08 Decisions Log) -
+  - [x] Live-page data-refresh UX, "Level A + Tier 0" (2026-09-08 Decisions Log) -
         morph-swap the SSE-triggered `#main-content` refetch via a vendored
         idiomorph (preserve scroll/focus/selection/`<details>` state), scope
         refetches to per-page SSE topics declared inside each page's own
@@ -1896,7 +1896,9 @@ Releases; and per-profile engine version pinning.
         indicator + toasts. Client-updated relative timestamps split into
         their own follow-up (below) - they touch ~7 `internal/httpapi`
         view-model handlers, a different kind of change from the rest.
-        Targeted pre-1.0.0.
+        Landed in code; not yet reconfirmed in a real browser (see Known
+        Issues) - same "needs a human glancing at the page" gap as the
+        Metrics chart row below.
   - [ ] Client-updated relative timestamps (split from "Level A + Tier 0"
         above) - render machine-readable timestamps in a `<time datetime>`
         wrapper on the transfer / instance / audit / inventory / metrics
@@ -1947,10 +1949,13 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
-- Next active work: the live-page data-refresh "Level A + Tier 0" fix (see the
-  2026-09-08 Decisions Log entry and the Known Issues row it closes) - approved
-  to start immediately, targeted pre-1.0.0. "Level B" follows, timing pre- vs
-  post-1.0.0 still open; "Level C" is deferred to Future Ideas.
+- The live-page data-refresh "Level A + Tier 0" fix (2026-09-08 Decisions
+  Log) landed the same day it was approved - morph-swap, per-page topic
+  scoping, the focus guard, and the `instance_health` listener are all in
+  `web/static/js/sse.js`; only a real-browser reconfirmation remains (Known
+  Issues). "Level B" is committed with its pre- vs post-1.0.0 timing still
+  open - the next real decision point in this area, not yet started; "Level
+  C" is deferred to Future Ideas.
 - Dashboard UI is fully done as of Phase 11 (the instance load/unload
   form, the `OnMessage` dispatcher consolidation it depended on, and SSE
   wiring) - see that phase's own entry above for detail. Phases 1 (base
@@ -2227,7 +2232,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `agent/telemetry.Collector`'s per-GPU write path (schema, protocol, collection, ingestion) is real end-to-end and confirmed against real single-GPU hardware (`gpu_metrics` rows landing with values matching a direct `nvidia-smi` query exactly - see the 2026-08-18 Decisions Log entry), but a genuine multi-line/multi-index `nvidia-smi` invocation has never executed against real hardware - every node available to this project (the RTX 4090 laptop, the Dell Precision RTX 3080Ti) has exactly one GPU | Low | Requires a real multi-GPU node to close, which this project does not have access to; the per-GPU parsing/write logic itself is unit-tested (a fake command runner exercising a realistic two-line multi-GPU CSV shape; a synthetic two-`gpu_index` Postgres integration test proving the schema disambiguates), so the gap is specifically "does a real multi-GPU `nvidia-smi` invocation actually emit one CSV line per GPU, in the order assumed," not "is the write path correct for the shape it's given" |
 | Metrics page chart's multi-node timeline-alignment bug is fixed in code (2026-09-08 - see that date's Decisions Log entry: category x-axis replaced with a real linear time scale, real Unix-millisecond timestamps instead of pre-formatted/bucketed strings) and covered by new unit tests proving the server-side contract the fix depends on, but has not been visually reconfirmed in a real browser against two live, concurrently-reporting nodes - the two-Spark fleet used to find and screenshot the original bug was fully torn down before this fix was written | Low | Purely a "look at it" gap, not an open design or implementation question - `go build`/`go vet`/`gofmt`/`go test -race ./...` are all clean and the new `TestBuildMetricsChartData_XIsRealUnixMillis` test directly targets the exact server-side value (a real, distinct per-node timestamp) the fix's correctness depends on. Needs either a human glancing at the rebuilt page with two real or synthetic concurrent series, matching this same row's own prior "needs a human glancing at the page" precedent, or a next real multi-node fleet-testing pass to reconfirm incidentally |
 | `agent/enginetransfer`'s download/checksum-verify/extract/symlink-swap flow is verified only against an `httptest.Server` and a faked `tar` shell-out (gzip standing in for xz in tests, since Go's stdlib has no xz support) - it has never downloaded a real GitHub Release asset or extracted a real `.tar.xz` on real hardware, since no engine release tarball has actually been published to the main Sparky repo's Releases yet | Medium | Requires a first real maintainer-built `llamacpp-<version>-<arch>.tar.xz` (+ `.sha256`) to actually exist as a published release before an end-to-end pass is possible - same "logic and tests first, real artifact later" gap as `internal/engines`' unverified-against-a-live-install vLLM adapter. `runCommand` itself (the real, non-faked shell-out) is exercised against the real system `tar` binary (`TestRunCommand_RealTarBinary`), so only the specific `-xJf`/`.xz` combination and a real GitHub download are unverified, not the shell-out mechanism itself |
-| `web/static/js/sse.js` drives every non-Metrics live update by refetching and replacing all of `#main-content` on any `transfer_progress` / `engine_transfer_progress` / `instance_result` event from anywhere in the fleet: this closes an open `<select>`, loses focus and text selection, and resets scroll on whatever page the viewer has open (confirmed on a form page during two-Spark live testing, 2026-09-08); it also refetches on events a page does not display, and has no listener for `instance_health` at all (published by `cmd/sparky-server`'s `onMessage` since 2026-08-13, never consumed in the browser) | Medium | Fix is scoped and approved as "Level A + Tier 0" - see the 2026-09-08 Decisions Log entry: morph-swap the refetch (vendored idiomorph), scope refetches to per-page SSE topics, add a `document.activeElement` focus guard, and add the missing `instance_health` listener. Targeted pre-1.0.0; not started as of this entry |
+| "Level A + Tier 0" of the live-page data-refresh fix (2026-09-08 Decisions Log - morph-swap the SSE-triggered refetch via a vendored idiomorph, scope refetches to per-page SSE topics, a `document.activeElement` focus guard, the `instance_health` listener) is fixed in code - all four are present in `web/static/js/sse.js` - but has not been reconfirmed in a real browser against a live fleet; the two-Spark fleet used to find the original open-control-destroyed bug was torn down before this fix was verified against it | Low | Same "look at it" gap as the Metrics chart row below, not an open design or implementation question - `go build`/`go vet`/`gofmt`/`go test ./...` are all clean and the fix's code-level shape matches exactly what "Level A + Tier 0" specified. Needs either a human glancing at the rebuilt pages during a live multi-node session (a form control staying open, an SSE event a page doesn't display producing no refetch, `instance_health` updating a Profile row without a manual reload) or a next real fleet-testing pass to reconfirm incidentally |
 | The Dashboard's per-instance "load strips" (2026-09-10 Decisions Log entry) source their GPU utilization/memory from `gpu_metrics` rows correlated to a running instance by `internal/metrics.Service.HandleTelemetry`, which attributes a telemetry tick to at most **one** active instance per node (`FindActiveByNode`). On a node running more than one instance concurrently, every such instance's strip would show the same node-total load rather than that instance's own share | Low | The fleet runs one instance per node today, so per-node load == per-instance load and the strips are exact. True per-instance GPU attribution would need the agent to break telemetry down per running engine (a bigger agent + protocol + ingestion change); `buildDashboardLiveData` already averages multiple GPU indices per reading, so the remaining gap is specifically multiple *instances* sharing one node, not multiple GPUs |
 
 ---
