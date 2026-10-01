@@ -335,8 +335,8 @@ func TestService_Delete_BlockedByProfile(t *testing.T) {
 	f := newDeleteFixture()
 	node, quant := "node-1", "Q4_K_M"
 	f.profiles.profiles = []*db.Profile{
-		{Name: "other-node", TargetNodeID: strPtr("node-2"), ModelRef: "org/m", Quantization: &quant, Format: db.ModelFormatGGUF},
-		{Name: "uses-it", TargetNodeID: &node, ModelRef: "org/m", Quantization: &quant, Format: db.ModelFormatGGUF},
+		{Name: "other-node", TargetNodeID: strPtr("node-2"), ModelRef: "org/m", Quantization: quant, Format: db.ModelFormatGGUF},
+		{Name: "uses-it", TargetNodeID: &node, ModelRef: "org/m", Quantization: quant, Format: db.ModelFormatGGUF},
 	}
 	err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF)
 	if !errors.Is(err, ErrModelInUse) {
@@ -350,7 +350,7 @@ func TestService_Delete_BlockedByProfile(t *testing.T) {
 func TestService_Delete_OtherQuantizationProfileDoesNotBlock(t *testing.T) {
 	f := newDeleteFixture()
 	node, quant := "node-1", "Q8_0"
-	f.profiles.profiles = []*db.Profile{{Name: "q8", TargetNodeID: &node, ModelRef: "org/m", Quantization: &quant, Format: db.ModelFormatGGUF}}
+	f.profiles.profiles = []*db.Profile{{Name: "q8", TargetNodeID: &node, ModelRef: "org/m", Quantization: quant, Format: db.ModelFormatGGUF}}
 	if err := f.svc.Delete(context.Background(), adminActor, "node-1", "org/m", "Q4_K_M", db.ModelFormatGGUF); err != nil {
 		t.Errorf("error = %v", err)
 	}

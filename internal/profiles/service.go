@@ -17,8 +17,8 @@ import (
 // needs, narrow enough to fake in tests - same pattern as
 // internal/nodes' nodeStore.
 type profileStore interface {
-	Create(ctx context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error)
-	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion, quantization, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
+	Create(ctx context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error)
+	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*db.Profile, error)
 	FindByID(ctx context.Context, id string) (*db.Profile, error)
@@ -28,6 +28,18 @@ type profileStore interface {
 // confirm a profile's TargetNodeID actually refers to a registered node.
 type nodeLookup interface {
 	FindByID(ctx context.Context, id string) (*db.Node, error)
+}
+
+// inventoryLookup is the subset of *inventory.Service this package needs -
+// confirming a profile's (TargetNodeID, ModelRef, Quantization, Format)
+// actually names a present Node model inventory entry before persisting,
+// ahead of the raw FK violation the database's own
+// model_profiles_target_inventory_fkey (migration 000035) would otherwise
+// produce. A narrow, primitives-only interface (same pattern as
+// nodeLookup) rather than depending on internal/inventory directly, to
+// keep this package decoupled from internal/inventory's own API surface.
+type inventoryLookup interface {
+	Get(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat) (*db.NodeModelInventory, error)
 }
 
 // adapterRegistry is the subset of *engines.Registry this package needs.
@@ -48,22 +60,28 @@ type auditRecorder interface {
 // should never call ProfileRepository directly; this is the only path a
 // profile create/update/delete should take.
 type Service struct {
-	profiles profileStore
-	nodes    nodeLookup
-	adapters adapterRegistry
-	audit    auditRecorder
+	profiles  profileStore
+	nodes     nodeLookup
+	inventory inventoryLookup
+	adapters  adapterRegistry
+	audit     auditRecorder
 }
 
 // NewService constructs a Service.
-func NewService(profiles profileStore, nodes nodeLookup, adapters adapterRegistry, audit auditRecorder) *Service {
-	return &Service{profiles: profiles, nodes: nodes, adapters: adapters, audit: audit}
+func NewService(profiles profileStore, nodes nodeLookup, inventory inventoryLookup, adapters adapterRegistry, audit auditRecorder) *Service {
+	return &Service{profiles: profiles, nodes: nodes, inventory: inventory, adapters: adapters, audit: audit}
 }
 
 // resolve validates fields, looks up the engine adapter for EngineType
 // and uses it to validate EngineParams and report
-// RequiresFullGPUResidency, and confirms TargetNodeID refers to a real
-// node. Shared by CreateProfile and UpdateProfile - the same checks
-// apply either way.
+// RequiresFullGPUResidency, confirms TargetNodeID refers to a real node,
+// and confirms (TargetNodeID, ModelRef, Quantization, Format) names a
+// present Node model inventory entry on that node - a friendly error
+// ahead of the raw FK violation model_profiles_target_inventory_fkey
+// (migration 000035) would otherwise produce, and the one check that FK
+// itself can't make (it enforces existence only, not status = 'present').
+// Shared by CreateProfile and UpdateProfile - the same checks apply
+// either way.
 func (s *Service) resolve(ctx context.Context, f Fields) (requiresFullGPUResidency bool, err error) {
 	if err := f.validate(); err != nil {
 		return false, err
@@ -82,6 +100,17 @@ func (s *Service) resolve(ctx context.Context, f Fields) (requiresFullGPUResiden
 			return false, fmt.Errorf("%w: target_node_id does not refer to a registered node", ErrInvalidProfile)
 		}
 		return false, fmt.Errorf("look up target node: %w", err)
+	}
+
+	entry, err := s.inventory.Get(ctx, f.TargetNodeID, f.ModelRef, f.Quantization, f.Format)
+	if err != nil {
+		if errors.Is(err, db.ErrNodeModelInventoryNotFound) {
+			return false, fmt.Errorf("%w: that model is not present in the target node's inventory", ErrInvalidProfile)
+		}
+		return false, fmt.Errorf("look up target inventory entry: %w", err)
+	}
+	if entry.Status != db.InventoryStatusPresent {
+		return false, fmt.Errorf("%w: that model is not present in the target node's inventory", ErrInvalidProfile)
 	}
 
 	return adapter.RequiresFullGPUResidency(), nil
@@ -107,7 +136,7 @@ func (s *Service) CreateProfile(ctx context.Context, actor rbac.Actor, params Cr
 	}
 
 	p, err := s.profiles.Create(ctx, params.Name, params.ModelRef, params.EngineType, params.EngineParams,
-		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Image, params.TargetNodeID, params.Port, createdBy)
+		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Format, params.Image, params.TargetNodeID, params.Port, createdBy)
 	if err != nil {
 		return nil, fmt.Errorf("create model profile: %w", err)
 	}
@@ -142,7 +171,7 @@ func (s *Service) UpdateProfile(ctx context.Context, actor rbac.Actor, params Up
 	}
 
 	p, err := s.profiles.Update(ctx, params.ID, params.Name, params.ModelRef, params.EngineType, params.EngineParams,
-		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Image, params.TargetNodeID, params.Port, updatedBy)
+		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Format, params.Image, params.TargetNodeID, params.Port, updatedBy)
 	if err != nil {
 		if errors.Is(err, db.ErrProfileNotFound) {
 			return nil, err

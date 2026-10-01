@@ -375,11 +375,7 @@ func (s *Service) Delete(ctx context.Context, actor rbac.Actor, nodeID, modelRef
 		if p.TargetNodeID == nil || *p.TargetNodeID != nodeID || p.ModelRef != modelRef || p.Format != format {
 			continue
 		}
-		profileQuant := ""
-		if p.Quantization != nil {
-			profileQuant = *p.Quantization
-		}
-		if profileQuant == quantization {
+		if p.Quantization == quantization {
 			return fmt.Errorf("%w: profile %q", ErrModelInUse, p.Name)
 		}
 	}

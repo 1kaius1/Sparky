@@ -12,11 +12,16 @@ import (
 
 // createTestProfile creates a throwaway single-node model profile to
 // satisfy running_instances.profile_id's foreign key, cleaned up after
-// the test.
+// the test. Also seeds a matching Node model inventory entry to satisfy
+// model_profiles_target_inventory_fkey (migration
+// 000035_add_model_profiles_inventory_fk) - see createTestInventoryEntry.
 func createTestProfile(t *testing.T, profiles *ProfileRepository, nodeID string) *Profile {
 	t.Helper()
+	transfers := NewModelTransferRepository(profiles.pool)
+	inventory := NewNodeModelInventoryRepository(profiles.pool)
+	createTestInventoryEntry(t, transfers, inventory, nodeID, "Qwen/Qwen2.5-0.5B-Instruct")
 	p, err := profiles.Create(context.Background(), fmt.Sprintf("profile-%s", t.Name()), "Qwen/Qwen2.5-0.5B-Instruct",
-		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, nil, nil, nodeID, 8000, nil)
+		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, "", ModelFormatSafetensors, nil, nodeID, 8000, nil)
 	if err != nil {
 		t.Fatalf("create test profile: %v", err)
 	}
@@ -29,11 +34,18 @@ func createTestProfile(t *testing.T, profiles *ProfileRepository, nodeID string)
 // createTestProfileNamed is createTestProfile with an explicit name suffix
 // - needed wherever a single test creates more than one profile, since
 // createTestProfile's name is fixed per t.Name() and a second call would
-// collide with model_profiles' unique name constraint.
+// collide with model_profiles' unique name constraint. Reuses the same
+// (nodeID, "Qwen/Qwen2.5-0.5B-Instruct") inventory entry createTestProfile
+// seeds - createTestInventoryEntry's Upsert is idempotent for a repeated
+// call on the same key, so calling both against the same nodeID in one
+// test is safe.
 func createTestProfileNamed(t *testing.T, profiles *ProfileRepository, name, nodeID string) *Profile {
 	t.Helper()
+	transfers := NewModelTransferRepository(profiles.pool)
+	inventory := NewNodeModelInventoryRepository(profiles.pool)
+	createTestInventoryEntry(t, transfers, inventory, nodeID, "Qwen/Qwen2.5-0.5B-Instruct")
 	p, err := profiles.Create(context.Background(), fmt.Sprintf("profile-%s-%s", name, t.Name()), "Qwen/Qwen2.5-0.5B-Instruct",
-		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, nil, nil, nodeID, 8000, nil)
+		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, "", ModelFormatSafetensors, nil, nodeID, 8000, nil)
 	if err != nil {
 		t.Fatalf("create test profile %s: %v", name, err)
 	}
