@@ -18,8 +18,9 @@ import (
 
 func validProfileForm() profileFormValues {
 	return profileFormValues{
-		Name: "test-profile", ModelRef: "test-org/test-model", EngineType: "llamacpp",
+		Name: "test-profile", EngineType: "llamacpp",
 		TargetNodeID: "node-1", Port: "8000",
+		Entry: encodeEntry("test-org/test-model", "", db.ModelFormatSafetensors),
 	}
 }
 
@@ -94,74 +95,85 @@ func TestProfileFormValuesFromProfile_EngineVersion_NilIsBlank(t *testing.T) {
 	}
 }
 
-func TestFieldsFromForm_Quantization_Set(t *testing.T) {
+// Quantization is no longer a free-typed field - it comes from the
+// Inventory-driven picker's Entry value (encodeEntry/decodeEntry,
+// internal/httpapi/inventory_transfer.go), alongside ModelRef and Format.
+// See TestFieldsFromForm_Entry_* and TestProfileFormValuesFromProfile_Entry_*
+// below for that round trip.
+
+func TestFieldsFromForm_Entry_DecodesModelRefQuantizationFormat(t *testing.T) {
 	form := validProfileForm()
-	form.Quantization = "Q4_K_M"
+	form.Entry = encodeEntry("org/repo", "Q4_K_M", db.ModelFormatGGUF)
 
 	fields, err := fieldsFromForm(form)
 	if err != nil {
 		t.Fatalf("fieldsFromForm() error: %v", err)
 	}
-	if fields.Quantization == nil || *fields.Quantization != "Q4_K_M" {
-		t.Errorf("Quantization = %v, want %q", fields.Quantization, "Q4_K_M")
+	if fields.ModelRef != "org/repo" {
+		t.Errorf("ModelRef = %q, want %q", fields.ModelRef, "org/repo")
+	}
+	if fields.Quantization != "Q4_K_M" {
+		t.Errorf("Quantization = %q, want %q", fields.Quantization, "Q4_K_M")
+	}
+	if fields.Format != db.ModelFormatGGUF {
+		t.Errorf("Format = %q, want %q", fields.Format, db.ModelFormatGGUF)
 	}
 }
 
-func TestFieldsFromForm_Quantization_BlankIsNil(t *testing.T) {
+func TestFieldsFromForm_Entry_WholeRepoQuantizationIsEmptyString(t *testing.T) {
 	form := validProfileForm()
-	form.Quantization = ""
+	form.Entry = encodeEntry("org/repo", "", db.ModelFormatSafetensors)
 
 	fields, err := fieldsFromForm(form)
 	if err != nil {
 		t.Fatalf("fieldsFromForm() error: %v", err)
 	}
-	if fields.Quantization != nil {
-		t.Errorf("Quantization = %v, want nil for a blank field", *fields.Quantization)
+	if fields.Quantization != "" {
+		t.Errorf("Quantization = %q, want empty for a whole-repo entry", fields.Quantization)
 	}
 }
 
-func TestFieldsFromForm_Quantization_WhitespaceOnlyIsNil(t *testing.T) {
+func TestFieldsFromForm_Entry_Empty(t *testing.T) {
 	form := validProfileForm()
-	form.Quantization = "   "
+	form.Entry = ""
 
-	fields, err := fieldsFromForm(form)
-	if err != nil {
-		t.Fatalf("fieldsFromForm() error: %v", err)
-	}
-	if fields.Quantization != nil {
-		t.Errorf("Quantization = %v, want nil for a whitespace-only field", *fields.Quantization)
+	if _, err := fieldsFromForm(form); err == nil {
+		t.Error("fieldsFromForm() succeeded with no model chosen, want an error")
 	}
 }
 
-func TestFieldsFromForm_Quantization_Trimmed(t *testing.T) {
+func TestFieldsFromForm_Entry_Malformed(t *testing.T) {
 	form := validProfileForm()
-	form.Quantization = "  Q4_K_M  "
+	form.Entry = "not-a-valid-entry"
 
-	fields, err := fieldsFromForm(form)
-	if err != nil {
-		t.Fatalf("fieldsFromForm() error: %v", err)
-	}
-	if fields.Quantization == nil || *fields.Quantization != "Q4_K_M" {
-		t.Errorf("Quantization = %v, want trimmed %q", fields.Quantization, "Q4_K_M")
+	if _, err := fieldsFromForm(form); err == nil {
+		t.Error("fieldsFromForm() succeeded with a malformed entry, want an error")
 	}
 }
 
-func TestProfileFormValuesFromProfile_Quantization_Set(t *testing.T) {
-	quant := "Q4_K_M"
-	p := &db.Profile{Quantization: &quant, Port: 8000}
+func TestProfileFormValuesFromProfile_Entry_RoundTrips(t *testing.T) {
+	p := &db.Profile{ModelRef: "org/repo", Quantization: "Q4_K_M", Format: db.ModelFormatGGUF, Port: 8000}
 
 	form := profileFormValuesFromProfile(p)
-	if form.Quantization != quant {
-		t.Errorf("Quantization = %q, want %q", form.Quantization, quant)
+	modelRef, quant, format, ok := decodeEntry(form.Entry)
+	if !ok {
+		t.Fatalf("decodeEntry(%q) failed", form.Entry)
+	}
+	if modelRef != "org/repo" || quant != "Q4_K_M" || format != db.ModelFormatGGUF {
+		t.Errorf("decoded entry = (%q, %q, %q), want (%q, %q, %q)", modelRef, quant, format, "org/repo", "Q4_K_M", db.ModelFormatGGUF)
 	}
 }
 
-func TestProfileFormValuesFromProfile_Quantization_NilIsBlank(t *testing.T) {
-	p := &db.Profile{Port: 8000}
+func TestProfileFormValuesFromProfile_Entry_WholeRepo(t *testing.T) {
+	p := &db.Profile{ModelRef: "org/repo", Quantization: "", Format: db.ModelFormatSafetensors, Port: 8000}
 
 	form := profileFormValuesFromProfile(p)
-	if form.Quantization != "" {
-		t.Errorf("Quantization = %q, want empty when not set", form.Quantization)
+	modelRef, quant, format, ok := decodeEntry(form.Entry)
+	if !ok {
+		t.Fatalf("decodeEntry(%q) failed", form.Entry)
+	}
+	if modelRef != "org/repo" || quant != "" || format != db.ModelFormatSafetensors {
+		t.Errorf("decoded entry = (%q, %q, %q), want (%q, %q, %q)", modelRef, quant, format, "org/repo", "", db.ModelFormatSafetensors)
 	}
 }
 

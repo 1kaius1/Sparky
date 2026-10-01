@@ -30,6 +30,7 @@ type profileEditor interface {
 	CreateProfile(ctx context.Context, actor rbac.Actor, params profiles.CreateParams) (*db.Profile, error)
 	UpdateProfile(ctx context.Context, actor rbac.Actor, params profiles.UpdateParams) (*db.Profile, error)
 	GetProfile(ctx context.Context, id string) (*db.Profile, error)
+	DeleteProfile(ctx context.Context, actor rbac.Actor, id string) error
 }
 
 // profileEngineTypeOptions is every engine type the create/edit form
@@ -183,15 +184,19 @@ type nodeOption struct {
 
 type profileFormValues struct {
 	Name             string
-	ModelRef         string
 	EngineType       string
 	EngineParamsJSON string
 	RequiredMemoryGB string
 	EngineVersion    string
-	Quantization     string
 	Image            string
 	TargetNodeID     string
 	Port             string
+
+	// Entry is the chosen Node model inventory entry, encoded by
+	// encodeEntry (model_ref + quantization + format) - replaces free-typed
+	// model_ref/quantization (PLANNING.md's Models redesign PR 9). Empty
+	// means none chosen yet.
+	Entry string
 }
 
 func (a *API) nodeOptionsForProfileForm(ctx context.Context) ([]nodeOption, error) {
@@ -219,25 +224,20 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 	if p.EngineVersion != nil {
 		engineVersion = *p.EngineVersion
 	}
-	var quantization string
-	if p.Quantization != nil {
-		quantization = *p.Quantization
-	}
 	var image string
 	if p.Image != nil {
 		image = *p.Image
 	}
 	return profileFormValues{
 		Name:             p.Name,
-		ModelRef:         p.ModelRef,
 		EngineType:       string(p.EngineType),
 		EngineParamsJSON: string(p.EngineParams),
 		RequiredMemoryGB: requiredMemoryGB,
 		EngineVersion:    engineVersion,
-		Quantization:     quantization,
 		Image:            image,
 		TargetNodeID:     targetNodeID,
 		Port:             strconv.Itoa(p.Port),
+		Entry:            encodeEntry(p.ModelRef, p.Quantization, p.Format),
 	}
 }
 
@@ -273,24 +273,25 @@ func fieldsFromForm(form profileFormValues) (profiles.Fields, error) {
 		engineVersion = &trimmed
 	}
 
-	var quantization *string
-	if trimmed := strings.TrimSpace(form.Quantization); trimmed != "" {
-		quantization = &trimmed
-	}
-
 	var image *string
 	if trimmed := strings.TrimSpace(form.Image); trimmed != "" {
 		image = &trimmed
 	}
 
+	modelRef, quantization, format, ok := decodeEntry(form.Entry)
+	if !ok {
+		return profiles.Fields{}, errors.New("select a model from the target node's inventory")
+	}
+
 	return profiles.Fields{
 		Name:             form.Name,
-		ModelRef:         form.ModelRef,
+		ModelRef:         modelRef,
 		EngineType:       db.ProfileEngineType(form.EngineType),
 		EngineParams:     json.RawMessage(engineParamsRaw),
 		RequiredMemoryGB: requiredMemoryGB,
 		EngineVersion:    engineVersion,
 		Quantization:     quantization,
+		Format:           format,
 		Image:            image,
 		TargetNodeID:     form.TargetNodeID,
 		Port:             port,
@@ -407,14 +408,13 @@ func (a *API) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	form := profileFormValues{
 		Name:             r.PostFormValue("name"),
-		ModelRef:         r.PostFormValue("model_ref"),
 		EngineType:       r.PostFormValue("engine_type"),
 		EngineParamsJSON: r.PostFormValue("engine_params"),
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
 		EngineVersion:    r.PostFormValue("engine_version"),
-		Quantization:     r.PostFormValue("quantization"),
 		Image:            r.PostFormValue("image"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
+		Entry:            r.PostFormValue("entry"),
 		Port:             r.PostFormValue("port"),
 	}
 
@@ -466,14 +466,13 @@ func (a *API) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	form := profileFormValues{
 		Name:             r.PostFormValue("name"),
-		ModelRef:         r.PostFormValue("model_ref"),
 		EngineType:       r.PostFormValue("engine_type"),
 		EngineParamsJSON: r.PostFormValue("engine_params"),
 		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
 		EngineVersion:    r.PostFormValue("engine_version"),
-		Quantization:     r.PostFormValue("quantization"),
 		Image:            r.PostFormValue("image"),
 		TargetNodeID:     r.PostFormValue("target_node_id"),
+		Entry:            r.PostFormValue("entry"),
 		Port:             r.PostFormValue("port"),
 	}
 
@@ -508,4 +507,113 @@ func (a *API) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, "/profiles", http.StatusSeeOther)
+}
+
+// profileInventoryOption is one choosable entry in the create/edit form's
+// target-node-driven model picker.
+type profileInventoryOption struct {
+	Value    string
+	Label    string
+	Selected bool
+}
+
+// profileInventoryOptionsData is the "profile_inventory_options" partial's
+// view model - NodeID empty means no node chosen yet (the form's initial
+// state before a node is picked); Empty means a node is chosen but its
+// Inventory has nothing usable.
+type profileInventoryOptionsData struct {
+	NodeID  string
+	Options []profileInventoryOption
+	Empty   bool
+}
+
+// handleProfileInventoryOptions is GET /profiles/inventory-options -
+// rendered into the create/edit form whenever target_node_id changes (and
+// once on initial page load, via hx-trigger="load"). Only a node's
+// present-status entries are offered - the same ones Service.resolve will
+// actually accept. entry (falling back to prefill_entry, the value the
+// form was opened with) is pre-selected when it still matches one of this
+// node's own entries - same prefill/live-value pattern as
+// handlePeerOptions.
+func (a *API) handleProfileInventoryOptions(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for profile inventory options: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	if !rbac.CanManageProfiles(actor) {
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "power_dev tier required")
+		return
+	}
+
+	q := r.URL.Query()
+	nodeID := q.Get("target_node_id")
+	if nodeID == "" {
+		a.renderPartial(w, "profile_inventory_options", profileInventoryOptionsData{})
+		return
+	}
+	entry := q.Get("entry")
+	if entry == "" {
+		entry = q.Get("prefill_entry")
+	}
+
+	entries, err := a.inventory.ListByNode(ctx, nodeID)
+	if err != nil {
+		a.logger.Printf("httpapi: list inventory for profile form: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	data := profileInventoryOptionsData{NodeID: nodeID}
+	for _, e := range entries {
+		if e.Status != db.InventoryStatusPresent {
+			continue
+		}
+		value := encodeEntry(e.ModelRef, e.Quantization, e.Format)
+		data.Options = append(data.Options, profileInventoryOption{
+			Value: value, Label: e.ModelRef + " - " + e.Quantization + " (" + string(e.Format) + ")", Selected: value == entry,
+		})
+	}
+	data.Empty = len(data.Options) == 0
+	a.renderPartial(w, "profile_inventory_options", data)
+}
+
+// handleDeleteProfile is POST /profiles/{id}/delete - the HTTP layer
+// profiles.Service.DeleteProfile was always missing (PLANNING.md's Models
+// redesign PR 9): the service method itself, its rbac.CanManageProfiles
+// gate, and its "deleted_profile" audit write all already existed.
+func (a *API) handleDeleteProfile(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for delete profile: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	id := chi.URLParam(r, "id")
+	err = a.profileEditor.DeleteProfile(ctx, actor, id)
+	switch {
+	case err == nil:
+		http.Redirect(w, r, "/profiles", http.StatusSeeOther)
+	case errors.Is(err, rbac.ErrNotPermitted):
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "power_dev tier required")
+	case errors.Is(err, db.ErrProfileNotFound):
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "model profile not found")
+	default:
+		a.logger.Printf("httpapi: delete model profile %s: %v", id, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+	}
 }

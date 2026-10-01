@@ -35,7 +35,14 @@
       </td>
       {{if or $.Data.CanManage $.Data.CanLaunch}}
       <td>
-        {{if $.Data.CanManage}}<a href="/profiles/{{.ID}}/edit">Edit</a>{{end}}
+        {{if $.Data.CanManage}}
+        <a href="/profiles/{{.ID}}/edit">Edit</a>
+        <form method="post" action="/profiles/{{.ID}}/delete"
+              onsubmit="return confirm('Delete profile {{.Name}}? This cannot be undone.')">
+          <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+          <button type="submit">Delete</button>
+        </form>
+        {{end}}
         {{if $.Data.CanLaunch}}
           {{if not .InstanceStatus}}
           <form hx-post="/profiles/{{.ID}}/load" hx-swap="none" data-toast="Load requested for {{.Name}}">

@@ -16,10 +16,6 @@
     <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" required>
   </p>
   <p>
-    <label for="model_ref">Model ref (Hugging Face repo path)</label><br>
-    <input type="text" id="model_ref" name="model_ref" value="{{.Data.Form.ModelRef}}" required>
-  </p>
-  <p>
     <label for="engine_type">Engine type</label><br>
     <select id="engine_type" name="engine_type">
       {{range .Data.EngineTypes}}
@@ -37,6 +33,13 @@
     </select>
   </p>
   <p>
+    <input type="hidden" id="prefill-entry" name="prefill_entry" value="{{.Data.Form.Entry}}">
+    <div id="inventory-options" hx-get="/profiles/inventory-options"
+         hx-trigger="load, change from:#target_node_id"
+         hx-include="#target_node_id, #prefill-entry" hx-target="this" hx-swap="innerHTML"></div>
+    <br><small>Only models already present on the target node's own Inventory are offered - see the Inventory page to download or copy one there first.</small>
+  </p>
+  <p>
     <label for="port">Port</label><br>
     <input type="text" id="port" name="port" value="{{.Data.Form.Port}}" required>
   </p>
@@ -47,11 +50,6 @@
   <p>
     <label for="engine_version">Pinned engine version (optional)</label><br>
     <input type="text" id="engine_version" name="engine_version" value="{{.Data.Form.EngineVersion}}" placeholder="latest">
-  </p>
-  <p>
-    <label for="quantization">Quantization (optional, llama.cpp/GGUF only)</label><br>
-    <input type="text" id="quantization" name="quantization" value="{{.Data.Form.Quantization}}" placeholder="e.g. Q4_K_M">
-    <br><small>Only used for llama.cpp profiles whose repo has more than one GGUF quantization file. Must match the label exactly as it appears in the repo's filenames. Leave blank for vLLM/Aphrodite profiles or a repo with only one .gguf file.</small>
   </p>
   <p>
     <label for="image">Container image override (optional)</label><br>

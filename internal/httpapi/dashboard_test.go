@@ -124,8 +124,10 @@ type fakeProfileEditor struct {
 
 	createErr error
 	updateErr error
+	deleteErr error
 	created   []profiles.CreateParams
 	updated   []profiles.UpdateParams
+	deletedID string
 }
 
 func (f *fakeProfileEditor) CreateProfile(_ context.Context, _ rbac.Actor, params profiles.CreateParams) (*db.Profile, error) {
@@ -149,6 +151,14 @@ func (f *fakeProfileEditor) GetProfile(_ context.Context, _ string) (*db.Profile
 		return nil, f.getErr
 	}
 	return f.getResult, nil
+}
+
+func (f *fakeProfileEditor) DeleteProfile(_ context.Context, _ rbac.Actor, id string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	f.deletedID = id
+	return nil
 }
 
 // fakeInstanceLister implements instanceLister for tests.
@@ -2304,7 +2314,7 @@ func TestHandleNewProfileForm_PowerDevAccess(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if !strings.Contains(rec.Body.String(), `name="model_ref"`) {
+	if !strings.Contains(rec.Body.String(), `id="inventory-options"`) {
 		t.Errorf("response does not show the profile form: %s", rec.Body.String())
 	}
 }
@@ -2347,7 +2357,7 @@ func TestHandleEditProfileForm_PrefillsExistingValues(t *testing.T) {
 	image := "nvcr.io/nvidia/vllm:26.06-py3"
 	profileEditorFake := &fakeProfileEditor{getResult: &db.Profile{
 		ID: "profile-1", Name: "llama-70b", ModelRef: "meta-llama/Llama-3-70B", EngineType: db.ProfileEngineVLLM,
-		EngineParams: []byte(`{"tensor_parallel_size":2}`), RequiredMemoryGB: &memGB, Quantization: &quant, Image: &image, TargetNodeID: &nodeID, Port: 8001,
+		EngineParams: []byte(`{"tensor_parallel_size":2}`), RequiredMemoryGB: &memGB, Quantization: quant, Format: db.ModelFormatGGUF, Image: &image, TargetNodeID: &nodeID, Port: 8001,
 	}}
 	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
 
@@ -2359,7 +2369,12 @@ func TestHandleEditProfileForm_PrefillsExistingValues(t *testing.T) {
 		t.Fatalf("status = %d, want %d (body: %s)", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "llama-70b") || !strings.Contains(body, "meta-llama/Llama-3-70B") {
+	// The model_ref/quantization/format triple is no longer a plain text
+	// field - it round-trips through the hidden prefill-entry input as an
+	// encodeEntry-encoded value (internal/httpapi/inventory_transfer.go),
+	// which percent-encodes "/" - so this checks the slash-free remainder
+	// of the model ref, not the literal "meta-llama/Llama-3-70B" string.
+	if !strings.Contains(body, "llama-70b") || !strings.Contains(body, "Llama-3-70B") {
 		t.Errorf("response does not preserve the existing name/model_ref: %s", body)
 	}
 	if !strings.Contains(body, `tensor_parallel_size`) {
@@ -2408,7 +2423,7 @@ func TestHandleEditProfileForm_Forbidden(t *testing.T) {
 func profileForm(overrides url.Values) url.Values {
 	form := url.Values{
 		"name":           {"llama-70b"},
-		"model_ref":      {"meta-llama/Llama-3-70B"},
+		"entry":          {encodeEntry("meta-llama/Llama-3-70B", "", db.ModelFormatSafetensors)},
 		"engine_type":    {"vllm"},
 		"target_node_id": {"node-1"},
 		"port":           {"8001"},
@@ -2457,7 +2472,10 @@ func TestHandleCreateProfile_Quantization(t *testing.T) {
 	profileEditorFake := &fakeProfileEditor{}
 	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
 
-	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(url.Values{"engine_type": {"llamacpp"}, "quantization": {"Q4_K_M"}}))
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(url.Values{
+		"engine_type": {"llamacpp"},
+		"entry":       {encodeEntry("meta-llama/Llama-3-70B", "Q4_K_M", db.ModelFormatGGUF)},
+	}))
 	rec := httptest.NewRecorder()
 	api.Router().ServeHTTP(rec, req)
 
@@ -2468,8 +2486,11 @@ func TestHandleCreateProfile_Quantization(t *testing.T) {
 		t.Fatalf("CreateProfile called %d times, want 1", len(profileEditorFake.created))
 	}
 	params := profileEditorFake.created[0]
-	if params.Quantization == nil || *params.Quantization != "Q4_K_M" {
-		t.Errorf("CreateProfile params.Quantization = %v, want %q", params.Quantization, "Q4_K_M")
+	if params.Quantization != "Q4_K_M" {
+		t.Errorf("CreateProfile params.Quantization = %q, want %q", params.Quantization, "Q4_K_M")
+	}
+	if params.Format != db.ModelFormatGGUF {
+		t.Errorf("CreateProfile params.Format = %q, want %q", params.Format, db.ModelFormatGGUF)
 	}
 }
 

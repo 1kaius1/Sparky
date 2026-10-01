@@ -334,6 +334,14 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/new", a.handleCreateProfile)
 	r.With(a.RequireSession).Get("/profiles/{id}/edit", a.handleEditProfileForm)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/{id}/edit", a.handleUpdateProfile)
+	// The create/edit form's cascading model picker - a node's own
+	// present-status Inventory entries, refreshed whenever target_node_id
+	// changes (PLANNING.md's Models redesign PR 9).
+	r.With(a.RequireSession).Get("/profiles/inventory-options", a.handleProfileInventoryOptions)
+	// profiles.Service.DeleteProfile existed fully gated and audited since
+	// before this redesign - only this route and its confirm-then-POST
+	// form on profiles.html were ever missing.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/{id}/delete", a.handleDeleteProfile)
 	// Load/Unload (Dashboard UI Phase 11, the fourth and last write/action
 	// form) - the RBAC gate (rbac.CanLaunchInstances) is checked inside
 	// lifecycle.Service.LoadInstance/UnloadInstance itself, same
