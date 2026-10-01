@@ -266,8 +266,10 @@ come from Secrets, identically to the server.
 
 ### SSH identity and network interfaces
 
-Groundwork for peer-to-peer model transfer (the transfer itself is not built
-yet - see `PLANNING.md`'s Models redesign). `sparky-agent setup` generates an
+The persistent per-node identity backing peer-to-peer model transfer (see
+Peer-to-peer model transfer below for the transfer itself, including the
+scoped, per-transfer authorization and its `ARCHITECTURE.md` security
+review). `sparky-agent setup` generates an
 ed25519 keypair (no passphrase, owned by `serviceloop`, private key `0600`,
 under `/opt/sparky/serviceloop/.ssh`) if one doesn't already exist - it never
 overwrites an existing key, so re-running setup on upgrade never rotates the
@@ -275,10 +277,8 @@ identity. It needs `ssh-keygen` (`openssh-client`/`openssh-clients`, a declared
 dependency of the `.deb`/`.rpm`; the tarball installer checks for it). The
 packages also depend on `openssh-server`, so every node has an sshd and host
 key and can be the source of a peer-to-peer transfer; installing that package
-starts the distribution's own sshd as usual - Sparky does not configure or
-restrict it yet (the scoped, per-transfer authorization that will is the
-peer-transfer PR's job, with its `ARCHITECTURE.md` update and security
-review). At
+starts the distribution's own sshd as usual, restricted to exactly what a
+peer pull needs by the `Match User sparky-peer` drop-in described below. At
 startup the agent reads the public key and the system sshd host public key
 (both best-effort - absent means "no SSH identity", and the node works
 normally without peer transfer) and reports them in the `hello` handshake;

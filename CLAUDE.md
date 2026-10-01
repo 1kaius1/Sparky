@@ -173,9 +173,11 @@ sparky/
   - rbac/                 # Tiers, elevation rules, permission overrides, SuperAdmin bypass
   - audit/                # Cross-cutting audit log writer + stdout JSON stream + optional syslog/GELF push
   - nodes/                # Node + fabric group registry
-  - profiles/             # Model profile CRUD, engine adapter registry
+  - profiles/             # Model profile CRUD against an Inventory-picked model, engine adapter registry
   - lifecycle/            # Load/unload orchestration, Green/Blue/Red eligibility, reduced-capacity flow
-  - transfers/            # Download + rsync replication, node model inventory
+  - inventory/            # Node model inventory read/delete - cross-node grouping for the Inventory page
+  - transfers/            # Download + peer-to-peer rsync replication orchestration, cancellation
+  - modelsource/           # Download size estimation (Hugging Face)
   - metrics/              # Telemetry ingestion, retention/downsample, NFS/S3 export
   - engines/               # Pluggable adapters: vllm, aphrodite, llamacpp
   - agentproto/            # Shared WebSocket/JSON protocol types (used by both binaries)
@@ -639,11 +641,16 @@ web/static/
   unconditionally rather than being computed from the active section. See
   `ARCHITECTURE.md` Component Breakdown
 - Sidebar sections and their minimum visible tier (fill in as built): Dashboard
-  (Read-only), Nodes (Read-only view / Admin edit), Models group - Profiles
-  (Read-only view / Developer launch / PowerDev create) and Transfers (Read-only
-  view / Admin+grant initiate), Engines group - Inventory (Read-only) and
-  Transfers (Read-only view / Admin+ provision), Metrics (Read-only), Users &
-  permissions (Admin), Audit log (Admin), Settings (Admin)
+  (Read-only), Nodes (Read-only view / Admin edit), Models group - Inventory
+  (Read-only view / Admin+grant initiate, cancel, and delete - see SCHEMA.md
+  Permission overrides for the PowerDev grant) and Profiles (Read-only view /
+  Developer launch / PowerDev create, edit, and delete, each picking its model
+  from the target node's own Inventory rather than free text), Engines group -
+  Inventory (Read-only) and Transfers (Read-only view / Admin+ provision),
+  Metrics (Read-only), Users & permissions (Admin), Audit log (Admin), Settings
+  (Admin). Models' flat transfer history (`GET /transfers`) is reachable from
+  the Inventory page's own header link, not a sidebar item in its own right -
+  see PLANNING.md's Models redesign Decisions Log
 - No inline styles - CSS classes only
 - No API client module to centralize calls through - handlers render templates or
   template partials directly; there is no separate frontend build or JS-side data
