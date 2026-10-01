@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Model profiles: the create/edit form's model_ref/quantization/format are no
+  longer free-typed - a target node is chosen first, then the form offers only
+  that node's own present Inventory entries as a picker, encoded as one
+  `entry` value (`internal/httpapi`'s `encodeEntry`/`decodeEntry`, reused from
+  the transfer form). Saving now requires the chosen (node, model_ref,
+  quantization, format) triple to actually be present on that node -
+  `internal/profiles.Service.resolve` checks via `internal/inventory` ahead of
+  persistence (a friendly "not present in the target node's inventory" error),
+  and the database itself now also enforces it: `model_profiles.quantization`
+  is `NOT NULL` (migration `000034`, historical rows backfilled to the
+  sentinel `UNKNOWN`) and a new composite foreign key,
+  `model_profiles_target_inventory_fkey` (migration `000035`), ties
+  `(target_node_id, model_ref, quantization, format)` to Node model
+  inventory's own primary key - deleting an inventory entry a profile still
+  references now fails cleanly instead of silently orphaning the profile.
+- Model profiles: deletion is wired up end to end -
+  `internal/profiles.Service.DeleteProfile` already existed, fully
+  `rbac.CanManageProfiles`-gated and audited (`deleted_profile`), but had no
+  route; `POST /profiles/{id}/delete` and a confirm-then-POST Delete action
+  on the Profiles page are new.
 - Documented a pending pre-release task: a full manual test plan for the GUI
   must be written once it reaches its final release-candidate state, tracked as
   an unchecked item in ARCHITECTURE.md's Manual Tests checklist and in
