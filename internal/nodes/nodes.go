@@ -18,6 +18,14 @@ import (
 // wrapped with a specific reason, so callers can render it directly.
 var ErrInvalidNode = errors.New("invalid node")
 
+// maxCommentLen is the maximum length of a Node's free-text comment field -
+// see SCHEMA.md Nodes' comment column.
+const maxCommentLen = 500
+
+// ErrCommentTooLong is returned by Service.SetComment when the submitted
+// comment exceeds maxCommentLen.
+var ErrCommentTooLong = fmt.Errorf("%w: comment exceeds %d characters", ErrInvalidNode, maxCommentLen)
+
 // RegisterNodeParams is the input to Service.RegisterNode.
 type RegisterNodeParams struct {
 	Name           string
