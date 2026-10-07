@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Server install: `sparky-server-db-setup.sh`'s podman path could write
+  `DATABASE_URL` and run migrations against a Postgres container that was
+  still in its transient first-run restart window, producing a
+  connection-refused/"database system is starting up" error - the official
+  postgres image starts a temporary instance to run init scripts, stops it,
+  then starts the real one, and a single `pg_isready` check can observe the
+  temporary instance's own ready state. Now waits for "ready to accept
+  connections" to appear twice in the container's logs (the same fix
+  `scripts/dev-server.sh`/`scripts/bootstrap_dev_env.sh` already had),
+  plus a bounded retry around the migration step itself as a second layer
+  of defense.
 - Server install: local-database setup no longer requires setting
   `SPARKY_INSTALL_LOCAL_DB` before an unattended `apt`/`dnf install` - many
   organizations' sudo policy disallows an inline environment-variable
