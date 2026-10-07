@@ -10,6 +10,8 @@ import (
 	"net"
 	"regexp"
 	"sort"
+	"strings"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/auth"
@@ -25,6 +27,7 @@ type nodeStore interface {
 	List(ctx context.Context) ([]*db.Node, error)
 	FindByID(ctx context.Context, id string) (*db.Node, error)
 	SetDefaultTransferInterface(ctx context.Context, nodeID string, interfaceName *string) error
+	SetComment(ctx context.Context, nodeID string, comment, updatedBy *string, updatedAt time.Time) error
 }
 
 // interfaceStore is the subset of *db.NodeNetworkInterfaceRepository this
@@ -283,6 +286,51 @@ func (s *Service) SetDefaultTransferInterface(ctx context.Context, actor rbac.Ac
 	}
 	detail := map[string]any{"default_transfer_interface": interfaceName}
 	if err := s.audit.Record(ctx, actorID, actor.IsSuperAdmin, "set_default_transfer_interface", "node", nodeID, detail); err != nil {
+		return fmt.Errorf("record audit: %w", err)
+	}
+	return nil
+}
+
+// SetComment records a free-text operator note on a node - e.g. which
+// team/model is currently using it - ahead of (and independent from) the
+// future profile-locking/scheduling system (PLANNING.md Future Ideas).
+// comment "" clears it back to unset. Gated by rbac.CanEditNodeComment -
+// deliberately broader than rbac.CanManageNodes, since this is
+// informational annotation, not infrastructure configuration. comment_
+// updated_by/comment_updated_at are stamped on every change, including a
+// clear, so "who last touched this and when" is never stale. Always
+// audited ("set_node_comment"), including for the SuperAdmin - see
+// ARCHITECTURE.md's "no exceptions" audit guarantee.
+func (s *Service) SetComment(ctx context.Context, actor rbac.Actor, nodeID, comment string) error {
+	if !rbac.CanEditNodeComment(actor) {
+		return rbac.ErrNotPermitted
+	}
+	if _, err := s.nodes.FindByID(ctx, nodeID); err != nil {
+		return err
+	}
+
+	comment = strings.TrimSpace(comment)
+	if len(comment) > maxCommentLen {
+		return ErrCommentTooLong
+	}
+
+	var value *string
+	if comment != "" {
+		value = &comment
+	}
+
+	var actorID *string
+	if !actor.IsSuperAdmin {
+		actorID = &actor.UserID
+	}
+	now := time.Now().UTC()
+
+	if err := s.nodes.SetComment(ctx, nodeID, value, actorID, now); err != nil {
+		return fmt.Errorf("set comment for node %s: %w", nodeID, err)
+	}
+
+	detail := map[string]any{"comment": comment}
+	if err := s.audit.Record(ctx, actorID, actor.IsSuperAdmin, "set_node_comment", "node", nodeID, detail); err != nil {
 		return fmt.Errorf("record audit: %w", err)
 	}
 	return nil

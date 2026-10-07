@@ -1,0 +1,21 @@
+{{define "content"}}
+<h1>Edit comment: {{.Data.NodeName}}</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<form method="post" action="/nodes/{{.Data.NodeID}}/comment">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="comment">Which team/model is using this node, or any other note</label><br>
+    <textarea id="comment" name="comment" maxlength="500" rows="4" cols="60">{{.Data.Comment}}</textarea>
+  </p>
+  <p>
+    <small>
+      Last updated: {{if .Data.CommentUpdatedAt}}{{if .Data.CommentUpdatedByName}}{{.Data.CommentUpdatedByName}}{{else}}SuperAdmin{{end}} at {{.Data.CommentUpdatedAt}}{{else}}never{{end}}
+    </small>
+  </p>
+  <p><button type="submit">Save</button></p>
+</form>
+{{end}}

@@ -60,6 +60,8 @@ type fakeNodeRegistrar struct {
 	rescanCalls     []string
 	setDefaultErr   error
 	setDefaultCalls []string
+	setCommentErr   error
+	setCommentCalls []string
 }
 
 type registerCall struct {
@@ -101,6 +103,11 @@ func (f *fakeNodeRegistrar) RescanInterfaces(_ context.Context, _ rbac.Actor, no
 func (f *fakeNodeRegistrar) SetDefaultTransferInterface(_ context.Context, _ rbac.Actor, nodeID, name string) error {
 	f.setDefaultCalls = append(f.setDefaultCalls, nodeID+"|"+name)
 	return f.setDefaultErr
+}
+
+func (f *fakeNodeRegistrar) SetComment(_ context.Context, _ rbac.Actor, nodeID, comment string) error {
+	f.setCommentCalls = append(f.setCommentCalls, nodeID+"|"+comment)
+	return f.setCommentErr
 }
 
 // fakeProfileLister implements profileLister for tests.

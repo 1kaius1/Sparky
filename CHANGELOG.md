@@ -35,6 +35,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Added
+- Nodes: a free-text `comment` field (migration `000036_add_nodes_comment`)
+  for recording which team/model is currently using a node, ahead of the
+  future profile-locking/scheduling system (see PLANNING.md Future Ideas).
+  Editable by Admin and PowerDev (`rbac.CanEditNodeComment`, broader than the
+  rest of the Nodes page's Admin-only edit floor) from a new
+  `/nodes/{id}/comment` page, separate from the existing Admin-only node edit
+  page. `comment_updated_by`/`comment_updated_at` record who last changed it
+  and when, including clearing it. Always audited (`set_node_comment`), same
+  pattern as `set_default_transfer_interface`.
 - `docs/SERVER.md`: a linear, zero-to-running walkthrough for standing up
   `sparky-server` for the first time (install, database, first-run setup,
   first node registration), ending where `docs/AGENT.md` picks up - a

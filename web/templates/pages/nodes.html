@@ -15,7 +15,8 @@
       <th>Status</th>
       <th>GPU memory</th>
       <th>CPU memory</th>
-      {{if .Data.CanEdit}}<th></th>{{end}}
+      <th>Comment</th>
+      {{if or .Data.CanEdit .Data.CanEditComment}}<th></th>{{end}}
     </tr>
   </thead>
   <tbody>
@@ -27,10 +28,16 @@
       <td><span class="status status-{{.AgentStatus}}">{{.AgentStatus}}</span></td>
       <td>{{.GPUMemoryGB}} GB</td>
       <td>{{.CPUMemoryGB}} GB</td>
-      {{if $.Data.CanEdit}}<td><a href="/nodes/{{.ID}}/edit">Edit</a></td>{{end}}
+      <td>{{.Comment}}</td>
+      {{if or $.Data.CanEdit $.Data.CanEditComment}}
+      <td>
+        {{if $.Data.CanEdit}}<a href="/nodes/{{.ID}}/edit">Edit</a>{{end}}
+        {{if $.Data.CanEditComment}} <a href="/nodes/{{.ID}}/comment">Edit comment</a>{{end}}
+      </td>
+      {{end}}
     </tr>
     {{else}}
-    <tr><td colspan="7" class="empty">No nodes registered yet.</td></tr>
+    <tr><td colspan="8" class="empty">No nodes registered yet.</td></tr>
     {{end}}
   </tbody>
 </table>

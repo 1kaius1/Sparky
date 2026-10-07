@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"testing"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/auth"
@@ -34,6 +35,14 @@ type fakeNodeStore struct {
 	findErr    error
 
 	defaultIfaceCalls []*string
+
+	commentCalls []setCommentCall
+}
+
+type setCommentCall struct {
+	comment   *string
+	updatedBy *string
+	updatedAt time.Time
 }
 
 func (f *fakeNodeStore) FindByID(_ context.Context, id string) (*db.Node, error) {
@@ -48,6 +57,11 @@ func (f *fakeNodeStore) FindByID(_ context.Context, id string) (*db.Node, error)
 
 func (f *fakeNodeStore) SetDefaultTransferInterface(_ context.Context, _ string, name *string) error {
 	f.defaultIfaceCalls = append(f.defaultIfaceCalls, name)
+	return nil
+}
+
+func (f *fakeNodeStore) SetComment(_ context.Context, _ string, comment, updatedBy *string, updatedAt time.Time) error {
+	f.commentCalls = append(f.commentCalls, setCommentCall{comment, updatedBy, updatedAt})
 	return nil
 }
 
@@ -415,6 +429,80 @@ func TestService_SetDefaultTransferInterface(t *testing.T) {
 	}
 	if last := store.defaultIfaceCalls[len(store.defaultIfaceCalls)-1]; last != nil {
 		t.Errorf("empty name stored %q, want nil (Fastest)", *last)
+	}
+}
+
+func TestService_SetComment(t *testing.T) {
+	admin := rbac.Actor{Tier: db.TierAdmin, UserID: "a"}
+	powerDev := rbac.Actor{Tier: db.TierPowerDev, UserID: "p"}
+	store := &fakeNodeStore{findResult: &db.Node{ID: "node-1"}}
+	audit := &fakeAuditRecorder{}
+	svc := newIfaceService(&fakeInterfaceStore{}, &fakeDispatcher{}, store, audit)
+	ctx := context.Background()
+
+	if err := svc.SetComment(ctx, rbac.Actor{Tier: db.TierDeveloper, UserID: "d"}, "node-1", "nope"); !errors.Is(err, rbac.ErrNotPermitted) {
+		t.Errorf("developer error = %v, want ErrNotPermitted", err)
+	}
+	if len(store.commentCalls) != 0 || len(audit.calls) != 0 {
+		t.Fatal("rejected call must not write or audit")
+	}
+
+	if err := svc.SetComment(ctx, powerDev, "node-1", "  ml-platform: llama3-70b  "); err != nil {
+		t.Fatal(err)
+	}
+	if len(store.commentCalls) != 1 {
+		t.Fatalf("commentCalls = %d, want 1", len(store.commentCalls))
+	}
+	call := store.commentCalls[0]
+	if call.comment == nil || *call.comment != "ml-platform: llama3-70b" {
+		t.Errorf("comment = %v, want trimmed value", call.comment)
+	}
+	if call.updatedBy == nil || *call.updatedBy != "p" {
+		t.Errorf("updatedBy = %v, want %q", call.updatedBy, "p")
+	}
+	if len(audit.calls) != 1 || audit.calls[0].action != "set_node_comment" || audit.calls[0].objectID != "node-1" {
+		t.Errorf("audit = %+v", audit.calls)
+	}
+	if audit.calls[0].actorID == nil || *audit.calls[0].actorID != "p" {
+		t.Errorf("audit actorID = %v, want %q", audit.calls[0].actorID, "p")
+	}
+
+	// Admin clearing the comment back to empty - still stored and audited.
+	if err := svc.SetComment(ctx, admin, "node-1", ""); err != nil {
+		t.Fatal(err)
+	}
+	if last := store.commentCalls[len(store.commentCalls)-1]; last.comment != nil {
+		t.Errorf("cleared comment = %v, want nil", last.comment)
+	}
+
+	// SuperAdmin leaves actorID nil, same as every other audited mutation.
+	superAdmin := rbac.Actor{IsSuperAdmin: true}
+	if err := svc.SetComment(ctx, superAdmin, "node-1", "superadmin note"); err != nil {
+		t.Fatal(err)
+	}
+	if last := audit.calls[len(audit.calls)-1]; last.actorID != nil {
+		t.Errorf("SuperAdmin audit actorID = %v, want nil", *last.actorID)
+	}
+
+	// Over the length cap - rejected before touching the store/audit.
+	callsBefore, auditBefore := len(store.commentCalls), len(audit.calls)
+	longComment := make([]byte, maxCommentLen+1)
+	for i := range longComment {
+		longComment[i] = 'a'
+	}
+	if err := svc.SetComment(ctx, admin, "node-1", string(longComment)); !errors.Is(err, ErrCommentTooLong) {
+		t.Errorf("error = %v, want ErrCommentTooLong", err)
+	}
+	if len(store.commentCalls) != callsBefore || len(audit.calls) != auditBefore {
+		t.Error("over-length comment must not write or audit")
+	}
+}
+
+func TestService_SetComment_UnknownNode(t *testing.T) {
+	svc := newIfaceService(&fakeInterfaceStore{}, &fakeDispatcher{}, &fakeNodeStore{}, &fakeAuditRecorder{})
+	err := svc.SetComment(context.Background(), rbac.Actor{Tier: db.TierAdmin, UserID: "a"}, "nope", "hello")
+	if !errors.Is(err, db.ErrNodeNotFound) {
+		t.Errorf("error = %v, want ErrNodeNotFound", err)
 	}
 }
 

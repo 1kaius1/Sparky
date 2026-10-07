@@ -324,6 +324,8 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Get("/nodes/{id}/edit", a.handleEditNodeForm)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/nodes/{id}/edit", a.handleUpdateNode)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/nodes/{id}/rescan-interfaces", a.handleRescanInterfaces)
+	r.With(a.RequireSession).Get("/nodes/{id}/comment", a.handleEditNodeCommentForm)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/nodes/{id}/comment", a.handleUpdateNodeComment)
 	r.With(a.RequireSession).Get("/profiles", a.handleModelProfiles)
 	// The create/edit form's own RBAC gate (rbac.CanManageProfiles) is
 	// checked directly in each handler - GET to decide whether to show
