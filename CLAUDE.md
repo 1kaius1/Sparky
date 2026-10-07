@@ -652,7 +652,8 @@ web/static/
   unconditionally rather than being computed from the active section. See
   `ARCHITECTURE.md` Component Breakdown
 - Sidebar sections and their minimum visible tier (fill in as built): Dashboard
-  (Read-only), Nodes (Read-only view / Admin edit), Models group - Inventory
+  (Read-only), Nodes (Read-only view / Admin edit, plus PowerDev may edit the
+  free-text comment field only - `rbac.CanEditNodeComment`), Models group - Inventory
   (Read-only view / Admin+grant initiate, cancel, and delete - see SCHEMA.md
   Permission overrides for the PowerDev grant) and Profiles (Read-only view /
   Developer launch / PowerDev create, edit, and delete, each picking its model
