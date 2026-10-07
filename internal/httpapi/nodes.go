@@ -29,6 +29,7 @@ type nodeRegistrar interface {
 	ListInterfaces(ctx context.Context, nodeID string) ([]*db.NodeNetworkInterface, error)
 	RescanInterfaces(ctx context.Context, actor rbac.Actor, nodeID string) error
 	SetDefaultTransferInterface(ctx context.Context, actor rbac.Actor, nodeID, interfaceName string) error
+	SetComment(ctx context.Context, actor rbac.Actor, nodeID, comment string) error
 }
 
 // nodesPageData is the Nodes page's view model - CLAUDE.md Frontend
@@ -40,6 +41,11 @@ type nodesPageData struct {
 	// CanEdit only decides whether each row's Edit link is shown - the
 	// real gate is rbac.CanManageNodes inside the edit handlers/service.
 	CanEdit bool
+	// CanEditComment only decides whether each row's "Edit comment" link is
+	// shown - the real gate is rbac.CanEditNodeComment inside the comment
+	// edit handlers/service. Deliberately separate from CanEdit: PowerDev
+	// may see this link without seeing the full Edit link.
+	CanEditComment bool
 }
 
 type nodeRow struct {
@@ -50,6 +56,7 @@ type nodeRow struct {
 	AgentStatus    string
 	GPUMemoryGB    float64
 	CPUMemoryGB    float64
+	Comment        string
 }
 
 func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
@@ -64,7 +71,7 @@ func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
 
 	rows := make([]nodeRow, 0, len(nodeList))
 	for _, n := range nodeList {
-		rows = append(rows, nodeRow{
+		row := nodeRow{
 			ID:             n.ID,
 			Name:           n.Name,
 			Hostname:       n.Hostname,
@@ -72,7 +79,11 @@ func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
 			AgentStatus:    string(n.AgentStatus),
 			GPUMemoryGB:    n.GPUMemoryGB,
 			CPUMemoryGB:    n.CPUMemoryGB,
-		})
+		}
+		if n.Comment != nil {
+			row.Comment = truncateComment(*n.Comment)
+		}
+		rows = append(rows, row)
 	}
 
 	// CanRegister only decides whether the "Register node" button/form is
@@ -81,14 +92,15 @@ func (a *API) handleNodes(w http.ResponseWriter, r *http.Request) {
 	// submission, same reasoning as the Users page's per-row
 	// ReachableTiers. Listing nodes itself stays unguarded, per this
 	// handler's own long-standing doc comment above nodesPageData.
-	var canRegister bool
+	var canRegister, canEditComment bool
 	if identity, ok := IdentityFromContext(ctx); ok {
 		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
 			canRegister = rbac.CanManageNodes(actor)
+			canEditComment = rbac.CanEditNodeComment(actor)
 		}
 	}
 
-	a.render(w, r, "nodes", "Nodes", nodesPageData{Nodes: rows, CanRegister: canRegister, CanEdit: canRegister})
+	a.render(w, r, "nodes", "Nodes", nodesPageData{Nodes: rows, CanRegister: canRegister, CanEdit: canRegister, CanEditComment: canEditComment})
 }
 
 // registerNodePageData is the node registration form's view model -
@@ -340,6 +352,136 @@ func (a *API) handleUpdateNode(w http.ResponseWriter, r *http.Request) {
 		return
 	case err != nil:
 		a.logger.Printf("httpapi: set default transfer interface for node %s: %v", nodeID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, "/nodes", http.StatusSeeOther)
+}
+
+// nodeCommentListPreviewLen is how many characters of a node's comment are
+// shown in the Nodes list table - the full text is only on the dedicated
+// comment edit page.
+const nodeCommentListPreviewLen = 60
+
+// truncateComment shortens comment for the Nodes list table display.
+func truncateComment(comment string) string {
+	if len(comment) <= nodeCommentListPreviewLen {
+		return comment
+	}
+	return comment[:nodeCommentListPreviewLen] + "..."
+}
+
+// nodeCommentPageData is the node comment edit page's view model.
+// CommentUpdatedByName is "" when the comment has never been set, or when
+// the break-glass SuperAdmin made the last change (see resolveUserName) -
+// the template tells the two apart via CommentUpdatedAt.
+type nodeCommentPageData struct {
+	NodeID               string
+	NodeName             string
+	Comment              string
+	CommentUpdatedByName string
+	CommentUpdatedAt     string
+	Error                string
+}
+
+// requireNodeCommentEditor resolves the actor and enforces
+// rbac.CanEditNodeComment for the node comment edit routes' pages, writing
+// the error response itself - same shape as requireNodeAdmin, but the
+// broader Admin-or-PowerDev gate that guards only the comment field.
+func (a *API) requireNodeCommentEditor(w http.ResponseWriter, r *http.Request) (rbac.Actor, bool) {
+	ctx := r.Context()
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return rbac.Actor{}, false
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for node comment edit: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return rbac.Actor{}, false
+	}
+	if !rbac.CanEditNodeComment(actor) {
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "admin or powerdev tier required")
+		return rbac.Actor{}, false
+	}
+	return actor, true
+}
+
+func (a *API) buildNodeCommentData(ctx context.Context, nodeID string) (nodeCommentPageData, error) {
+	node, err := a.registrar.GetNode(ctx, nodeID)
+	if err != nil {
+		return nodeCommentPageData{}, err
+	}
+	data := nodeCommentPageData{NodeID: node.ID, NodeName: node.Name}
+	if node.Comment != nil {
+		data.Comment = *node.Comment
+	}
+	data.CommentUpdatedByName = a.resolveUserName(ctx, node.CommentUpdatedBy)
+	if node.CommentUpdatedAt != nil {
+		data.CommentUpdatedAt = node.CommentUpdatedAt.Format("2006-01-02 15:04 MST")
+	}
+	return data, nil
+}
+
+// handleEditNodeCommentForm is GET /nodes/{id}/comment - Admin or PowerDev
+// (rbac.CanEditNodeComment): a free-text note on which team/model is using
+// this node, independent from the rest of the node edit page's Admin-only
+// settings.
+func (a *API) handleEditNodeCommentForm(w http.ResponseWriter, r *http.Request) {
+	if _, ok := a.requireNodeCommentEditor(w, r); !ok {
+		return
+	}
+	nodeID := chi.URLParam(r, "id")
+	data, err := a.buildNodeCommentData(r.Context(), nodeID)
+	if errors.Is(err, db.ErrNodeNotFound) {
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "node not found")
+		return
+	}
+	if err != nil {
+		a.logger.Printf("httpapi: build node comment page for %s: %v", nodeID, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	a.render(w, r, "node_comment_edit", "Edit node comment", data)
+}
+
+// handleUpdateNodeComment is POST /nodes/{id}/comment - sets or clears the
+// node's comment field. The RBAC gate and audit live in
+// nodes.Service.SetComment.
+func (a *API) handleUpdateNodeComment(w http.ResponseWriter, r *http.Request) {
+	actor, ok := a.requireNodeCommentEditor(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	nodeID := chi.URLParam(r, "id")
+	if err := r.ParseForm(); err != nil {
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "malformed form")
+		return
+	}
+
+	err := a.registrar.SetComment(ctx, actor, nodeID, r.PostFormValue("comment"))
+	switch {
+	case errors.Is(err, rbac.ErrNotPermitted):
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "admin or powerdev tier required")
+		return
+	case errors.Is(err, db.ErrNodeNotFound):
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "node not found")
+		return
+	case errors.Is(err, nodes.ErrCommentTooLong):
+		data, buildErr := a.buildNodeCommentData(ctx, nodeID)
+		if buildErr != nil {
+			a.logger.Printf("httpapi: rebuild node comment page for %s: %v", nodeID, buildErr)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		data.Error = err.Error()
+		w.WriteHeader(http.StatusBadRequest)
+		a.render(w, r, "node_comment_edit", "Edit node comment", data)
+		return
+	case err != nil:
+		a.logger.Printf("httpapi: set comment for node %s: %v", nodeID, err)
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
