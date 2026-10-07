@@ -65,6 +65,10 @@ model.
 
 ### Bare metal (Debian/Ubuntu or RHEL/Fedora)
 
+**New to this? See `docs/SERVER.md` for a full step-by-step walkthrough** -
+zero to a running server with a node registered and ready for an agent to
+connect, assuming nothing. The condensed version:
+
 **Central app** - install via `.deb`, `.rpm`, or a tarball (see `CLAUDE.md`
 Build and Run, Bare-metal deployment (systemd), for all three and full
 configuration details), then complete database setup and first run:
@@ -74,16 +78,15 @@ sudo apt install ./sparky-server_<version>_<arch>.deb      # Debian/Ubuntu
 sudo dnf install ./sparky-server-<version>-1.<arch>.rpm     # RHEL/Fedora/Rocky/Alma
 tar xzf sparky-server-<version>-linux-<arch>.tar.gz && cd sparky-server-<version>-linux-<arch> && sudo ./install_server.sh
 
-# fill in /etc/sparky-server/secrets.env, then:
-createdb sparky
-migrate -path migrations/ -database "${DATABASE_URL}" up
+# fill in /etc/sparky-server/secrets.env, set SPARKY_SETUP_UNACKNOWLEDGED=0 in it, then:
+sudo /opt/sparky/share/sparky-server/sparky-server-db-setup.sh podman   # or point DATABASE_URL at your own Postgres instead
 sudo systemctl start sparky-server   # serves 503 SETUP_REQUIRED until setup below runs
 sudo -u sparky /opt/sparky/share/sparky-server/run-with-secrets-env.sh /opt/sparky/bin/sparky-server setup
 ```
 
-No separate Postgres to stand up first? Each install method can also
-provision one for you (a persistent podman container, or a native
-`postgresql-server` package) and wire `DATABASE_URL` + run migrations
+No separate Postgres to stand up first? `sparky-server-db-setup.sh` above
+provisions one for you (a persistent podman container, or a native
+`postgresql-server` package) and wires `DATABASE_URL` + runs migrations
 automatically - see `CLAUDE.md` Bare-metal deployment (systemd), Optional
 local database.
 
@@ -116,10 +119,11 @@ first-run setup details are in `docs/AGENT.md` (for node agents) and `CLAUDE.md`
 
 | Document | Covers |
 |---|---|
+| `docs/SERVER.md` | Zero-to-running walkthrough for the central server - start here |
+| `docs/AGENT.md` | Node agent specifics - install, config, service architecture |
 | `ARCHITECTURE.md` | Components, protocol, security, deployment model |
 | `SCHEMA.md` | Full database schema reference |
 | `PLANNING.md` | Goals, milestones, open questions, and the full decisions log with rationale |
-| `docs/AGENT.md` | Node agent specifics - install, config, service architecture |
 | `CLAUDE.md` | Tech stack, repo layout, build/test commands, conventions |
 
 ---

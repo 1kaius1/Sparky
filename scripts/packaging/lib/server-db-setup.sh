@@ -3,10 +3,9 @@
 #
 # Optional local Postgres provisioning for sparky-server - see CLAUDE.md
 # Build and Run, Bare-metal deployment (systemd). Sourced by
-# scripts/install_server.sh (tarball path) and
-# scripts/packaging/postinstall_server.sh (deb/rpm path, driven by the
-# SPARKY_INSTALL_LOCAL_DB environment variable since postinstall scripts run
-# unattended and can't prompt).
+# scripts/packaging/lib/server-db-setup-cli.sh, the one admin-invoked entry
+# point for this across every install method (.deb, .rpm, tarball) - run
+# manually after install, never automatically.
 #
 # Two methods, chosen by the operator per-host (not auto-detected): "podman"
 # runs a persistent, systemd-managed Postgres container - the right choice
@@ -110,6 +109,33 @@ setup_local_db_podman() {
         return 1
     fi
 
+    # The official postgres image starts a temporary instance first (to run
+    # initdb/init scripts) on the very first run against a fresh volume,
+    # then stops it and starts the real one - the pg_isready check above
+    # can observe that temporary instance's own "ready" state and return
+    # success during the restart window right after, which is exactly what
+    # produces a "connection refused"/"database system is starting up"
+    # error from whatever connects next (migrate, here). "ready to accept
+    # connections" appears once per instance start, so waiting for it
+    # twice (already >= 2 by the time we check, on a rerun against an
+    # already-initialized volume with no temporary instance at all) is the
+    # actual ready signal - same fix already applied in
+    # scripts/dev-server.sh and scripts/bootstrap_dev_env.sh for the
+    # identical race, never previously ported into this packaged script.
+    tries=60
+    while [ "$tries" -gt 0 ]; do
+        ready_count=$(podman logs sparky-postgres 2>&1 | grep -c "ready to accept connections" || true)
+        if [ "$ready_count" -ge 2 ]; then
+            break
+        fi
+        tries=$((tries - 1))
+        sleep 1
+    done
+    if [ "$tries" -eq 0 ]; then
+        echo "sparky-server: local Postgres container did not reach its final ready state in time" >&2
+        return 1
+    fi
+
     DATABASE_URL="postgres://sparky:${db_password}@127.0.0.1:5432/sparky?sslmode=disable"
     export DATABASE_URL
 }
@@ -166,7 +192,21 @@ setup_local_db_native() {
 run_bundled_migrations() {
     share_dir="$1"
     echo "Running database migrations..."
-    "${share_dir}/migrate" -path "${share_dir}/migrations" -database "$DATABASE_URL" up
+    # Belt-and-suspenders on top of setup_local_db_podman's own log-based
+    # ready wait: retry briefly rather than fail outright on the same
+    # transient "starting up"/connection-refused error, since the exact
+    # log-message wording/count isn't guaranteed stable across postgres
+    # image versions, and this path is also reached from the native
+    # method, which has no such wait at all.
+    tries=20
+    while ! "${share_dir}/migrate" -path "${share_dir}/migrations" -database "$DATABASE_URL" up; do
+        tries=$((tries - 1))
+        if [ "$tries" -le 0 ]; then
+            echo "sparky-server: migrations failed after repeated retries" >&2
+            return 1
+        fi
+        sleep 1
+    done
 }
 
 # setup_local_database is the entry point both callers use: $1 is "podman"

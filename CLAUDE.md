@@ -211,6 +211,9 @@ sparky/
 - tests/
 - docs/
   - AGENT.md
+  - SERVER.md             # idiot-proof zero-to-running walkthrough for sparky-server -
+                           # a shortcut through this file's own Build and Run, not a
+                           # replacement for it
 - .env.example
 - VERSION               # single line, e.g. "0.1.0" - read by scripts/build_packages.sh
 - ARCHITECTURE.md
@@ -224,8 +227,8 @@ sparky/
 ```
 
 Required top-level files: `README.md`, `CHANGELOG.md`, `PLANNING.md`, `CLAUDE.md`,
-`ARCHITECTURE.md`, `SCHEMA.md`, `docs/AGENT.md`, `LICENSE`, `.gitignore`,
-`CONTRIBUTING.md`.
+`ARCHITECTURE.md`, `SCHEMA.md`, `docs/AGENT.md`, `docs/SERVER.md`, `LICENSE`,
+`.gitignore`, `CONTRIBUTING.md`.
 
 ---
 
@@ -337,6 +340,11 @@ go run ./cmd/sparky-agent --config <path>   # see docs/AGENT.md
 
 ### Bare-metal deployment (systemd)
 
+For a linear, assume-nothing, zero-to-running walkthrough covering
+everything in this section plus First Run below in one pass, see
+`docs/SERVER.md` - this section is the full reference that walkthrough is a
+shortcut through, with every option and edge case.
+
 For running `sparky-server` persistently (survives reboots and crashes)
 rather than as a foreground `go run` dev process. Three install methods, all
 producing the same end state (binary, systemd unit, `sparky` service account,
@@ -418,35 +426,38 @@ above. Skipped entirely (and harmless to invoke) if `DATABASE_URL` in
 `secrets.env` is already something other than the `.env.example` placeholder,
 so it's always safe to opt in even on an upgrade.
 
-**Tarball**: pass `--db=podman` or `--db=native` to `install_server.sh`, or
-omit it and answer the interactive prompt (only shown when run from a real
-terminal):
+None of the three install methods (`.deb`, `.rpm`, tarball) provision a
+database, or pass a method choice through, at install time - installing
+never needs an inline environment-variable assignment before `sudo` (some
+environments' policy disallows that) or a CLI flag. Every method does the
+same thing afterward instead: install plainly, edit `secrets.env`, then run
+one standalone script.
 
 ```bash
-sudo ./install_server.sh --db=podman
+sudo apt install ./sparky-server_<version>_<arch>.deb
+# or: sudo dnf install ./sparky-server-<version>-1.<arch>.rpm
+# or, for the tarball: sudo ./install_server.sh
 ```
 
-**.deb/.rpm**: postinstall scripts run unattended, so there's no prompt -
-set `SPARKY_INSTALL_LOCAL_DB` before installing instead:
+Edit `/etc/sparky-server/secrets.env` with real values for your deployment,
+then set `SPARKY_SETUP_UNACKNOWLEDGED=0` in that same file (or delete the
+line) to confirm you've actually done so - the next command refuses to run
+against a `secrets.env` that still has `SPARKY_SETUP_UNACKNOWLEDGED=1`, the
+value it ships with, as a fail-fast guard against running real database
+setup against an unedited template nobody has reviewed. (A `secrets.env`
+from before this check existed has no such line at all and is treated as
+already acknowledged - upgrading an already-configured install is never
+retroactively blocked.) Then, for a local database:
 
 ```bash
-sudo SPARKY_INSTALL_LOCAL_DB=podman apt install ./sparky-server_<version>_<arch>.deb
-sudo SPARKY_INSTALL_LOCAL_DB=native dnf install ./sparky-server-<version>-1.<arch>.rpm
+sudo /opt/sparky/share/sparky-server/sparky-server-db-setup.sh podman
 ```
 
-**Already installed and want this now?** All three install methods place
-`server-db-setup.sh` at the same path, so call it directly rather than
-reinstalling - same idempotency/placeholder-only guards apply:
-
-```bash
-sudo bash -c '. /opt/sparky/share/sparky-server/server-db-setup.sh && setup_local_database podman /opt/sparky/share/sparky-server'
-```
-
-(substitute `native` for `podman` as needed). Use `bash`, not `sh`/`dash`, for
-this one-liner - `sh -c` has been seen to fail on at least one real target
-where `bash -c` runs cleanly. `setup_local_database` itself now also refuses
-to run at all unless it's actually root (rather than failing confusingly
-partway through), in case `sudo` gets dropped while adapting this command.
+(substitute `native` for `podman` as needed). This is the one path for
+local-database setup across every install method - the right command to run
+any time after install, not just immediately after it, and safe to re-run
+(including on an upgrade): it's also skipped harmlessly if `DATABASE_URL` in
+`secrets.env` is already something other than the `.env.example` placeholder.
 
 Neither the podman container nor a native install is ever torn down by
 `uninstall_server.sh --purge` or the package's own purge path - it's a real

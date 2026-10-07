@@ -44,3 +44,39 @@ ensure_secrets_file() {
         install -m 0600 -o sparky -g sparky "$template" /etc/sparky-server/secrets.env
     fi
 }
+
+# require_secrets_acknowledged aborts (exit 1) if
+# /etc/sparky-server/secrets.env still has SPARKY_SETUP_UNACKNOWLEDGED=1 -
+# the dead-man's-switch guard against running real database/service setup
+# against a secrets.env nobody has actually edited yet (see .env.example's
+# own comment on that variable). Parsed the same way
+# run-with-secrets-env.sh does (line-by-line on the first "=", not
+# `. secrets.env`) since secrets.env is systemd EnvironmentFile= format, not
+# shell syntax - a value with an unquoted space would break a plain source.
+# A secrets.env predating this check (no such line at all) is treated as
+# already acknowledged, so upgrading an existing, already-configured install
+# is never retroactively blocked.
+require_secrets_acknowledged() {
+    secrets_file=/etc/sparky-server/secrets.env
+    if [ ! -r "$secrets_file" ]; then
+        echo "sparky-server: $secrets_file not found or not readable - install the package first" >&2
+        exit 1
+    fi
+
+    unacknowledged="0"
+    while IFS='=' read -r key value; do
+        case "$key" in
+            ''|'#'*) continue ;;
+        esac
+        if [ "$key" = "SPARKY_SETUP_UNACKNOWLEDGED" ]; then
+            unacknowledged="$value"
+        fi
+    done < "$secrets_file"
+
+    if [ "$unacknowledged" = "1" ]; then
+        echo "sparky-server: $secrets_file still looks unedited (SPARKY_SETUP_UNACKNOWLEDGED=1)." >&2
+        echo "Edit it with real values for your deployment, then set SPARKY_SETUP_UNACKNOWLEDGED=0" >&2
+        echo "(or delete that line) to confirm you've done so, and re-run this script." >&2
+        exit 1
+    fi
+}
