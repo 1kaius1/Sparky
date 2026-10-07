@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Server install: local-database setup no longer requires setting
+  `SPARKY_INSTALL_LOCAL_DB` before an unattended `apt`/`dnf install` - many
+  organizations' sudo policy disallows an inline environment-variable
+  assignment before a `sudo`'d command. Replaced with one standalone script,
+  `sparky-server-db-setup.sh` (`scripts/packaging/lib/server-db-setup-cli.sh`),
+  run manually after install, identical across `.deb`, `.rpm`, and the
+  tarball (`install_server.sh`'s own `--db=`/interactive-prompt path is
+  removed too, for the same single-path consistency). The script refuses to
+  run against a `secrets.env` that still has the new
+  `SPARKY_SETUP_UNACKNOWLEDGED=1` sentinel (`.env.example`) - a fail-fast
+  guard against provisioning a real database against an unedited template -
+  via a new `require_secrets_acknowledged` helper in `server-common.sh`. A
+  `secrets.env` predating this change has no such line and is treated as
+  already acknowledged, so an upgrade is never retroactively blocked.
+
 ### Added
+- `docs/SERVER.md`: a linear, zero-to-running walkthrough for standing up
+  `sparky-server` for the first time (install, database, first-run setup,
+  first node registration), ending where `docs/AGENT.md` picks up - a
+  shortcut through `CLAUDE.md`'s own Build and Run section, not a
+  replacement for it. Linked from `README.md`'s Quick Start and
+  Documentation table, and `CLAUDE.md`'s Bare-metal deployment section.
 - Models redesign cleanup: trued up stale documentation left behind across
   the ten-PR effort - CLAUDE.md's sidebar-tier sentence (Models group is now
   Inventory + Profiles, not Profiles + a sidebar-level Transfers entry) and
