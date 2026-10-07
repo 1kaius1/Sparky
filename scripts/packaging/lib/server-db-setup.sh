@@ -3,10 +3,9 @@
 #
 # Optional local Postgres provisioning for sparky-server - see CLAUDE.md
 # Build and Run, Bare-metal deployment (systemd). Sourced by
-# scripts/install_server.sh (tarball path) and
-# scripts/packaging/postinstall_server.sh (deb/rpm path, driven by the
-# SPARKY_INSTALL_LOCAL_DB environment variable since postinstall scripts run
-# unattended and can't prompt).
+# scripts/packaging/lib/server-db-setup-cli.sh, the one admin-invoked entry
+# point for this across every install method (.deb, .rpm, tarball) - run
+# manually after install, never automatically.
 #
 # Two methods, chosen by the operator per-host (not auto-detected): "podman"
 # runs a persistent, systemd-managed Postgres container - the right choice

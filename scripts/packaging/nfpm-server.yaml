@@ -79,6 +79,16 @@ contents:
       owner: root
       group: root
 
+  # The one documented way to provision a local Postgres, for every install
+  # method - see CLAUDE.md's Optional local database section. Run manually
+  # by the operator after install, never automatically.
+  - src: scripts/packaging/lib/server-db-setup-cli.sh
+    dst: /opt/sparky/share/sparky-server/sparky-server-db-setup.sh
+    file_info:
+      mode: 0755
+      owner: root
+      group: root
+
   - src: deploy/systemd/sparky-local-postgres.service
     dst: /opt/sparky/share/sparky-server/sparky-local-postgres.service
     file_info:
