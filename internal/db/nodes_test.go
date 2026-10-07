@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"testing"
+	"time"
 )
 
 func TestNodeRepository_Create_DockerGPU(t *testing.T) {
@@ -350,5 +351,61 @@ func TestNodeRepository_SetDefaultTransferInterface(t *testing.T) {
 	}
 	if got2.DefaultTransferInterface != nil {
 		t.Errorf("DefaultTransferInterface = %v, want nil after clearing it back to \"Fastest\"", *got2.DefaultTransferInterface)
+	}
+}
+
+func TestNodeRepository_SetComment(t *testing.T) {
+	pool := newTestPool(t)
+	users := NewUserRepository(pool)
+	nodes := NewNodeRepository(pool)
+	ctx := context.Background()
+
+	admin := createTestUser(t, users, fmt.Sprintf("S-1-TEST-%s", t.Name()))
+
+	created, err := nodes.Create(ctx, fmt.Sprintf("node-%s", t.Name()), "spark-9.local", "10.0.0.15",
+		RuntimeBackendBareMetal, 128, 128, nil, "test-bearer-token-hash")
+	if err != nil {
+		t.Fatalf("Create() error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM nodes WHERE id = $1`, created.ID)
+	})
+
+	comment := "ml-platform team: llama3-70b for eval"
+	updatedAt := time.Now().UTC().Truncate(time.Second)
+	if err := nodes.SetComment(ctx, created.ID, &comment, &admin.ID, updatedAt); err != nil {
+		t.Fatalf("SetComment() error: %v", err)
+	}
+	got, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.Comment == nil || *got.Comment != comment {
+		t.Errorf("Comment = %v, want %q", got.Comment, comment)
+	}
+	if got.CommentUpdatedBy == nil || *got.CommentUpdatedBy != admin.ID {
+		t.Errorf("CommentUpdatedBy = %v, want %q", got.CommentUpdatedBy, admin.ID)
+	}
+	if got.CommentUpdatedAt == nil || !got.CommentUpdatedAt.Equal(updatedAt) {
+		t.Errorf("CommentUpdatedAt = %v, want %v", got.CommentUpdatedAt, updatedAt)
+	}
+
+	// Clearing it (nil comment) still stamps who/when.
+	clearedAt := updatedAt.Add(time.Minute)
+	if err := nodes.SetComment(ctx, created.ID, nil, nil, clearedAt); err != nil {
+		t.Fatalf("second SetComment() error: %v", err)
+	}
+	got2, err := nodes.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got2.Comment != nil {
+		t.Errorf("Comment = %v, want nil after clearing", *got2.Comment)
+	}
+	if got2.CommentUpdatedBy != nil {
+		t.Errorf("CommentUpdatedBy = %v, want nil (SuperAdmin clear)", *got2.CommentUpdatedBy)
+	}
+	if got2.CommentUpdatedAt == nil || !got2.CommentUpdatedAt.Equal(clearedAt) {
+		t.Errorf("CommentUpdatedAt = %v, want %v", got2.CommentUpdatedAt, clearedAt)
 	}
 }

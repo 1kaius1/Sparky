@@ -72,6 +72,16 @@ type Node struct {
 	// node_network_interfaces rows by name - nil means "Fastest" (the
 	// highest reported link speed), not a distinct "unconfigured" state.
 	DefaultTransferInterface *string
+	// Comment is a free-text operator note - e.g. which team/model is
+	// currently using this node - see migrations/000036_add_nodes_comment
+	// and SCHEMA.md Nodes. Nil means no comment has ever been set.
+	Comment *string
+	// CommentUpdatedBy/CommentUpdatedAt record who last changed Comment and
+	// when, including clearing it back to nil - CommentUpdatedBy is nil when
+	// the break-glass SuperAdmin made the change, same reasoning as
+	// RegisteredBy.
+	CommentUpdatedBy *string
+	CommentUpdatedAt *time.Time
 }
 
 // ErrNodeNotFound is returned when a lookup finds no matching row.
@@ -92,13 +102,15 @@ func NewNodeRepository(pool *pgxpool.Pool) *NodeRepository {
 
 const nodeColumns = `id, name, hostname, ip_address, runtime_backend,
 	gpu_memory_gb, cpu_memory_gb, agent_status, last_heartbeat_at, registered_by, registered_at,
-	ssh_public_key, ssh_host_public_key, default_transfer_interface`
+	ssh_public_key, ssh_host_public_key, default_transfer_interface,
+	comment, comment_updated_by, comment_updated_at`
 
 func scanNode(row pgx.Row) (*Node, error) {
 	var n Node
 	err := row.Scan(&n.ID, &n.Name, &n.Hostname, &n.IPAddress, &n.RuntimeBackend,
 		&n.GPUMemoryGB, &n.CPUMemoryGB, &n.AgentStatus, &n.LastHeartbeatAt, &n.RegisteredBy, &n.RegisteredAt,
-		&n.SSHPublicKey, &n.SSHHostPublicKey, &n.DefaultTransferInterface)
+		&n.SSHPublicKey, &n.SSHHostPublicKey, &n.DefaultTransferInterface,
+		&n.Comment, &n.CommentUpdatedBy, &n.CommentUpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNodeNotFound
 	}
@@ -155,6 +167,7 @@ func (r *NodeRepository) FindCredentialByName(ctx context.Context, name string) 
 	err := row.Scan(&c.Node.ID, &c.Node.Name, &c.Node.Hostname, &c.Node.IPAddress, &c.Node.RuntimeBackend,
 		&c.Node.GPUMemoryGB, &c.Node.CPUMemoryGB, &c.Node.AgentStatus, &c.Node.LastHeartbeatAt, &c.Node.RegisteredBy, &c.Node.RegisteredAt,
 		&c.Node.SSHPublicKey, &c.Node.SSHHostPublicKey, &c.Node.DefaultTransferInterface,
+		&c.Node.Comment, &c.Node.CommentUpdatedBy, &c.Node.CommentUpdatedAt,
 		&c.BearerTokenHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrNodeNotFound
@@ -239,6 +252,22 @@ func (r *NodeRepository) SetDefaultTransferInterface(ctx context.Context, nodeID
 		interfaceName, nodeID)
 	if err != nil {
 		return fmt.Errorf("set default transfer interface for node %s: %w", nodeID, err)
+	}
+	return nil
+}
+
+// SetComment records a free-text operator note on a node (comment) and who
+// changed it and when (comment_updated_by/comment_updated_at) - see
+// SCHEMA.md Nodes. comment nil clears it. updatedBy nil means the
+// break-glass SuperAdmin made the change - see Create's own registeredBy
+// doc comment for the same convention. All four values are bound
+// parameters, never concatenated into the query text.
+func (r *NodeRepository) SetComment(ctx context.Context, nodeID string, comment, updatedBy *string, updatedAt time.Time) error {
+	_, err := r.pool.Exec(ctx,
+		`UPDATE nodes SET comment = $1, comment_updated_by = $2, comment_updated_at = $3 WHERE id = $4`,
+		comment, updatedBy, updatedAt, nodeID)
+	if err != nil {
+		return fmt.Errorf("set comment for node %s: %w", nodeID, err)
 	}
 	return nil
 }

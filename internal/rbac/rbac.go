@@ -73,6 +73,25 @@ func CanManageNodes(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanEditNodeComment reports whether actor may set or clear a Node's
+// free-text comment field - see SCHEMA.md Nodes' comment column.
+// Deliberately broader than CanManageNodes: PowerDev may annotate which
+// team/model is using a node without being able to edit its
+// infrastructure settings (runtime_backend, default_transfer_interface,
+// SSH identity) - same tier-native shape as CanManageProfiles, since this
+// is informational annotation, not infrastructure configuration.
+func CanEditNodeComment(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	switch actor.Tier {
+	case db.TierPowerDev, db.TierAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
 // CanViewAuditLog reports whether actor may view the Audit log - see
 // CLAUDE.md Frontend Conventions, Audit log's sidebar tier ("Admin").
 // Unlike Dashboard/Nodes/Model profiles/Transfers, the Audit log's floor
