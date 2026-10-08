@@ -125,7 +125,7 @@ type fakeAdapter struct {
 
 func (f fakeAdapter) RequiresFullGPUResidency() bool       { return f.requiresFullGPU }
 func (f fakeAdapter) ValidateParams(json.RawMessage) error { return f.validateErr }
-func (f fakeAdapter) BuildLaunchSpec(json.RawMessage) (engines.LaunchSpec, error) {
+func (f fakeAdapter) BuildLaunchSpec(json.RawMessage, string) (engines.LaunchSpec, error) {
 	return engines.LaunchSpec{}, nil
 }
 

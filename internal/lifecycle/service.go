@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
@@ -127,9 +128,23 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 	if err != nil {
 		return nil, fmt.Errorf("look up engine adapter: %w", err)
 	}
-	spec, err := adapter.BuildLaunchSpec(profile.EngineParams)
+
+	// The profile's name becomes the id the engine serves its model under
+	// (what a client sees at /v1/models and must send as "model"), passed to
+	// the engine as a command-line value. A name beginning with "-" could be
+	// read by an engine's argument parser as another flag rather than as
+	// that value, so refuse it with a message the operator can act on -
+	// checked before a running_instances row exists, like the other refusals.
+	if strings.HasPrefix(profile.Name, "-") {
+		return nil, fmt.Errorf("%w: the profile name %q cannot start with \"-\" because it is the model id the engine serves; rename the profile", ErrInvalidLoad, profile.Name)
+	}
+
+	spec, err := adapter.BuildLaunchSpec(profile.EngineParams, profile.Name)
 	if err != nil {
 		return nil, fmt.Errorf("build launch spec: %w", err)
+	}
+	if paramsHaveKey(profile.EngineParams, "served_model_name") {
+		s.logger.Printf("lifecycle: profile %q sets served_model_name in engine_params; ignored - the engine serves the model under the profile name", profile.Name)
 	}
 
 	// A profile-level Image override replaces the adapter's own
@@ -422,4 +437,16 @@ func (s *Service) ListInstances(ctx context.Context) ([]*db.RunningInstance, err
 		return nil, fmt.Errorf("list running instances: %w", err)
 	}
 	return instances, nil
+}
+
+// paramsHaveKey reports whether params is a JSON object containing key.
+// Anything else (not an object, malformed) reports false - callers use it
+// only to decide whether to log a note, never to validate.
+func paramsHaveKey(params json.RawMessage, key string) bool {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(params, &m); err != nil {
+		return false
+	}
+	_, ok := m[key]
+	return ok
 }

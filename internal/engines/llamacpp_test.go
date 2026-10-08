@@ -59,16 +59,19 @@ func TestLlamaCPPAdapter_ValidateParams_UnknownKey_ErrorNamesTheKey(t *testing.T
 func TestLlamaCPPAdapter_BuildLaunchSpec(t *testing.T) {
 	tests := map[string]struct {
 		params string
+		served string // the profile name passed as the served model name
 		want   []string
 	}{
-		"empty object, no flags":       {`{}`, nil},
-		"all known fields":             {`{"n_gpu_layers":20,"ctx_size":4096,"threads":8}`, []string{"--gpu-layers", "20", "--ctx-size", "4096", "--threads", "8"}},
-		"n_gpu_layers zero (CPU only)": {`{"n_gpu_layers":0}`, []string{"--gpu-layers", "0"}},
+		"empty object, no flags":            {`{}`, "", nil},
+		"all known fields":                  {`{"n_gpu_layers":20,"ctx_size":4096,"threads":8}`, "", []string{"--gpu-layers", "20", "--ctx-size", "4096", "--threads", "8"}},
+		"n_gpu_layers zero (CPU only)":      {`{"n_gpu_layers":0}`, "", []string{"--gpu-layers", "0"}},
+		"alias is the profile name":         {`{"ctx_size":4096}`, "my-profile", []string{"--ctx-size", "4096", "--alias", "my-profile"}},
+		"alias with spaces stays one entry": {`{}`, "Qwen3 8B (Q4)", []string{"--alias", "Qwen3 8B (Q4)"}},
 	}
 	a := llamaCPPAdapter{}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			spec, err := a.BuildLaunchSpec(json.RawMessage(tt.params))
+			spec, err := a.BuildLaunchSpec(json.RawMessage(tt.params), tt.served)
 			if err != nil {
 				t.Fatalf("BuildLaunchSpec(%s) error: %v", tt.params, err)
 			}
@@ -90,7 +93,7 @@ func TestLlamaCPPAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
 	a := llamaCPPAdapter{}
 	for name, params := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := a.BuildLaunchSpec(json.RawMessage(params)); !errors.Is(err, ErrInvalidParams) {
+			if _, err := a.BuildLaunchSpec(json.RawMessage(params), "my-profile"); !errors.Is(err, ErrInvalidParams) {
 				t.Errorf("BuildLaunchSpec(%s) error = %v, want ErrInvalidParams", params, err)
 			}
 		})

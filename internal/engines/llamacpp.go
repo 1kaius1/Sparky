@@ -61,8 +61,11 @@ func (llamaCPPAdapter) ValidateParams(params json.RawMessage) error {
 // real `llama-server --help` this adapter's params were confirmed
 // against. A key left unset in params is simply omitted, letting
 // llama-server fall back to its own default rather than Sparky
-// hardcoding one.
-func (llamaCPPAdapter) BuildLaunchSpec(params json.RawMessage) (LaunchSpec, error) {
+// hardcoding one. The served model id is --alias <name>; unlike the other
+// flags here, --alias has NOT been confirmed against a real llama-server
+// (no llama.cpp was available when this was written), only against
+// llama.cpp's documented option, so it needs checking on real hardware.
+func (llamaCPPAdapter) BuildLaunchSpec(params json.RawMessage, servedModelName string) (LaunchSpec, error) {
 	var p llamaCPPParams
 	if err := unmarshalParamsObject(params, &p); err != nil {
 		return LaunchSpec{}, err
@@ -77,6 +80,9 @@ func (llamaCPPAdapter) BuildLaunchSpec(params json.RawMessage) (LaunchSpec, erro
 	}
 	if p.Threads != nil {
 		args = append(args, "--threads", strconv.Itoa(*p.Threads))
+	}
+	if servedModelName != "" {
+		args = append(args, "--alias", servedModelName)
 	}
 	return LaunchSpec{Image: llamaCPPImage, Args: args}, nil
 }

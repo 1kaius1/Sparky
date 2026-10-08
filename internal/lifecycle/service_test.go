@@ -160,7 +160,7 @@ type fakeAdapter struct {
 
 func (fakeAdapter) RequiresFullGPUResidency() bool       { return true }
 func (fakeAdapter) ValidateParams(json.RawMessage) error { return nil }
-func (f fakeAdapter) BuildLaunchSpec(json.RawMessage) (engines.LaunchSpec, error) {
+func (f fakeAdapter) BuildLaunchSpec(json.RawMessage, string) (engines.LaunchSpec, error) {
 	if f.specErr != nil {
 		return engines.LaunchSpec{}, f.specErr
 	}
@@ -1130,5 +1130,94 @@ func TestService_LoadInstance_ContainerNameFallsBackToNowWhenStartedAtUnset(t *t
 	}
 	if !validContainerName.MatchString(payload.ContainerName) || strings.Contains(payload.ContainerName, "00010101") {
 		t.Errorf("ContainerName = %q, want a valid name stamped with the current time, not the zero time", payload.ContainerName)
+	}
+}
+
+// recordingAdapter is an engines.Adapter that remembers the served model
+// name it was asked to build a launch spec for.
+type recordingAdapter struct {
+	servedNames []string
+}
+
+func (*recordingAdapter) RequiresFullGPUResidency() bool       { return true }
+func (*recordingAdapter) ValidateParams(json.RawMessage) error { return nil }
+func (r *recordingAdapter) BuildLaunchSpec(_ json.RawMessage, served string) (engines.LaunchSpec, error) {
+	r.servedNames = append(r.servedNames, served)
+	return engines.LaunchSpec{Image: "img"}, nil
+}
+
+func TestService_LoadInstance_PassesTheProfileNameAsTheServedModelName(t *testing.T) {
+	adapter := &recordingAdapter{}
+	profile := testProfile()
+	profile.Name = "Qwen3 8B (FP8)"
+	svc := newTestService(profile, &fakeInstanceStore{nextID: "instance-1"}, &fakeAdapterRegistry{adapter: adapter}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{})
+
+	if _, err := svc.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+	if len(adapter.servedNames) != 1 || adapter.servedNames[0] != "Qwen3 8B (FP8)" {
+		t.Errorf("served model names given to the adapter = %q, want [%q] (the profile name, exactly)", adapter.servedNames, "Qwen3 8B (FP8)")
+	}
+}
+
+func TestService_LoadInstance_RefusesAProfileNameBeginningWithADash(t *testing.T) {
+	adapter := &recordingAdapter{}
+	instances := &fakeInstanceStore{nextID: "instance-1"}
+	dispatch := &fakeDispatcher{connected: true}
+	profile := testProfile()
+	profile.Name = "-fast"
+	svc := newTestService(profile, instances, &fakeAdapterRegistry{adapter: adapter}, dispatch, &fakeAuditRecorder{})
+
+	_, err := svc.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"})
+	if !errors.Is(err, ErrInvalidLoad) || !strings.Contains(err.Error(), "rename the profile") {
+		t.Fatalf("err = %v, want ErrInvalidLoad with a message telling the operator to rename the profile", err)
+	}
+	if len(instances.created) != 0 || len(dispatch.sent) != 0 || len(adapter.servedNames) != 0 {
+		t.Errorf("a refused launch must leave nothing behind: created=%d sent=%d built=%d", len(instances.created), len(dispatch.sent), len(adapter.servedNames))
+	}
+}
+
+func TestService_LoadInstance_LogsWhenServedModelNameParamIsIgnored(t *testing.T) {
+	var buf bytes.Buffer
+	profile := testProfile()
+	profile.Name = "my-profile"
+	profile.EngineParams = json.RawMessage(`{"max_model_len":4096,"served_model_name":"old-name"}`)
+	svc := NewService(&fakeProfileLookup{profile: profile}, &fakeInstanceStore{nextID: "instance-1"}, &fakeAdapterRegistry{adapter: &recordingAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, log.New(&buf, "", 0))
+
+	if _, err := svc.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+	if !strings.Contains(buf.String(), "served_model_name") || !strings.Contains(buf.String(), "my-profile") {
+		t.Errorf("log = %q, want a note that served_model_name was ignored for the profile", buf.String())
+	}
+
+	// And no noise when the key is absent.
+	buf.Reset()
+	profile.EngineParams = json.RawMessage(`{"max_model_len":4096}`)
+	svc2 := NewService(&fakeProfileLookup{profile: profile}, &fakeInstanceStore{nextID: "instance-2"}, &fakeAdapterRegistry{adapter: &recordingAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, log.New(&buf, "", 0))
+	if _, err := svc2.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(buf.String(), "served_model_name") {
+		t.Errorf("unexpected log without the key: %q", buf.String())
+	}
+}
+
+func TestParamsHaveKey(t *testing.T) {
+	for _, tc := range []struct {
+		params string
+		want   bool
+	}{
+		{`{"served_model_name":"x"}`, true},
+		{`{"a":1,"served_model_name":null}`, true},
+		{`{"a":1}`, false},
+		{`{}`, false},
+		{``, false},
+		{`not json`, false},
+		{`[1,2]`, false},
+	} {
+		if got := paramsHaveKey(json.RawMessage(tc.params), "served_model_name"); got != tc.want {
+			t.Errorf("paramsHaveKey(%q) = %v, want %v", tc.params, got, tc.want)
+		}
 	}
 }
