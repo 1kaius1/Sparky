@@ -43,6 +43,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   copy as possibly incomplete, and symlinks are never followed. Needs none
   of `secrets.env`'s variables, so it can be run by hand as the `serviceloop`
   account.
+- Protocol: `scan_models` (central app to agent) and `scan_models_result`
+  (agent to central app), asking a node to run the same scan. The command
+  carries no path - the agent only ever scans its own configured
+  `SPARKY_MODEL_STORAGE_PATH`. As with every protocol change, the agent and
+  server must be upgraded together (`DecodePayload` rejects unknown fields).
 - Nodes: a free-text `comment` field (migration `000036_add_nodes_comment`)
   for recording which team/model is currently using a node, ahead of the
   future profile-locking/scheduling system (see PLANNING.md Future Ideas).

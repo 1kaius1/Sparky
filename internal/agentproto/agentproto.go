@@ -195,6 +195,16 @@ const (
 
 	// TypeDeleteModelResult is the agent's async reply to TypeDeleteModel.
 	TypeDeleteModelResult MessageType = "delete_model_result"
+
+	// TypeScanModels is sent by the central app (Admin-initiated, from the
+	// Inventory page's scan) to ask a node to list the model copies it
+	// finds under its own model storage directory. It carries no path -
+	// the agent scans only its configured SPARKY_MODEL_STORAGE_PATH, never
+	// a wire-supplied location. Answered via TypeScanModelsResult.
+	TypeScanModels MessageType = "scan_models"
+
+	// TypeScanModelsResult is the agent's async reply to TypeScanModels.
+	TypeScanModelsResult MessageType = "scan_models_result"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -605,4 +615,35 @@ type DeleteModelResult struct {
 	Format       string `json:"format"`
 	Success      bool   `json:"success"`
 	Reason       string `json:"reason,omitempty"`
+}
+
+// ScanModels is TypeScanModels' payload. ScanID is minted by the central
+// app and echoed back verbatim so a result can be matched to the scan that
+// asked for it.
+type ScanModels struct {
+	ScanID string `json:"scan_id"`
+}
+
+// ScannedModel is one model copy a scan found on disk. Quantization and
+// Format are best-effort inferences from file names (agent/modelscan), not
+// facts - the central app shows them to an operator to confirm. Format is
+// a plain string for the same reason as DeleteModel's own Format field.
+type ScannedModel struct {
+	ModelRef           string `json:"model_ref"`
+	Quantization       string `json:"quantization,omitempty"`
+	Format             string `json:"format"`
+	SizeBytes          int64  `json:"size_bytes"`
+	FileName           string `json:"file_name,omitempty"`
+	PossiblyIncomplete bool   `json:"possibly_incomplete,omitempty"`
+}
+
+// ScanModelsResult is TypeScanModels' response payload. Error non-empty
+// means the scan itself failed (storage path unset, unreadable), in which
+// case Models is empty. Truncated means the agent hit its result cap and
+// the listing is incomplete.
+type ScanModelsResult struct {
+	ScanID    string         `json:"scan_id"`
+	Models    []ScannedModel `json:"models"`
+	Truncated bool           `json:"truncated,omitempty"`
+	Error     string         `json:"error,omitempty"`
 }
