@@ -655,8 +655,9 @@ web/static/
   (Read-only), Nodes (Read-only view / Admin edit, plus PowerDev may edit the
   free-text comment field only - `rbac.CanEditNodeComment`), Models group - Inventory
   (Read-only view / Admin+grant initiate, cancel, and delete - see SCHEMA.md
-  Permission overrides for the PowerDev grant) and Profiles (Read-only view /
-  Developer launch / PowerDev create, edit, and delete, each picking its model
+  Permission overrides for the PowerDev grant; Admin-only scan of nodes for
+  models on disk that the inventory does not know, and import of them) and
+  Profiles (Read-only view / Developer launch / PowerDev create, edit, and delete, each picking its model
   from the target node's own Inventory rather than free text), Engines group -
   Inventory (Read-only) and Transfers (Read-only view / Admin+ provision),
   Metrics (Read-only), Users & permissions (Admin), Audit log (Admin), Settings

@@ -292,6 +292,36 @@ container/VM plumbing (`docker*`, `veth*`, `br-*`, ...). A `rescan_interfaces`
 command from the central app (the Node edit page's Rescan) triggers the same
 report on demand.
 
+### Scanning for models not in the inventory
+
+A model copy put on a node outside Sparky (copied by hand, or placed before
+the central app tracked it) is invisible to the central app, so it cannot be
+launched from a profile. `agent/modelscan` finds such copies by walking
+`SPARKY_MODEL_STORAGE_PATH`. It runs two ways, both read-only:
+
+```bash
+sudo -u serviceloop sparky-agent scan-models [--path DIR] [--json]
+```
+
+lists what is on disk. It reads no `secrets.env` variables (it is dispatched
+before config loading, like `setup`), so it works from a plain shell; the path
+defaults to `$SPARKY_MODEL_STORAGE_PATH`, then the bare-metal default. It cannot
+say which copies the central app already knows - for that, an Admin uses the
+Inventory page's "Scan nodes for unknown models", which sends the agent a
+`scan_models` command and answers with `scan_models_result`. The command
+carries no path: the agent only ever scans its own configured storage root.
+
+What the scan infers, and what it cannot: a directory that directly holds
+`.safetensors` or `.gguf` files is a model, with its path relative to the root as
+the `model_ref`. Safetensors is reported as one whole-repo entry (quantization
+empty). Each `.gguf` file (a split `-0000N-of-0000M` set counts as one) is its
+own entry, with the quantization label read from the file name (`Q4_K_M`,
+`IQ3_XS`, `BF16`, ...) or `UNKNOWN`. Nothing marks a copy complete - the agent
+writes no marker files and a partly downloaded file sits under its final name -
+so a leftover rsync temp file is the only incompleteness signal, and an Admin
+must decide whether to import. Hidden entries and symlinks are skipped, so a
+link cannot lead the scan outside the storage root.
+
 ### Peer-to-peer model transfer
 
 A node can copy a model another node already has, by `rsync` over OpenSSH,

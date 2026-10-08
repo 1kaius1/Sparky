@@ -68,6 +68,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gguf rows let the Admin correct the guessed quantization; rows that could
   not be imported safely are shown but cannot be ticked, with the reason.
   All three POST routes are CSRF-protected and body-limited.
+- Docs: `docs/AGENT.md` (scan-models subcommand and what the scan can and
+  cannot infer), `ARCHITECTURE.md` (the `scan_models` command pair and its
+  trust model), `CLAUDE.md` (Inventory sidebar tiers), and a `PLANNING.md`
+  Decisions Log entry for the scan and import design.
 - Node model inventory: `placed_via` is now nullable (migration
   `000037_node_model_inventory_placed_via_nullable`, not yet applied to any
   environment by this change). `NULL` marks a copy imported from disk, which
