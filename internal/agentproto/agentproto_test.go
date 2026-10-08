@@ -840,3 +840,42 @@ func TestEnvelope_RoundTrip_DeleteModelResult_Failed(t *testing.T) {
 		t.Errorf("DeleteModelResult = %+v, want %+v", got, want)
 	}
 }
+
+func TestEnvelope_RoundTrip_ScanModels(t *testing.T) {
+	want := ScanModels{ScanID: "abc123"}
+
+	env, err := NewEnvelope(TypeScanModels, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	var got ScanModels
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if got != want {
+		t.Errorf("ScanModels = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_ScanModelsResult(t *testing.T) {
+	want := ScanModelsResult{
+		ScanID: "abc123",
+		Models: []ScannedModel{
+			{ModelRef: "Org/Name", Format: "safetensors", SizeBytes: 300},
+			{ModelRef: "Org/Gguf", Quantization: "Q4_K_M", Format: "gguf", SizeBytes: 40, FileName: "m.Q4_K_M.gguf", PossiblyIncomplete: true},
+		},
+		Truncated: true,
+	}
+
+	env, err := NewEnvelope(TypeScanModelsResult, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	var got ScanModelsResult
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if got.ScanID != want.ScanID || got.Truncated != want.Truncated || len(got.Models) != 2 || got.Models[1] != want.Models[1] {
+		t.Errorf("ScanModelsResult = %+v, want %+v", got, want)
+	}
+}

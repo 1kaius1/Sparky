@@ -213,6 +213,9 @@ func main() {
 		case agentproto.TypeDeleteModelResult:
 			inventoryService.HandleDeleteModelResult(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
+		case agentproto.TypeScanModelsResult:
+			// No SSE publish: the scan page polls its own result.
+			inventoryService.HandleScanModelsResult(nodeID, env)
 		case agentproto.TypeEngineTransferProgress:
 			engineProvisionService.HandleEngineTransferProgress(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})

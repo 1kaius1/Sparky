@@ -10,6 +10,8 @@
 
 {{if .Data.CanTransfer}}<p><a href="/inventory/transfer/new">Download or copy a model</a></p>{{end}}
 
+{{if .Data.CanImport}}<p><a href="/inventory/scan">Scan nodes for unknown models</a></p>{{end}}
+
 <p><a href="/transfers" hx-get="/transfers" hx-target="#main-content" hx-push-url="true">View transfer history</a></p>
 
 {{if eq .Data.View "simple"}}

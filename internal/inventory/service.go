@@ -66,6 +66,7 @@ type inventoryStore interface {
 	ListByNode(ctx context.Context, nodeID string) ([]*db.NodeModelInventory, error)
 	Get(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat) (*db.NodeModelInventory, error)
 	SetStatus(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat, status db.InventoryStatus) error
+	Upsert(ctx context.Context, nodeID, modelRef, quantization string, format db.ModelFormat, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error)
 }
 
 // profileStore is the subset of *db.ProfileRepository Delete needs to
@@ -114,6 +115,14 @@ type Service struct {
 	// database) arrives.
 	deletesMu sync.Mutex
 	deletes   map[string]deleteState
+
+	// scans holds in-flight and recent node scans (scan.go), in memory only
+	// for the same reason as deletes: a result is transient, and losing
+	// one to a restart just means the Admin scans again.
+	scansMu sync.Mutex
+	scans   map[string]*scanState
+	// now is overridable for tests; nil means time.Now.
+	now func() time.Time
 }
 
 func deleteKey(nodeID, modelRef, quantization string, format db.ModelFormat) string {

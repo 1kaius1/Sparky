@@ -35,6 +35,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Added
+- Agent: `sparky-agent scan-models [--path DIR] [--json]`, a read-only,
+  local listing of the model copies found under a node's model storage
+  directory (`agent/modelscan`), first piece of importing models that were
+  placed on a node outside Sparky. Format and quantization are inferred from
+  file names (no marker files exist), a leftover rsync temp file flags a
+  copy as possibly incomplete, and symlinks are never followed. Needs none
+  of `secrets.env`'s variables, so it can be run by hand as the `serviceloop`
+  account.
+- Protocol: `scan_models` (central app to agent) and `scan_models_result`
+  (agent to central app), asking a node to run the same scan. The command
+  carries no path - the agent only ever scans its own configured
+  `SPARKY_MODEL_STORAGE_PATH`. As with every protocol change, the agent and
+  server must be upgraded together (`DecodePayload` rejects unknown fields).
+- Inventory: scan and import service (`internal/inventory`). `StartScan`
+  asks the chosen nodes for the model copies on their disk, the agent's
+  `scan_models_result` is diffed against Node model inventory (present,
+  stale and incomplete rows count as known; removed rows are offered for
+  revival), and `Import` adds the chosen copies as `present` with no placing
+  transfer. Admin and SuperAdmin only (`rbac.CanImportModels`, no
+  `manage_model_store` grant path). Everything a node reports is
+  re-validated; import takes size and file name from the stored scan, never
+  the request. An entry whose later delete would remove its whole directory
+  (whole-repo or `UNKNOWN` quantization) is refused while other models share
+  that directory, and a gguf quantization override must pick out exactly its
+  own file. Imports are audited (`imported_model`, against the node). Scan
+  results live in memory for 15 minutes, with at most 100 live scans.
+- Inventory page: an Admin-only "Scan nodes for unknown models" link to a
+  new `/inventory/scan` page. Pick one or more nodes, the results appear as
+  each node answers (the page polls `GET /inventory/scan/{id}`, no SSE),
+  then tick the models to add and confirm (`POST /inventory/import`).
+  gguf rows let the Admin correct the guessed quantization; rows that could
+  not be imported safely are shown but cannot be ticked, with the reason.
+  All three POST routes are CSRF-protected and body-limited.
+- Docs: `docs/AGENT.md` (scan-models subcommand and what the scan can and
+  cannot infer), `ARCHITECTURE.md` (the `scan_models` command pair and its
+  trust model), `CLAUDE.md` (Inventory sidebar tiers), and a `PLANNING.md`
+  Decisions Log entry for the scan and import design.
+- Node model inventory: `placed_via` is now nullable (migration
+  `000037_node_model_inventory_placed_via_nullable`, not yet applied to any
+  environment by this change). `NULL` marks a copy imported from disk, which
+  no transfer placed. `NodeModelInventoryRepository.Upsert` takes `""` for
+  that case and `PlacedVia` reads back as `""`, the same empty-string
+  convention `quantization` already uses.
 - Nodes: a free-text `comment` field (migration `000036_add_nodes_comment`)
   for recording which team/model is currently using a node, ahead of the
   future profile-locking/scheduling system (see PLANNING.md Future Ideas).

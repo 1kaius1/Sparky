@@ -1,0 +1,31 @@
+{{define "content"}}
+<h1>Scan nodes for unknown models</h1>
+
+<p>Looks in each selected node's model storage for model copies that Sparky does
+not have in its inventory - for example files copied there by hand - so you can
+add them. Nothing is imported until you tick the models and confirm. Format and
+quantization are guessed from file names, and completeness cannot be checked,
+so review each row.</p>
+
+<form hx-post="/inventory/scan" hx-target="#scan-results" hx-swap="outerHTML">
+  <fieldset>
+    <legend>Nodes to scan</legend>
+    {{range .Data.Nodes}}
+    <p>
+      <label>
+        <input type="checkbox" name="node_id" value="{{.ID}}" {{if .Online}}checked{{end}}>
+        {{.Name}}
+      </label>
+      {{if not .Online}}<span class="status status-offline">offline</span>{{end}}
+    </p>
+    {{else}}
+    <p class="empty">No nodes are registered.</p>
+    {{end}}
+  </fieldset>
+  <button type="submit">Scan</button>
+</form>
+
+<div id="scan-results"></div>
+
+<p><a href="/inventory" hx-get="/inventory" hx-target="#main-content" hx-push-url="true">Back to Inventory</a></p>
+{{end}}

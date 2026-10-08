@@ -322,6 +322,20 @@ token; the central app replies with a `hello_ack` either way, using the same
 generic rejection reason for an unknown node name and a wrong token, so the
 handshake can't be used to enumerate registered node names.
 
+Finding model copies that are on a node's disk but not in Node model inventory
+uses one more command pair, `scan_models` / `scan_models_result`. An Admin
+starts a scan from the Inventory page (`rbac.CanImportModels`, Admin and
+SuperAdmin only); the command carries a scan id and no path, so an agent only
+ever lists its own configured storage root. The result is matched to the scan
+and to the sending node's authenticated identity, accepted once, and every
+field in it is re-validated before it is shown. Nothing is imported until the
+Admin ticks it; `inventory.Service.Import` then takes size and file name from
+the stored result rather than the request, refuses an entry whose later delete
+would remove neighbouring models in the same directory, and records the import
+as `imported_model` in the audit log. The copy is stored as `present` with a
+`NULL` `placed_via` - no transfer placed it (`SCHEMA.md` Node model inventory).
+Scan results are held in memory for 15 minutes.
+
 ---
 
 ## Request Lifecycle

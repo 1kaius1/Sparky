@@ -1,0 +1,70 @@
+{{define "scan_results"}}
+<div id="scan-results"{{if .PollURL}} hx-get="{{.PollURL}}" hx-trigger="load delay:2s" hx-swap="outerHTML"{{end}}>
+  {{if .Error}}
+  <p class="form-error">{{.Error}}</p>
+  {{else}}
+  {{if .PollURL}}<p class="check-status check-pending">Waiting for nodes to answer...</p>{{end}}
+
+  {{if .Failures}}
+  <div class="form-error">
+    <p>Not imported:</p>
+    <ul>
+      {{range .Failures}}<li>{{.}}</li>{{end}}
+    </ul>
+  </div>
+  {{end}}
+
+  <form hx-post="/inventory/import" hx-target="#scan-results" hx-swap="outerHTML" hx-confirm="Add the selected models to the inventory?" data-toast="Importing the selected models">
+    <input type="hidden" name="scan_id" value="{{.ScanID}}">
+    {{$pending := .PollURL}}
+    {{range .Nodes}}
+    <h2>{{.Name}} <span class="status status-{{.StatusClass}}">{{.Status}}</span></h2>
+    {{if .Error}}<p class="form-error">{{.Error}}</p>{{end}}
+    {{if eq .Status "done"}}
+    <p><small>{{.Known}} model{{if ne .Known 1}}s{{end}} already in the inventory.</small></p>
+    {{if .Truncated}}<p class="form-error">The node reported more models than the scan can list; only the first were returned.</p>{{end}}
+    {{if .Rows}}
+    <table class="data-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th>Model</th>
+          <th>Format</th>
+          <th>Quantization</th>
+          <th>Size</th>
+          <th>Notes</th>
+        </tr>
+      </thead>
+      <tbody>
+        {{range .Rows}}
+        <tr>
+          <td><input type="checkbox" name="sel_{{.Index}}" value="{{.Value}}" aria-label="Import {{.ModelRef}}" {{if .Blocked}}disabled{{end}}></td>
+          <td>{{.ModelRef}}{{if .FileName}}<br><small>{{.FileName}}</small>{{end}}</td>
+          <td>{{.Format}}</td>
+          <td>
+            {{if .CanEditQuant}}
+            <input type="text" name="aq_{{.Index}}" value="{{.Quantization}}" maxlength="32" aria-label="Quantization for {{.ModelRef}}">
+            {{else}}
+            {{if .Quantization}}{{.Quantization}}{{else}}(whole repo){{end}}
+            {{end}}
+          </td>
+          <td>{{.Size}}</td>
+          <td>
+            {{if .Incomplete}}<small class="form-error">Possibly incomplete - an interrupted copy left a temporary file.</small><br>{{end}}
+            {{if .Removed}}<small>Was removed from the inventory earlier; importing restores it.</small><br>{{end}}
+            {{if .Blocked}}<small class="form-error">Cannot import as is: {{.Blocked}}</small>{{end}}
+          </td>
+        </tr>
+        {{end}}
+      </tbody>
+    </table>
+    {{else}}
+    <p class="empty">No unknown models found on this node.</p>
+    {{end}}
+    {{end}}
+    {{end}}
+    {{if not $pending}}<button type="submit">Import selected</button>{{end}}
+  </form>
+  {{end}}
+</div>
+{{end}}
