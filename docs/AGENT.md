@@ -133,7 +133,7 @@ binary, which:
   the systemd unit's `ProtectHome=true` makes `/home/*` inaccessible to the
   running process, so this sidesteps that entirely instead of needing an
   exception carved out. This is also the parent of
-  `SPARKY_MODEL_STORAGE_PATH`'s bare-metal default (see Configuration below) -
+  `SPARKY_MODEL_STORAGE_PATH`'s default (see Configuration below) -
   a purge deliberately leaves its contents (real downloaded model data) in
   place, same reasoning as leaving `secrets.env` behind on a plain `remove`.
   Also joins the account to whichever of the `video`/`render` groups actually
@@ -251,7 +251,7 @@ come from Secrets, identically to the server.
 | `SPARKY_BEARER_TOKEN`            | Yes      | -       | Presented at connect time - see `ARCHITECTURE.md` Protocol |
 | `SPARKY_NODE_NAME`               | Yes      | -       | Must match this node's registered name in the central app |
 | `SPARKY_RUNTIME_BACKEND`         | Yes      | -       | `docker`, `podman`, or `bare-metal` - see `SCHEMA.md` Nodes |
-| `SPARKY_MODEL_STORAGE_PATH`      | No       | `/opt/sparky/serviceloop/models` on a bare-metal host | Per-`runtime_backend` configurable, not hardcoded |
+| `SPARKY_MODEL_STORAGE_PATH`      | No       | `/opt/sparky/serviceloop/models` (every `runtime_backend`) | Where model files live on this node. On `docker`/`podman` nodes it is also mounted read-only into the engine container at the same path. Configurable, never assumed |
 | `SPARKY_LLAMACPP_BINARY_PATH`    | No       | -       | Bare-metal only - local `llama.cpp` server executable for a `llamacpp` `load_instance`. Unset means this node doesn't run that engine type |
 | `SPARKY_VLLM_BINARY_PATH`        | No       | -       | Bare-metal only - local vLLM executable/entrypoint for a `vllm` `load_instance`. Unset means this node doesn't run that engine type |
 | `SPARKY_ENGINE_INSTALL_PATH`     | No       | `/opt/sparky/serviceloop/engines` on a bare-metal host | Bare-metal only - root directory a `start_engine_transfer` provisioning run installs into. See Engine binary provisioning below |
@@ -305,7 +305,7 @@ sudo -u serviceloop sparky-agent scan-models [--path DIR] [--json]
 
 lists what is on disk. It reads no `secrets.env` variables (it is dispatched
 before config loading, like `setup`), so it works from a plain shell; the path
-defaults to `$SPARKY_MODEL_STORAGE_PATH`, then the bare-metal default. It cannot
+defaults to `$SPARKY_MODEL_STORAGE_PATH`, then `/opt/sparky/serviceloop/models`. It cannot
 say which copies the central app already knows - for that, an Admin uses the
 Inventory page's "Scan nodes for unknown models", which sends the agent a
 `scan_models` command and answers with `scan_models_result`. The command

@@ -13,7 +13,7 @@ import (
 	"github.com/1kaius1/Sparky/agent/modelscan"
 )
 
-// scanModelsDefaultPath duplicates agent/config's bare-metal default for
+// scanModelsDefaultPath duplicates agent/config's model storage default for
 // SPARKY_MODEL_STORAGE_PATH rather than importing it (unexported there, and
 // this subcommand deliberately avoids config.Load - see runScanModels).
 const scanModelsDefaultPath = "/opt/sparky/serviceloop/models"

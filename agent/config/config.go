@@ -90,22 +90,23 @@ type required struct {
 	dest   *string
 }
 
-// bareMetalDefaultModelStoragePath is SPARKY_MODEL_STORAGE_PATH's default
-// when RuntimeBackend is "bare-metal" and the variable is unset - see
-// docs/AGENT.md Configuration and Install (bare metal), which already
-// documents this as the bare-metal default (the serviceloop account's own
-// home directory, created by scripts/packaging/lib/agent-common.sh's
-// ensure_model_storage_dir). Deliberately under /opt/sparky rather than
-// /home - the systemd unit's ProtectHome=true makes /home/* inaccessible to
-// the running process, so a path under /home would be unreachable
-// regardless of whether it existed. No such default exists for
-// docker/podman, where the value is always operator-configured to wherever
-// the container mount should point.
-const bareMetalDefaultModelStoragePath = "/opt/sparky/serviceloop/models"
+// defaultModelStoragePath is SPARKY_MODEL_STORAGE_PATH's default when the
+// variable is unset, for every runtime backend - the serviceloop account's
+// own home directory, created by `sparky-agent setup` on every install
+// (agent/provision's EnsureModelStorageDir), so it exists whichever backend
+// the node uses. Deliberately under /opt/sparky rather than /home - the
+// systemd unit's ProtectHome=true makes /home/* inaccessible to the running
+// process, so a path under /home would be unreachable regardless of whether
+// it existed. It used to apply to bare-metal only, leaving a docker/podman
+// node with an empty path (a confusing "permission denied" on download, a
+// malformed container mount on launch, an unusable scan); an operator can
+// still point it elsewhere, e.g. at the host path a container mount should
+// use.
+const defaultModelStoragePath = "/opt/sparky/serviceloop/models"
 
 // bareMetalDefaultEngineInstallPath is SPARKY_ENGINE_INSTALL_PATH's default
 // when RuntimeBackend is "bare-metal" and the variable is unset - a sibling
-// of bareMetalDefaultModelStoragePath under the same serviceloop-owned
+// of defaultModelStoragePath under the same serviceloop-owned
 // /opt/sparky/serviceloop tree, for the same ProtectHome=true reasoning.
 const bareMetalDefaultEngineInstallPath = "/opt/sparky/serviceloop/engines"
 
@@ -174,8 +175,8 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("missing required environment variable(s): %v", missing)
 	}
 
-	if cfg.ModelStoragePath == "" && cfg.RuntimeBackend == "bare-metal" {
-		cfg.ModelStoragePath = bareMetalDefaultModelStoragePath
+	if cfg.ModelStoragePath == "" {
+		cfg.ModelStoragePath = defaultModelStoragePath
 	}
 	if cfg.EngineInstallPath == "" && cfg.RuntimeBackend == "bare-metal" {
 		cfg.EngineInstallPath = bareMetalDefaultEngineInstallPath

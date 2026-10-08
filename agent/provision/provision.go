@@ -138,8 +138,8 @@ func (p *Provisioner) EnsureServiceloopUser(ctx context.Context) error {
 }
 
 // EnsureModelStorageDir creates serviceloop's home directory - also the
-// parent of the bare-metal runtime backend's default
-// SPARKY_MODEL_STORAGE_PATH (agent/config's bareMetalDefaultModelStoragePath).
+// parent of the default SPARKY_MODEL_STORAGE_PATH (agent/config's
+// defaultModelStoragePath).
 // Must run after EnsureServiceloopUser - resolving the directory's
 // ownership needs that account to already exist.
 func (p *Provisioner) EnsureModelStorageDir(ctx context.Context) error {
