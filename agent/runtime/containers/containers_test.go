@@ -41,6 +41,16 @@ type fakeDockerClient struct {
 
 	logsResult client.ContainerLogsResult
 	logsErr    error
+
+	// listResult / listErr answer ContainerList; the default (empty) means
+	// "no container carries the label", which exercises the legacy-name
+	// fallback. listOptions records every list request.
+	listResult  client.ContainerListResult
+	listErr     error
+	listOptions []client.ContainerListOptions
+
+	// The container id or name each call was addressed with.
+	stopRefs, removeRefs, inspectRefs, logsRefs []string
 }
 
 func (f *fakeDockerClient) ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -52,16 +62,24 @@ func (f *fakeDockerClient) ContainerStart(_ context.Context, _ string, _ client.
 	return client.ContainerStartResult{}, f.startErr
 }
 
-func (f *fakeDockerClient) ContainerStop(_ context.Context, _ string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+func (f *fakeDockerClient) ContainerStop(_ context.Context, ref string, _ client.ContainerStopOptions) (client.ContainerStopResult, error) {
+	f.stopRefs = append(f.stopRefs, ref)
 	return client.ContainerStopResult{}, f.stopErr
 }
 
-func (f *fakeDockerClient) ContainerRemove(_ context.Context, _ string, _ client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+func (f *fakeDockerClient) ContainerRemove(_ context.Context, ref string, _ client.ContainerRemoveOptions) (client.ContainerRemoveResult, error) {
+	f.removeRefs = append(f.removeRefs, ref)
 	return client.ContainerRemoveResult{}, f.removeErr
 }
 
-func (f *fakeDockerClient) ContainerInspect(_ context.Context, _ string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+func (f *fakeDockerClient) ContainerInspect(_ context.Context, ref string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
+	f.inspectRefs = append(f.inspectRefs, ref)
 	return f.inspectResult, f.inspectErr
+}
+
+func (f *fakeDockerClient) ContainerList(_ context.Context, options client.ContainerListOptions) (client.ContainerListResult, error) {
+	f.listOptions = append(f.listOptions, options)
+	return f.listResult, f.listErr
 }
 
 func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ client.ImagePullOptions) (client.ImagePullResponse, error) {
@@ -72,7 +90,8 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ client.Image
 	return &fakePullResponse{}, nil
 }
 
-func (f *fakeDockerClient) ContainerLogs(_ context.Context, _ string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+func (f *fakeDockerClient) ContainerLogs(_ context.Context, ref string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+	f.logsRefs = append(f.logsRefs, ref)
 	if f.logsErr != nil {
 		return nil, f.logsErr
 	}
@@ -453,7 +472,8 @@ func TestStart_SetsMounts(t *testing.T) {
 	}
 }
 
-func TestStart_NamesContainerFromInstanceID(t *testing.T) {
+func startCapturing(t *testing.T, spec runtime.Spec) client.ContainerCreateOptions {
+	t.Helper()
 	var captured client.ContainerCreateOptions
 	fake := &fakeDockerClient{
 		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -462,14 +482,41 @@ func TestStart_NamesContainerFromInstanceID(t *testing.T) {
 		},
 	}
 	b := &Backend{cli: fake}
-
-	_, err := b.Start(context.Background(), runtime.Spec{InstanceID: "instance-1", Image: "example/engine:latest"})
-	if err != nil {
+	if _, err := b.Start(context.Background(), spec); err != nil {
 		t.Fatalf("Start() error: %v", err)
 	}
-	want := InstanceContainerName("instance-1")
-	if captured.Name != want {
-		t.Errorf("Name = %q, want %q", captured.Name, want)
+	return captured
+}
+
+func TestStart_UsesTheDescriptiveNameFromTheCentralApp(t *testing.T) {
+	got := startCapturing(t, runtime.Spec{InstanceID: "instance-1", Image: "img", ContainerName: "sparky-Qwen3-8B-20261008-100459"})
+	if got.Name != "sparky-Qwen3-8B-20261008-100459" {
+		t.Errorf("Name = %q, want the name from the central app", got.Name)
+	}
+}
+
+func TestStart_FallsBackToTheLegacyNameWhenNoneOrInvalidIsGiven(t *testing.T) {
+	legacy := InstanceContainerName("instance-1")
+	for _, name := range []string{
+		"",                       // an older server sends none
+		"has space",              // not a valid container name
+		"-leading-dash",          // must start alphanumeric
+		"slash/inside",           // path-like
+		"semi;colon",             // junk from the wire
+		strings.Repeat("a", 129), // over the length cap
+		"caf\u00e9",              // non-ASCII
+	} {
+		got := startCapturing(t, runtime.Spec{InstanceID: "instance-1", Image: "img", ContainerName: name})
+		if got.Name != legacy {
+			t.Errorf("ContainerName %q: Name = %q, want the legacy %q", name, got.Name, legacy)
+		}
+	}
+}
+
+func TestStart_LabelsTheContainerWithTheInstanceID(t *testing.T) {
+	got := startCapturing(t, runtime.Spec{InstanceID: "instance-1", Image: "img", ContainerName: "sparky-p-20261008-100459"})
+	if got.Config.Labels[labelInstanceID] != "instance-1" || got.Config.Labels[labelManaged] != "true" {
+		t.Errorf("Labels = %v, want the instance-id and managed labels", got.Config.Labels)
 	}
 }
 
@@ -478,6 +525,105 @@ func TestInstanceContainerName(t *testing.T) {
 	want := "sparky-instance-instance-1"
 	if got != want {
 		t.Errorf("InstanceContainerName() = %q, want %q", got, want)
+	}
+}
+
+func labelled(id string, created int64) container.Summary {
+	return container.Summary{ID: id, Created: created}
+}
+
+// Every lookup must go to the container found by label, using its id - the
+// descriptive name cannot be recomputed from the instance id.
+func TestLookups_FindTheContainerByLabel(t *testing.T) {
+	fake := &fakeDockerClient{
+		listResult:    client.ContainerListResult{Items: []container.Summary{labelled("abc123", 100)}},
+		inspectResult: client.ContainerInspectResult{Container: container.InspectResponse{State: &container.State{Running: true}}},
+	}
+	b := &Backend{cli: fake}
+	ctx := context.Background()
+
+	if err := b.Stop(ctx, "instance-1"); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	if running, err := b.IsRunning(ctx, "instance-1"); err != nil || !running {
+		t.Fatalf("IsRunning() = %v, %v, want true", running, err)
+	}
+	if _, err := b.Logs(ctx, "instance-1", 10); err != nil {
+		t.Fatalf("Logs() error: %v", err)
+	}
+
+	for name, refs := range map[string][]string{"stop": fake.stopRefs, "remove": fake.removeRefs, "inspect": fake.inspectRefs, "logs": fake.logsRefs} {
+		if len(refs) != 1 || refs[0] != "abc123" {
+			t.Errorf("%s addressed %v, want [abc123] (the label match's id)", name, refs)
+		}
+	}
+	for i, opts := range fake.listOptions {
+		if !opts.All {
+			t.Errorf("list %d: All = false; a stopped or exited container must still be found", i)
+		}
+		if !opts.Filters["label"][labelInstanceID+"=instance-1"] {
+			t.Errorf("list %d: filters = %v, want label %s=instance-1", i, opts.Filters, labelInstanceID)
+		}
+	}
+}
+
+// A container started by an older agent has no label; it must stay
+// manageable under its legacy name after an upgrade.
+func TestLookups_FallBackToTheLegacyNameWhenNoLabelMatches(t *testing.T) {
+	fake := &fakeDockerClient{
+		inspectResult: client.ContainerInspectResult{Container: container.InspectResponse{State: &container.State{Running: true}}},
+	}
+	b := &Backend{cli: fake}
+	ctx := context.Background()
+	legacy := InstanceContainerName("instance-1")
+
+	if err := b.Stop(ctx, "instance-1"); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	if _, err := b.IsRunning(ctx, "instance-1"); err != nil {
+		t.Fatalf("IsRunning() error: %v", err)
+	}
+	if _, err := b.Logs(ctx, "instance-1", 10); err != nil {
+		t.Fatalf("Logs() error: %v", err)
+	}
+	for name, refs := range map[string][]string{"stop": fake.stopRefs, "remove": fake.removeRefs, "inspect": fake.inspectRefs, "logs": fake.logsRefs} {
+		if len(refs) != 1 || refs[0] != legacy {
+			t.Errorf("%s addressed %v, want [%s]", name, refs, legacy)
+		}
+	}
+}
+
+func TestLookups_PreferTheNewestWhenSeveralCarryTheLabel(t *testing.T) {
+	fake := &fakeDockerClient{listResult: client.ContainerListResult{Items: []container.Summary{
+		labelled("old", 100), labelled("newest", 300), labelled("middle", 200),
+	}}}
+	b := &Backend{cli: fake}
+	if err := b.Stop(context.Background(), "instance-1"); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	if len(fake.stopRefs) != 1 || fake.stopRefs[0] != "newest" {
+		t.Errorf("stop addressed %v, want [newest]", fake.stopRefs)
+	}
+}
+
+// A failed lookup is reported as such, and nothing is stopped or removed on
+// a guess.
+func TestLookups_ListFailureIsReportedAndActsOnNothing(t *testing.T) {
+	fake := &fakeDockerClient{listErr: errors.New("daemon unreachable")}
+	b := &Backend{cli: fake}
+	ctx := context.Background()
+
+	if err := b.Stop(ctx, "instance-1"); err == nil || !strings.Contains(err.Error(), "daemon unreachable") {
+		t.Errorf("Stop() error = %v, want the list failure", err)
+	}
+	if _, err := b.IsRunning(ctx, "instance-1"); err == nil {
+		t.Error("IsRunning() succeeded despite a failed lookup")
+	}
+	if _, err := b.Logs(ctx, "instance-1", 10); err == nil {
+		t.Error("Logs() succeeded despite a failed lookup")
+	}
+	if len(fake.stopRefs)+len(fake.removeRefs)+len(fake.inspectRefs)+len(fake.logsRefs) != 0 {
+		t.Errorf("a failed lookup must not act on any container: %v %v %v %v", fake.stopRefs, fake.removeRefs, fake.inspectRefs, fake.logsRefs)
 	}
 }
 

@@ -26,6 +26,12 @@ type Spec struct {
 	// Image is the container image to run - containers backend only.
 	Image string
 
+	// ContainerName is the display name to give the container - containers
+	// backend only, ignored by bare-metal. Empty or invalid falls back to
+	// the legacy containers.InstanceContainerName. The container is found
+	// again by an instance-id label, not by this name.
+	ContainerName string
+
 	// BinaryPath is the resolved local executable to exec directly - the
 	// bare-metal backend only. Resolved by the caller (agent/connection)
 	// from EngineType via its own per-engine-type configuration, since a

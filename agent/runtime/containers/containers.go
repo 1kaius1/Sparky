@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"regexp"
 	"strconv"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -36,14 +37,41 @@ const cdiDriver = "cdi"
 // guessed - see runtime.GPUDeviceMechanismNvidia's own doc comment.
 const nvidiaDriver = "nvidia"
 
-// InstanceContainerName returns the deterministic container name Sparky
-// uses for a Running instance. Start and Stop (which the Docker Engine API
-// accepts a name for interchangeably with an ID) both key off this same
-// value, so neither this package nor the central app needs to track a live
-// container ID of its own - see agent/connection's load_instance/
-// unload_instance dispatch.
+// Labels Start puts on every container it creates. labelInstanceID is how
+// every later call (Stop, IsRunning, Logs, and the central app's
+// check_instance sweep after a reconnect or agent restart) finds the
+// container again: the visible container name now carries the profile name
+// and start time and so cannot be recomputed from the instance ID, but a
+// label can be searched for. Neither this package nor the central app still
+// needs to track a live container ID of its own.
+const (
+	labelInstanceID = "sparky.instance_id"
+	labelManaged    = "sparky.managed"
+)
+
+// InstanceContainerName returns the legacy deterministic container name
+// (sparky-instance-<id>) that older agents gave every container. Start falls
+// back to it when the central app supplies no valid name, and the lookup
+// falls back to it for a container with no label - one started before the
+// label existed and still running across an agent upgrade.
 func InstanceContainerName(instanceID string) string {
 	return "sparky-instance-" + instanceID
+}
+
+// validContainerName is what Docker accepts (Podman is no stricter), with a
+// length cap. The name arrives from the central app over the wire, so it is
+// checked here rather than trusted to be well-formed.
+var validContainerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
+// containerNameFor picks the name to create the container with: the
+// central app's descriptive name when it is present and valid, otherwise
+// the legacy deterministic one. Falling back, rather than failing the
+// launch over a cosmetic name, keeps an older or buggy server working.
+func containerNameFor(spec runtime.Spec) string {
+	if validContainerName.MatchString(spec.ContainerName) {
+		return spec.ContainerName
+	}
+	return InstanceContainerName(spec.InstanceID)
 }
 
 // dockerClient is the subset of *client.Client this package uses, narrow
@@ -55,6 +83,7 @@ type dockerClient interface {
 	ContainerRemove(ctx context.Context, containerID string, options client.ContainerRemoveOptions) (client.ContainerRemoveResult, error)
 	ContainerInspect(ctx context.Context, containerID string, options client.ContainerInspectOptions) (client.ContainerInspectResult, error)
 	ContainerLogs(ctx context.Context, containerID string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error)
+	ContainerList(ctx context.Context, options client.ContainerListOptions) (client.ContainerListResult, error)
 	ImagePull(ctx context.Context, refStr string, options client.ImagePullOptions) (client.ImagePullResponse, error)
 	Close() error
 }
@@ -116,9 +145,9 @@ func (b *Backend) Close() error {
 // spec.Image is not already present on the node, it is pulled first -
 // unlike the `docker run` CLI, the raw Engine API's ContainerCreate does
 // not pull a missing image itself, confirmed empirically against a real
-// daemon rather than assumed. The container is named deterministically
-// from spec.InstanceID (InstanceContainerName) so Stop can address it
-// without this package tracking any state of its own.
+// daemon rather than assumed. The container is named by containerNameFor and
+// labelled with spec.InstanceID, so Stop and the other calls find it again
+// by label without this package tracking any state of its own.
 func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) {
 	var hostConfig container.HostConfig
 	switch spec.GPUDeviceMechanism {
@@ -151,9 +180,10 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 	}
 
 	config := &container.Config{
-		Image: spec.Image,
-		Env:   spec.Env,
-		Cmd:   spec.Args,
+		Image:  spec.Image,
+		Env:    spec.Env,
+		Cmd:    spec.Args,
+		Labels: map[string]string{labelInstanceID: spec.InstanceID, labelManaged: "true"},
 	}
 	if spec.Port != 0 {
 		port, err := network.ParsePort(fmt.Sprintf("%d/tcp", spec.Port))
@@ -165,7 +195,7 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 	}
 
 	createOpts := client.ContainerCreateOptions{
-		Name:       InstanceContainerName(spec.InstanceID),
+		Name:       containerNameFor(spec),
 		Config:     config,
 		HostConfig: &hostConfig,
 	}
@@ -197,16 +227,46 @@ func (b *Backend) pullImage(ctx context.Context, image string) error {
 	return resp.Wait(ctx)
 }
 
-// Stop stops and removes the container for instanceID - the same
-// deterministic name Start gave it (InstanceContainerName), so no state
-// needs to be tracked between the two calls.
-func (b *Backend) Stop(ctx context.Context, instanceID string) error {
-	name := InstanceContainerName(instanceID)
-	if _, err := b.cli.ContainerStop(ctx, name, client.ContainerStopOptions{}); err != nil {
-		return fmt.Errorf("stop container %s: %w", name, err)
+// resolve finds the container for instanceID: the one carrying its
+// instance-id label (started by this version of the agent). A container with
+// no such label is one an older agent started under the legacy
+// deterministic name, which is returned as the fallback so it stays
+// stoppable and checkable across an agent upgrade. Should more than one
+// container carry the label, which a single launch cannot produce, the most
+// recently created one wins. The result is a container ID, or the legacy
+// name, either of which the Engine API accepts interchangeably.
+func (b *Backend) resolve(ctx context.Context, instanceID string) (string, error) {
+	res, err := b.cli.ContainerList(ctx, client.ContainerListOptions{
+		All:     true, // a stopped or exited container still has to be found, to inspect or remove it
+		Filters: make(client.Filters).Add("label", labelInstanceID+"="+instanceID),
+	})
+	if err != nil {
+		return "", fmt.Errorf("find container for instance %s: %w", instanceID, err)
 	}
-	if _, err := b.cli.ContainerRemove(ctx, name, client.ContainerRemoveOptions{}); err != nil {
-		return fmt.Errorf("remove container %s: %w", name, err)
+	if len(res.Items) == 0 {
+		return InstanceContainerName(instanceID), nil
+	}
+	newest := res.Items[0]
+	for _, c := range res.Items[1:] {
+		if c.Created > newest.Created {
+			newest = c
+		}
+	}
+	return newest.ID, nil
+}
+
+// Stop stops and removes the container for instanceID, found by resolve - so
+// no state needs to be tracked between Start and Stop.
+func (b *Backend) Stop(ctx context.Context, instanceID string) error {
+	ref, err := b.resolve(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	if _, err := b.cli.ContainerStop(ctx, ref, client.ContainerStopOptions{}); err != nil {
+		return fmt.Errorf("stop container %s: %w", ref, err)
+	}
+	if _, err := b.cli.ContainerRemove(ctx, ref, client.ContainerRemoveOptions{}); err != nil {
+		return fmt.Errorf("remove container %s: %w", ref, err)
 	}
 	return nil
 }
@@ -220,14 +280,16 @@ func (b *Backend) Shutdown(ctx context.Context) error {
 }
 
 // IsRunning reports whether instanceID's container is currently running -
-// see runtime.Backend's doc comment. Resolves the same deterministic
-// container name Start/Stop use (InstanceContainerName), so - like
-// them - it needs no state of its own to answer.
+// see runtime.Backend's doc comment. Finds the container the same way
+// Stop does (resolve), so - like it - it needs no state of its own to answer.
 func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error) {
-	name := InstanceContainerName(instanceID)
-	result, err := b.cli.ContainerInspect(ctx, name, client.ContainerInspectOptions{})
+	ref, err := b.resolve(ctx, instanceID)
 	if err != nil {
-		return false, fmt.Errorf("inspect container %s: %w", name, err)
+		return false, err
+	}
+	result, err := b.cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
+	if err != nil {
+		return false, fmt.Errorf("inspect container %s: %w", ref, err)
 	}
 	if result.Container.State == nil {
 		return false, nil
@@ -245,20 +307,23 @@ func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error
 // unprintable frame headers into the diagnostic message a human is meant
 // to read.
 func (b *Backend) Logs(ctx context.Context, instanceID string, tailLines int) (string, error) {
-	name := InstanceContainerName(instanceID)
-	rc, err := b.cli.ContainerLogs(ctx, name, client.ContainerLogsOptions{
+	ref, err := b.resolve(ctx, instanceID)
+	if err != nil {
+		return "", err
+	}
+	rc, err := b.cli.ContainerLogs(ctx, ref, client.ContainerLogsOptions{
 		ShowStdout: true,
 		ShowStderr: true,
 		Tail:       strconv.Itoa(tailLines),
 	})
 	if err != nil {
-		return "", fmt.Errorf("get logs for container %s: %w", name, err)
+		return "", fmt.Errorf("get logs for container %s: %w", ref, err)
 	}
 	defer rc.Close()
 
 	var out bytes.Buffer
 	if _, err := stdcopy.StdCopy(&out, &out, rc); err != nil && !errors.Is(err, io.EOF) {
-		return "", fmt.Errorf("read logs for container %s: %w", name, err)
+		return "", fmt.Errorf("read logs for container %s: %w", ref, err)
 	}
 	return out.String(), nil
 }

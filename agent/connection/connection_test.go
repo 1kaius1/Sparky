@@ -1156,6 +1156,67 @@ func TestConn_Dispatch_LoadInstance_ThreadsShmSizeAndIPCModeIntoSpec(t *testing.
 	}
 }
 
+func TestConn_Dispatch_LoadInstance_ForwardsContainerNameIntoSpec(t *testing.T) {
+	_, enginePort := newFakeEngineServer(t)
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		EngineType:               "vllm",
+		Image:                    "vllm/vllm-openai:latest",
+		Port:                     enginePort,
+		RequiresFullGPUResidency: true,
+		ContainerName:            "sparky-test-profile-20261008-100459",
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	fakeBackend := &fakeRuntimeBackend{startID: "container-1", isRunningResult: true}
+	cfg := Config{
+		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+		ModelStoragePath: "/models", RuntimeBackend: "docker",
+	}
+	conn := New(cfg, fakeBackend, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(fakeBackend.startCalls) != 1 {
+		t.Fatalf("Start called %d times, want 1", len(fakeBackend.startCalls))
+	}
+	if got := fakeBackend.startCalls[0].ContainerName; got != "sparky-test-profile-20261008-100459" {
+		t.Errorf("Spec.ContainerName = %q, want the name from load_instance", got)
+	}
+}
+
 func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
 	// bare-metal ignores the image entirely - it has no container ENTRYPOINT
 	// at all, so this passes a non-default image to confirm that.
