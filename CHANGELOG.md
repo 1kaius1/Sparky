@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Agent: the load-time readiness probe now names the model by the id the
+  engine itself reports at `/v1/models` (the first `data[].id`), falling back
+  to the local model path when the engine reports none, instead of always
+  sending the model path. Works against engines serving the path (today's
+  behavior) and against engines serving a different id; the prerequisite for
+  the profile name becoming the served model id (next entry).
 - Packaging: `VERSION` bumped from `0.2.3` to `0.2.4` so builds carrying the
   descriptive container names register as newer than the `0.2.3` packages
   already installed. **Upgrade the agents first, then the server**: this adds a
