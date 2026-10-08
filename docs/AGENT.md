@@ -233,6 +233,29 @@ deploy) does not.
 
 ---
 
+### Container names and how containers are found
+
+On the Docker and Podman backends the central app names each container
+`sparky-<profile name>-<start time>`, for example
+`sparky-Qwen3-8B-FP8-20261008-100459`, so `docker ps` shows which profile a
+container belongs to and, when a profile has left several behind, which is the
+newest. The start time is the instance's `started_at` in **UTC** (not the node's
+local time, so a fleet across timezones or a DST change never makes two names
+ambiguous) and sorts naturally. The profile name is free text, so it is
+sanitized for Docker (anything outside `A-Za-z0-9_.-` becomes `-`, trimmed to
+40 characters). A name the agent receives that Docker would reject, or none at
+all (an older server), falls back to the legacy `sparky-instance-<instance id>`.
+
+The name is display-only. The agent labels every container it starts with
+`sparky.instance_id=<instance id>` (and `sparky.managed=true`) and finds it again
+by that label - for an unload, a log tail, and the central app's `check_instance`
+sweep after a reconnect or agent restart - so a container is found even though
+its name cannot be recomputed from the instance id. A container with no label is
+one an older agent started under the legacy name; that name is the fallback, so
+such a container stays stoppable and checkable after an upgrade. Renaming a
+profile later does not rename a running container (the label, not the name, is
+the identity).
+
 ## Configuration and Data Storage
 
 Deliberately deviates from the generic Service-type default

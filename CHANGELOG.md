@@ -44,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Containers (Docker/Podman backends): containers are now named
+  `sparky-<profile name>-<UTC start time>`, for example
+  `sparky-Qwen3-8B-FP8-20261008-100459`, instead of `sparky-instance-<id>`, so
+  `docker ps` shows which profile a container belongs to and which of several
+  is the newest. The profile name is sanitized for Docker. The agent now labels
+  each container `sparky.instance_id=<id>` and finds it by that label for
+  unload, logs and the post-reconnect `check_instance` sweep, since the new
+  name cannot be recomputed from the id. Containers started by an older agent
+  (legacy name, no label) are still found and stoppable. Renaming a profile
+  does not rename a running container. New optional `load_instance` field
+  `container_name`.
 - Packaging: `VERSION` bumped from `0.2.2` to `0.2.3` so builds carrying the
   scan-page Select all and the fixed-width dashboard strips register as newer
   than the `0.2.2` packages already installed. The server and agent share one
