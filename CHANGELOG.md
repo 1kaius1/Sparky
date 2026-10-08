@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped from `0.2.4` to `0.2.5` so builds serving the
+  model under the profile name register as newer than the `0.2.4` packages
+  already installed. **Upgrade the agents first, then the server** (see the
+  client-visible entry below). Both packages move together because they share
+  one `VERSION`.
 - **Client-visible:** the model id an engine serves - what an API client
   sees at `/v1/models` and must send as `model` in a request - is now the
   **profile's name** instead of the full local model path. The central app
