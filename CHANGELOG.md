@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped from `0.2.2` to `0.2.3` so builds carrying the
+  scan-page Select all and the fixed-width dashboard strips register as newer
+  than the `0.2.2` packages already installed. The server and agent share one
+  `VERSION`, so both packages move together even though only the server's
+  web UI changed.
 - Dashboard: the GPU utilization and GPU memory strips in the Running
   instances table are now a constant width (24 slots, 119px) instead of
   growing with each sample. The newest reading always fills the rightmost
