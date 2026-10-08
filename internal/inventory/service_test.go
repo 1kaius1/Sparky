@@ -31,6 +31,25 @@ type fakeInventoryStore struct {
 
 	setStatusCalls []db.InventoryStatus
 	setStatusErr   error
+
+	upserts   []upsertCall
+	upsertErr error
+}
+
+type upsertCall struct {
+	nodeID, modelRef, quantization string
+	format                         db.ModelFormat
+	status                         db.InventoryStatus
+	sizeBytes                      int64
+	placedVia                      string
+}
+
+func (f *fakeInventoryStore) Upsert(_ context.Context, nodeID, modelRef, quantization string, format db.ModelFormat, status db.InventoryStatus, sizeBytes int64, placedVia string) (*db.NodeModelInventory, error) {
+	if f.upsertErr != nil {
+		return nil, f.upsertErr
+	}
+	f.upserts = append(f.upserts, upsertCall{nodeID, modelRef, quantization, format, status, sizeBytes, placedVia})
+	return &db.NodeModelInventory{NodeID: nodeID, ModelRef: modelRef, Quantization: quantization, Format: format, Status: status, SizeBytes: sizeBytes}, nil
 }
 
 func (f *fakeInventoryStore) SetStatus(_ context.Context, _, _, _ string, _ db.ModelFormat, status db.InventoryStatus) error {

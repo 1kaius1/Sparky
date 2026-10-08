@@ -48,6 +48,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carries no path - the agent only ever scans its own configured
   `SPARKY_MODEL_STORAGE_PATH`. As with every protocol change, the agent and
   server must be upgraded together (`DecodePayload` rejects unknown fields).
+- Inventory: scan and import service (`internal/inventory`). `StartScan`
+  asks the chosen nodes for the model copies on their disk, the agent's
+  `scan_models_result` is diffed against Node model inventory (present,
+  stale and incomplete rows count as known; removed rows are offered for
+  revival), and `Import` adds the chosen copies as `present` with no placing
+  transfer. Admin and SuperAdmin only (`rbac.CanImportModels`, no
+  `manage_model_store` grant path). Everything a node reports is
+  re-validated; import takes size and file name from the stored scan, never
+  the request. An entry whose later delete would remove its whole directory
+  (whole-repo or `UNKNOWN` quantization) is refused while other models share
+  that directory, and a gguf quantization override must pick out exactly its
+  own file. Imports are audited (`imported_model`, against the node). Scan
+  results live in memory for 15 minutes, with at most 100 live scans.
+  Not yet reachable from the UI.
 - Node model inventory: `placed_via` is now nullable (migration
   `000037_node_model_inventory_placed_via_nullable`, not yet applied to any
   environment by this change). `NULL` marks a copy imported from disk, which

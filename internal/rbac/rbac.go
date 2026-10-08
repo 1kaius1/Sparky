@@ -73,6 +73,20 @@ func CanManageNodes(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanImportModels reports whether actor may scan nodes for model copies
+// that are on disk but unknown to Node model inventory, and import them -
+// see SCHEMA.md Node model inventory's placed_via. Admin and SuperAdmin
+// only, with no permission-override path: unlike a delete, an import
+// registers files nobody has vouched for as launchable, and a scan reads
+// every node's storage, so it sits at the same infrastructure-level floor
+// as CanManageNodes rather than at CanManageModelStore's grantable one.
+func CanImportModels(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanEditNodeComment reports whether actor may set or clear a Node's
 // free-text comment field - see SCHEMA.md Nodes' comment column.
 // Deliberately broader than CanManageNodes: PowerDev may annotate which
