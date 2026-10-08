@@ -44,6 +44,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped from `0.2.1` to `0.2.2` so builds carrying the
+  `SPARKY_MODEL_STORAGE_PATH` default fix (below) register as newer than the
+  `0.2.1` packages already installed. Only the agent's behavior changes, but
+  the server and agent share one `VERSION`, so both packages move together.
 - Packaging: `VERSION` bumped from `0.2.0` to `0.2.1` so `.deb`/`.rpm`/tarball
   builds of `sparky-server` and `sparky-agent` that include the scan-and-import
   feature register as newer than the `0.2.0` packages already installed, and
