@@ -241,7 +241,8 @@ On the Docker and Podman backends the central app names each container
 container belongs to and, when a profile has left several behind, which is the
 newest. The start time is the instance's `started_at` in **UTC** (not the node's
 local time, so a fleet across timezones or a DST change never makes two names
-ambiguous) and sorts naturally. The profile name is free text, so it is
+ambiguous) and sorts naturally. A profile name may contain `/` and `:`
+(see Model id below), which Docker rejects, so it is
 sanitized for Docker (anything outside `A-Za-z0-9_.-` becomes `-`, trimmed to
 40 characters). A name the agent receives that Docker would reject, or none at
 all (an older server), falls back to the legacy `sparky-instance-<instance id>`.
@@ -522,9 +523,15 @@ with 404, which would make every load time out. It asks the engine instead
 (the id from `/v1/models` in step 2) and falls back to the model path only
 when the engine reports no usable id - which is also what an engine started
 without a served name (an older central app) uses, so the probe works against
-both. The periodic health check below never sends a model id. A profile name
-that starts with `-` is refused at launch with a message to rename it, since an
-engine's argument parser could read it as a flag. Renaming a profile does not
+both. The periodic health check below never sends a model id. The name must
+be a valid model id (letters, digits and `. _ - :`, with `/` allowed between
+parts, each part starting with a letter or digit, at most 64 characters, no
+spaces or commas - `internal/engines.ValidModelID`): the central app checks it
+when a profile is created or renamed, and again at launch, because a profile
+saved before the rule existed keeps its row but is refused at launch with a
+message to rename it. The comma rule exists because llama.cpp splits `--alias`
+on commas, which would turn one name into several ids. Two profiles cannot
+share a name, since the name is the id clients see. Renaming a profile does not
 change the id of an instance that is already running; it applies at the next
 launch.
 

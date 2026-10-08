@@ -55,9 +55,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   passes it to vLLM as `--served-model-name=<name>` and to llama.cpp as
   `--alias <name>`. Anything that hard-coded the old path as the model id
   (scripts, benchmark harnesses, client configuration) must switch to the
-  profile name; vLLM's `model_name` metrics label changes with it. A profile
-  keeps the exact name it has, spaces and all; one starting with `-` is
-  refused at launch with a message to rename it. A `served_model_name` already
+  profile name; vLLM's `model_name` metrics label changes with it. Because the
+  name is now the model id, creating or renaming a profile requires a valid
+  one: letters, digits and `. _ - :`, with `/` allowed between parts, each part
+  starting with a letter or digit, at most 64 characters, no spaces or commas
+  (llama.cpp splits `--alias` on commas), and unique across profiles (a
+  duplicate now gets a clear message instead of a server error). A profile
+  saved earlier with a name that breaks this rule keeps working in the list
+  and editor but is refused at launch with a message to rename it. The profile
+  form explains the rule and suggests self-describing names, since several
+  profiles can load the same model. A `served_model_name` already
   saved in a vLLM profile's `engine_params` is still accepted but ignored (the
   profile name always wins; a note is logged at launch). Instances that are
   already running keep their old id until relaunched, and renaming a profile
