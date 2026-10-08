@@ -356,13 +356,22 @@ type LoadInstance struct {
 	// never set them.
 	ShmSize int64  `json:"shm_size,omitempty"`
 	IPCMode string `json:"ipc_mode,omitempty"`
+	// ContainerName is the name the containers backend gives the container
+	// (sparky-<profile name>-<UTC start time>, built by internal/lifecycle),
+	// so `docker ps` shows which profile a container belongs to and which of
+	// several is the newest. Containers backend only; empty (an older
+	// server) makes the agent fall back to the legacy
+	// containers.InstanceContainerName. It is only a display name: the agent
+	// finds its containers again by a label carrying InstanceID, never by
+	// this value.
+	ContainerName string `json:"container_name,omitempty"`
 }
 
 // UnloadInstance is TypeUnloadInstance's payload. There is no
-// container-ID field - the agent derives the same deterministic container
-// name from InstanceID that it used at load time (see
-// containers.InstanceContainerName), so the central app never needs to
-// track a live container identity of its own.
+// container-ID or container-name field - the agent finds the container
+// again from InstanceID alone (the containers backend labels each container
+// with it; see containers.Backend), so the central app never needs to track
+// a live container identity of its own.
 type UnloadInstance struct {
 	InstanceID string `json:"instance_id"`
 }
