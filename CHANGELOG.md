@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped from `0.2.3` to `0.2.4` so builds carrying the
+  descriptive container names register as newer than the `0.2.3` packages
+  already installed. **Upgrade the agents first, then the server**: this adds a
+  field to `load_instance`, and an agent that does not know it silently drops
+  the command, leaving the instance stuck in `starting`. A new agent with an
+  old server works.
 - Containers (Docker/Podman backends): containers are now named
   `sparky-<profile name>-<UTC start time>`, for example
   `sparky-Qwen3-8B-FP8-20261008-100459`, instead of `sparky-instance-<id>`, so
