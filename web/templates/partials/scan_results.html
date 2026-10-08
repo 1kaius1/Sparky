@@ -27,7 +27,7 @@
     <table class="data-table">
       <thead>
         <tr>
-          <th></th>
+          <th>{{if .HasSelectable}}<input type="checkbox" data-select-all aria-label="Select all importable models on {{.Name}}">{{end}}</th>
           <th>Model</th>
           <th>Format</th>
           <th>Quantization</th>

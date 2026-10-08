@@ -4,9 +4,11 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -196,9 +198,22 @@ func TestHandleScanResult_RendersCandidates(t *testing.T) {
 	if strings.Contains(body, "hx-trigger=\"load delay") {
 		t.Error("a complete scan must stop polling")
 	}
-	// The blocked row cannot be ticked; the others can.
-	if !strings.Contains(body, `name="sel_2"`) || !strings.Contains(body, "disabled") {
+	// Only the blocked row's checkbox is disabled; the others can be ticked.
+	if !regexp.MustCompile(`name="sel_2"[^>]*disabled`).MatchString(body) {
 		t.Errorf("blocked row should render a disabled checkbox: %s", body)
+	}
+	for _, name := range []string{"sel_0", "sel_1"} {
+		if regexp.MustCompile(`name="` + name + `"[^>]*disabled`).MatchString(body) {
+			t.Errorf("%s must stay tickable: %s", name, body)
+		}
+	}
+	// One Select all control for the one table that has importable rows,
+	// named for its node; none for the offline node, which has no table.
+	if got := strings.Count(body, "data-select-all"); got != 1 {
+		t.Errorf("data-select-all appears %d times, want 1: %s", got, body)
+	}
+	if !strings.Contains(body, `aria-label="Select all importable models on spark-1"`) {
+		t.Errorf("select-all control missing its node-named label: %s", body)
 	}
 	// Safetensors is whole-repo only, so no quantization override input.
 	if strings.Contains(body, `name="aq_0"`) {
@@ -315,5 +330,73 @@ func TestScanEntryRoundTrip(t *testing.T) {
 		if _, _, _, _, ok := decodeScanEntry(bad); ok {
 			t.Errorf("decodeScanEntry(%q) accepted", bad)
 		}
+	}
+}
+
+func TestScanResults_SelectAllOnlyWhereSomethingIsSelectable(t *testing.T) {
+	view := func(nodes ...inventory.NodeScanView) *inventory.ScanView {
+		return &inventory.ScanView{ID: "scan-abc", Complete: true, Nodes: nodes}
+	}
+	blocked := inventory.ScanCandidate{ModelRef: "org/a", Quantization: "UNKNOWN", Format: db.ModelFormatGGUF, FileName: "a.gguf", BlockedReason: "shares a directory"}
+	ok := inventory.ScanCandidate{ModelRef: "org/b", Format: db.ModelFormatSafetensors}
+
+	for _, tc := range []struct {
+		name string
+		view *inventory.ScanView
+		want int
+	}{
+		{"importable rows", view(inventory.NodeScanView{NodeID: "node-1", Status: inventory.ScanDone, Candidates: []inventory.ScanCandidate{ok}}), 1},
+		{"mixed rows", view(inventory.NodeScanView{NodeID: "node-1", Status: inventory.ScanDone, Candidates: []inventory.ScanCandidate{blocked, ok}}), 1},
+		{"all rows blocked", view(inventory.NodeScanView{NodeID: "node-1", Status: inventory.ScanDone, Candidates: []inventory.ScanCandidate{blocked}}), 0},
+		{"no rows", view(inventory.NodeScanView{NodeID: "node-1", Status: inventory.ScanDone}), 0},
+		{"one control per table", view(
+			inventory.NodeScanView{NodeID: "node-1", Status: inventory.ScanDone, Candidates: []inventory.ScanCandidate{ok}},
+			inventory.NodeScanView{NodeID: "node-2", Status: inventory.ScanDone, Candidates: []inventory.ScanCandidate{ok}},
+		), 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			api := newScanTestAPI(t, &fakeInventoryLister{canImport: true, scanView: tc.view})
+			body := doScan(api, newAuthenticatedRequest(t, http.MethodGet, "/inventory/scan/scan-abc", "user-1")).Body.String()
+			if got := strings.Count(body, "data-select-all"); got != tc.want {
+				t.Errorf("data-select-all count = %d, want %d: %s", got, tc.want, body)
+			}
+		})
+	}
+}
+
+func TestScanResults_SelectAllNotOfferedWhilePolling(t *testing.T) {
+	view := &inventory.ScanView{ID: "scan-abc", Complete: false, Nodes: []inventory.NodeScanView{
+		{NodeID: "node-1", Status: inventory.ScanPending},
+	}}
+	api := newScanTestAPI(t, &fakeInventoryLister{canImport: true, scanView: view})
+	body := doScan(api, newAuthenticatedRequest(t, http.MethodGet, "/inventory/scan/scan-abc", "user-1")).Body.String()
+	if strings.Contains(body, "data-select-all") {
+		t.Errorf("no Select all while the scan is still running: %s", body)
+	}
+}
+
+func TestHandleImportModels_RefusesOverTheLimitInsteadOfTruncating(t *testing.T) {
+	fake := &fakeInventoryLister{canImport: true, scanView: doneView()}
+	api := newScanTestAPI(t, fake)
+	form := url.Values{"scan_id": {"scan-abc"}}
+	for i := 0; i <= maxImportItems; i++ { // one more than allowed
+		form.Set(fmt.Sprintf("sel_%d", i), encodeScanEntry("node-1", fmt.Sprintf("org/m%d", i), "", db.ModelFormatSafetensors))
+	}
+	rec := doScan(api, newAuthenticatedFormRequest(t, "/inventory/import", "user-1", form))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, fmt.Sprintf("import at most %d at a time", maxImportItems)) || !strings.Contains(body, "Nothing was imported") {
+		t.Errorf("status=%d body=%s; want the refusal message", rec.Code, body)
+	}
+	if len(fake.importedItems) != 0 {
+		t.Errorf("%d items were imported; an over-limit request must import nothing", len(fake.importedItems))
+	}
+
+	// Exactly at the limit is still accepted.
+	delete(form, fmt.Sprintf("sel_%d", maxImportItems))
+	fake2 := &fakeInventoryLister{canImport: true, scanView: doneView()}
+	api2 := newScanTestAPI(t, fake2)
+	rec = doScan(api2, newAuthenticatedFormRequest(t, "/inventory/import", "user-1", form))
+	if rec.Code != http.StatusNoContent || len(fake2.importedItems) != maxImportItems {
+		t.Errorf("at the limit: status=%d items=%d, want 204 with %d items", rec.Code, len(fake2.importedItems), maxImportItems)
 	}
 }

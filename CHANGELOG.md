@@ -57,6 +57,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry remains the maintainer's decision.
 
 ### Added
+- Scan page: a "Select all" checkbox in each node's results table
+  (`web/static/js/select_all.js`) ticks or clears every importable row of that
+  table at once, and shows a mixed state when only some are ticked. Blocked
+  rows stay unticked. It is only offered where at least one row can be
+  imported. An import of more than 1000 selected models is now refused with a
+  clear message instead of silently importing only the first 1000.
 - Agent: `sparky-agent scan-models [--path DIR] [--json]`, a read-only,
   local listing of the model copies found under a node's model storage
   directory (`agent/modelscan`), first piece of importing models that were
