@@ -276,16 +276,18 @@ table.data-table:not(.panel .data-table) {
   min-width: 34px;
   text-align: right;
 }
+/* Fixed width = 24 slots * (4px bar + 1px gap) - 1px gap; keep in sync with
+   MAX_BARS/BAR_W/BAR_GAP in dashboard.js. Reserving it here stops the cell
+   from jumping before the script's first paint. */
+.load-strip {
+  flex: none;
+  width: 119px;
+}
 .load-strip svg {
   display: block;
 }
 .load-strip-track {
   fill: var(--color-border);
-}
-.load-empty {
-  color: var(--color-text-muted);
-  font-style: italic;
-  font-size: 12px;
 }
 
 .sidebar-footer {

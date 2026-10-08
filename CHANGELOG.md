@@ -44,6 +44,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Dashboard: the GPU utilization and GPU memory strips in the Running
+  instances table are now a constant width (24 slots, 119px) instead of
+  growing with each sample. The newest reading always fills the rightmost
+  slot and older ones shift left, so a new instance's strip fills in from the
+  right; with no data yet the empty track is drawn at the same width, so the
+  column no longer jumps when the first sample arrives.
 - Packaging: `VERSION` bumped from `0.2.1` to `0.2.2` so builds carrying the
   `SPARKY_MODEL_STORAGE_PATH` default fix (below) register as newer than the
   `0.2.1` packages already installed. Only the agent's behavior changes, but

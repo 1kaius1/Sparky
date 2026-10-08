@@ -31,19 +31,22 @@
   }
 
   // stripSVG renders one metric's recent values as a run of bottom-anchored
-  // bars, oldest on the left. Returns an em-dash placeholder when there is
-  // no data yet (a just-started instance before its first correlated
-  // telemetry tick).
+  // bars in a FIXED number of slots (MAX_BARS): the newest value always sits
+  // in the rightmost slot and older ones shift left, so a fresh instance's
+  // strip fills in from the right and the strip never changes width as
+  // samples accumulate. Unfilled slots on the left just show the track. With
+  // no data at all (a just-started instance before its first correlated
+  // telemetry tick) the empty track is drawn at the same width, so the
+  // column does not jump when the first sample lands.
   function stripSVG(values, color) {
-    if (!values || !values.length) {
-      return '<span class="load-empty">&mdash;</span>';
-    }
-    var vals = values.length > MAX_BARS ? values.slice(values.length - MAX_BARS) : values;
-    var w = vals.length * (BAR_W + BAR_GAP) - BAR_GAP;
+    var vals = (values && values.length) ? values : [];
+    if (vals.length > MAX_BARS) vals = vals.slice(vals.length - MAX_BARS);
+    var w = MAX_BARS * (BAR_W + BAR_GAP) - BAR_GAP;
+    var firstSlot = MAX_BARS - vals.length;
     var bars = "";
     for (var i = 0; i < vals.length; i++) {
       var h = Math.max(1, Math.round(clampPct(vals[i]) / 100 * STRIP_H));
-      bars += '<rect x="' + (i * (BAR_W + BAR_GAP)) + '" y="' + (STRIP_H - h) +
+      bars += '<rect x="' + ((firstSlot + i) * (BAR_W + BAR_GAP)) + '" y="' + (STRIP_H - h) +
         '" width="' + BAR_W + '" height="' + h + '" fill="' + color + '"></rect>';
     }
     return '<svg width="' + w + '" height="' + STRIP_H + '" viewBox="0 0 ' + w + ' ' + STRIP_H +
