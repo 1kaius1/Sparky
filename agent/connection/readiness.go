@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -158,6 +159,14 @@ func (c *Conn) snapshotActiveInstances() map[string]activeInstance {
 //     prevent, timeout or not - "I gave up waiting" is still an honest
 //     failure to report, not a success to assume.
 //
+// The completion probe names the model by the id the engine itself reports
+// at its models-list endpoint, not by the local model path: the central app
+// starts the engine with the profile's name as its served model id, so the
+// path would be rejected as an unknown model (vLLM answers 404), and asking
+// the engine also keeps this correct whichever flag produced the id. If the
+// engine reports no usable id the model path is used, which is the id an
+// engine uses when it was given no served name (an older central app).
+//
 // engineType with no known engineProbes entry fails immediately, same
 // "can't confirm it, can't claim it" reasoning - an unrecognized engine
 // type has no defined way to prove readiness, so it can't be reported
@@ -181,6 +190,7 @@ func (c *Conn) waitForReady(ctx context.Context, instanceID, engineType string, 
 	defer ticker.Stop()
 
 	apiReachable := false
+	servedID := ""
 	for {
 		if running, err := c.runtime.IsRunning(ctx, instanceID); err == nil && !running {
 			return fmt.Errorf("process/container exited before becoming ready")
@@ -191,10 +201,18 @@ func (c *Conn) waitForReady(ctx context.Context, instanceID, engineType string, 
 		// small/fast-loading model) proves readiness in one pass rather
 		// than needlessly waiting a full readinessPollInterval between
 		// "the API layer is up" and "a completion succeeds."
-		if !apiReachable {
-			apiReachable = httpGetOK(ctx, client, base+probe.modelsPath)
+		if !apiReachable || servedID == "" {
+			reachable, id := fetchServedModelID(ctx, client, base+probe.modelsPath)
+			apiReachable = apiReachable || reachable
+			if id != "" {
+				servedID = id
+			}
 		}
-		if apiReachable && completionProbeOK(ctx, client, base+probe.chatCompletionsPath, modelPath) {
+		modelID := servedID
+		if modelID == "" {
+			modelID = modelPath
+		}
+		if apiReachable && completionProbeOK(ctx, client, base+probe.chatCompletionsPath, modelID) {
 			return nil
 		}
 
@@ -224,6 +242,43 @@ func httpGetOK(ctx context.Context, client *http.Client, url string) bool {
 	}
 	defer resp.Body.Close()
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
+}
+
+// maxModelsListBytes bounds how much of a models-list response is read to
+// find the served model id - the real response is a few hundred bytes.
+const maxModelsListBytes = 1 << 20
+
+// modelsListResponse is the minimal OpenAI-compatible models-list shape
+// needed to read the id the engine serves its model under.
+type modelsListResponse struct {
+	Data []struct {
+		ID string `json:"id"`
+	} `json:"data"`
+}
+
+// fetchServedModelID does the same cheap "is the API layer up" GET as
+// httpGetOK and, when it answers 2xx, also reads the first model id out of
+// the body. reachable is true for any 2xx answer; id is empty when the body
+// is not a models list or names no model, which the caller treats as "use
+// the model path" rather than as a failure.
+func fetchServedModelID(ctx context.Context, client *http.Client, url string) (reachable bool, id string) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, ""
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, ""
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, ""
+	}
+	var list modelsListResponse
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxModelsListBytes)).Decode(&list); err != nil || len(list.Data) == 0 {
+		return true, ""
+	}
+	return true, strings.TrimSpace(list.Data[0].ID)
 }
 
 // completionProbeRequest/Response are the minimal OpenAI-compatible
@@ -276,9 +331,9 @@ type completionProbeResponse struct {
 // and a small max_tokens keep this cheap: the goal is proving the forward
 // pass works at all (catches a corrupted quantization, a first-request
 // CUDA OOM), not exercising real generation quality.
-func completionProbeOK(ctx context.Context, client *http.Client, url, modelPath string) bool {
+func completionProbeOK(ctx context.Context, client *http.Client, url, modelID string) bool {
 	reqBody := completionProbeRequest{
-		Model:       modelPath,
+		Model:       modelID,
 		Messages:    []map[string]string{{"role": "user", "content": readinessProbePrompt}},
 		MaxTokens:   8,
 		Temperature: 0,

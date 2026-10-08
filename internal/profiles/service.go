@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/engines"
@@ -116,6 +117,13 @@ func (s *Service) resolve(ctx context.Context, f Fields) (requiresFullGPUResiden
 	return adapter.RequiresFullGPUResidency(), nil
 }
 
+// nameTakenError is the operator-facing form of db.ErrProfileNameTaken. The
+// name is the model id clients use, so the message says to tell variants of
+// the same model apart rather than just reporting the collision.
+func nameTakenError(name string) error {
+	return fmt.Errorf("%w: another profile is already named %q; each profile's name is the model id clients use, so give this one a name that tells it apart (for example by adding its engine or the parameter that differs)", ErrInvalidProfile, name)
+}
+
 // CreateProfile creates a new model profile, if actor is permitted to -
 // see rbac.CanManageProfiles. A permitted creation is always audited
 // ("created_profile" - see SCHEMA.md Audit log) after it persists,
@@ -125,6 +133,9 @@ func (s *Service) CreateProfile(ctx context.Context, actor rbac.Actor, params Cr
 		return nil, rbac.ErrNotPermitted
 	}
 
+	// Surrounding whitespace is a paste artifact, not part of the name; the
+	// rest of the name is checked as a model id by Fields.validate.
+	params.Name = strings.TrimSpace(params.Name)
 	requiresFullGPUResidency, err := s.resolve(ctx, params.Fields)
 	if err != nil {
 		return nil, err
@@ -138,6 +149,9 @@ func (s *Service) CreateProfile(ctx context.Context, actor rbac.Actor, params Cr
 	p, err := s.profiles.Create(ctx, params.Name, params.ModelRef, params.EngineType, params.EngineParams,
 		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Format, params.Image, params.TargetNodeID, params.Port, createdBy)
 	if err != nil {
+		if errors.Is(err, db.ErrProfileNameTaken) {
+			return nil, nameTakenError(params.Name)
+		}
 		return nil, fmt.Errorf("create model profile: %w", err)
 	}
 
@@ -160,6 +174,7 @@ func (s *Service) UpdateProfile(ctx context.Context, actor rbac.Actor, params Up
 		return nil, rbac.ErrNotPermitted
 	}
 
+	params.Name = strings.TrimSpace(params.Name)
 	requiresFullGPUResidency, err := s.resolve(ctx, params.Fields)
 	if err != nil {
 		return nil, err
@@ -175,6 +190,9 @@ func (s *Service) UpdateProfile(ctx context.Context, actor rbac.Actor, params Up
 	if err != nil {
 		if errors.Is(err, db.ErrProfileNotFound) {
 			return nil, err
+		}
+		if errors.Is(err, db.ErrProfileNameTaken) {
+			return nil, nameTakenError(params.Name)
 		}
 		return nil, fmt.Errorf("update model profile: %w", err)
 	}

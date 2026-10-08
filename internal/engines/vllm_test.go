@@ -71,18 +71,21 @@ func TestVLLMAdapter_ValidateParams_UnknownKey_ErrorNamesTheKey(t *testing.T) {
 func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
 	tests := map[string]struct {
 		params string
+		served string // the profile name passed as the served model name
 		want   []string
 	}{
-		"empty object, no flags": {`{}`, nil},
+		"empty object, no flags": {`{}`, "", nil},
 		"all known fields": {
 			`{"tensor_parallel_size":2,"gpu_memory_utilization":0.9,"dtype":"bfloat16","quantization":"awq","max_model_len":4096}`,
+			"",
 			[]string{"--tensor-parallel-size", "2", "--gpu-memory-utilization", "0.9", "--dtype", "bfloat16", "--quantization", "awq", "--max-model-len", "4096"},
 		},
-		"real production launch shape": {
+		"real production launch shape; the profile name wins over served_model_name in params": {
 			`{"max_model_len":32768,"served_model_name":"Qwen3.8-27B-FP8","kv_cache_dtype":"fp8","max_num_batched_tokens":32768,"max_num_seqs":16,"enable_chunked_prefill":true,"enable_auto_tool_choice":true,"tool_call_parser":"qwen3_coder"}`,
+			"my-profile",
 			[]string{
 				"--max-model-len", "32768",
-				"--served-model-name", "Qwen3.8-27B-FP8",
+				"--served-model-name=my-profile",
 				"--kv-cache-dtype", "fp8",
 				"--max-num-batched-tokens", "32768",
 				"--max-num-seqs", "16",
@@ -93,13 +96,15 @@ func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
 		},
 		"enable_chunked_prefill false is omitted, not a --no-... flag": {
 			`{"enable_chunked_prefill":false}`,
+			"",
 			nil,
 		},
+		"only the served model name": {`{}`, "my-profile", []string{"--served-model-name=my-profile"}},
 	}
 	a := vllmAdapter{}
 	for name, tt := range tests {
 		t.Run(name, func(t *testing.T) {
-			spec, err := a.BuildLaunchSpec(json.RawMessage(tt.params))
+			spec, err := a.BuildLaunchSpec(json.RawMessage(tt.params), tt.served)
 			if err != nil {
 				t.Fatalf("BuildLaunchSpec(%s) error: %v", tt.params, err)
 			}
@@ -115,7 +120,7 @@ func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
 
 func TestVLLMAdapter_BuildLaunchSpec_ShmSizeGB_SetsShmSizeAndIPCModeHost(t *testing.T) {
 	a := vllmAdapter{}
-	spec, err := a.BuildLaunchSpec(json.RawMessage(`{"shm_size_gb":16}`))
+	spec, err := a.BuildLaunchSpec(json.RawMessage(`{"shm_size_gb":16}`), "")
 	if err != nil {
 		t.Fatalf("BuildLaunchSpec() error: %v", err)
 	}
@@ -135,7 +140,7 @@ func TestVLLMAdapter_BuildLaunchSpec_ShmSizeGB_SetsShmSizeAndIPCModeHost(t *test
 
 func TestVLLMAdapter_BuildLaunchSpec_NoShmSizeGB_LeavesShmSizeAndIPCModeUnset(t *testing.T) {
 	a := vllmAdapter{}
-	spec, err := a.BuildLaunchSpec(json.RawMessage(`{}`))
+	spec, err := a.BuildLaunchSpec(json.RawMessage(`{}`), "")
 	if err != nil {
 		t.Fatalf("BuildLaunchSpec() error: %v", err)
 	}
@@ -155,9 +160,50 @@ func TestVLLMAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
 	a := vllmAdapter{}
 	for name, params := range tests {
 		t.Run(name, func(t *testing.T) {
-			if _, err := a.BuildLaunchSpec(json.RawMessage(params)); !errors.Is(err, ErrInvalidParams) {
+			if _, err := a.BuildLaunchSpec(json.RawMessage(params), "my-profile"); !errors.Is(err, ErrInvalidParams) {
 				t.Errorf("BuildLaunchSpec(%s) error = %v, want ErrInvalidParams", params, err)
 			}
 		})
+	}
+}
+
+// The adapter passes the name through untouched (ValidModelID is enforced
+// upstream, when a profile is saved and again at launch). As defense in
+// depth the --flag=value form keeps even an unvalidated name to one argv
+// entry, so a name with spaces or a leading "-" cannot be read as another
+// flag.
+func TestVLLMAdapter_BuildLaunchSpec_ServedModelNameIsOneArgvEntry(t *testing.T) {
+	a := vllmAdapter{}
+	for _, name := range []string{"Qwen3 8B (FP8)", "caf\u00e9 model", "team/llama 3.1", "--not-a-flag", "a=b"} {
+		spec, err := a.BuildLaunchSpec(json.RawMessage(`{"max_model_len":4096}`), name)
+		if err != nil {
+			t.Fatalf("BuildLaunchSpec() error for %q: %v", name, err)
+		}
+		want := []string{"--max-model-len", "4096", "--served-model-name=" + name}
+		if !reflect.DeepEqual(spec.Args, want) {
+			t.Errorf("name %q: Args = %q, want %q", name, spec.Args, want)
+		}
+	}
+}
+
+// A served_model_name saved in a profile's engine_params before the id
+// became the profile name is still accepted (existing profiles keep saving
+// and launching) but never reaches the command line.
+func TestVLLMAdapter_ServedModelNameParamIsAcceptedButIgnored(t *testing.T) {
+	a := vllmAdapter{}
+	params := json.RawMessage(`{"served_model_name":"old-name"}`)
+	if err := a.ValidateParams(params); err != nil {
+		t.Fatalf("ValidateParams() error: %v, want the legacy key still accepted", err)
+	}
+	for _, served := range []string{"", "profile-name"} {
+		spec, err := a.BuildLaunchSpec(params, served)
+		if err != nil {
+			t.Fatalf("BuildLaunchSpec() error: %v", err)
+		}
+		for _, arg := range spec.Args {
+			if strings.Contains(arg, "old-name") {
+				t.Errorf("served %q: Args = %q contain the ignored params value", served, spec.Args)
+			}
+		}
 	}
 }

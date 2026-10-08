@@ -257,6 +257,87 @@ table.data-table:not(.panel .data-table) {
 .check-passed { color: var(--color-status-running); }
 .check-failed { color: var(--color-status-failed); }
 .check-pending { color: var(--color-status-starting); }
+
+/* Field help: a small "?" beside a form field that shows its explanation on
+   hover or keyboard focus, so long guidance does not take up page space. Pure
+   CSS (no script); the field points at the text with aria-describedby so
+   screen readers read it too. The body is a child of the tip, so the pointer
+   can move onto it (the ::before bridge covers the gap) to select or read it. */
+.field-row {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+/* The body anchors to the field row, not to the icon, so it starts at the
+   field's left edge and cannot run off a narrow screen from where the icon sits. */
+.help-tip {
+  display: inline-flex;
+}
+
+.help-tip-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.3rem;
+  height: 1.3rem;
+  border: 1px solid var(--color-text-muted);
+  border-radius: 50%;
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: help;
+  user-select: none;
+}
+
+.help-tip:hover .help-tip-icon,
+.help-tip:focus-within .help-tip-icon {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+}
+
+.help-tip-body {
+  display: none;
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 20;
+  box-sizing: border-box;
+  width: 30rem;
+  max-width: calc(100vw - 2rem);
+  padding: 0.75rem 1rem;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.35);
+  font-size: 0.85rem;
+  line-height: 1.45;
+}
+
+.help-tip-body::before {
+  content: "";
+  position: absolute;
+  top: -0.5rem;
+  left: 0;
+  right: 0;
+  height: 0.5rem;
+}
+
+.help-tip-line {
+  display: block;
+  margin-bottom: 0.6rem;
+}
+
+.help-tip-line:last-child {
+  margin-bottom: 0;
+}
+
+.help-tip:hover .help-tip-body,
+.help-tip:focus-within .help-tip-body {
+  display: block;
+}
 #transfer-form fieldset { border: 0; padding: 0; margin: 0; }
 #transfer-form fieldset[hidden] { display: none; }
 

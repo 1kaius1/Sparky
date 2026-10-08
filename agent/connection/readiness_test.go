@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -398,5 +399,142 @@ func TestSendInstanceHealth_NonPositiveInterval_Disabled(t *testing.T) {
 	case env := <-central.receivedMsgs:
 		t.Errorf("received a message %+v despite a non-positive InstanceHealthCheckInterval", env)
 	default:
+	}
+}
+
+// newStrictModelEngineServer builds a fake engine that behaves like vLLM
+// serving a model under a specific id: GET /v1/models answers with the given
+// body, and a chat completion is accepted only if its "model" field is
+// exactly wantModel - any other value gets the 404 a real engine returns for
+// an unknown model. Unlike the other fake engines in this package (which
+// ignore the model field), this one fails a probe that names the model wrong.
+// modelsCalls counts the models-list requests.
+func newStrictModelEngineServer(t *testing.T, modelsBody, wantModel string) (port int, modelsCalls *atomic.Int32) {
+	t.Helper()
+	modelsCalls = &atomic.Int32{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/v1/models":
+			modelsCalls.Add(1)
+			w.Write([]byte(modelsBody))
+		case "/v1/chat/completions":
+			var req struct {
+				Model string `json:"model"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Model != wantModel {
+				w.WriteHeader(http.StatusNotFound)
+				w.Write([]byte(`{"error":{"message":"The model does not exist."}}`))
+				return
+			}
+			w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	u, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatalf("parse fake engine server URL: %v", err)
+	}
+	port, err = strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("parse fake engine server port: %v", err)
+	}
+	return port, modelsCalls
+}
+
+func TestWaitForReady_ProbesWithTheServedModelIDTheEngineReports(t *testing.T) {
+	// The engine serves the model as the profile name; the local path would
+	// be rejected as an unknown model.
+	port, _ := newStrictModelEngineServer(t, `{"object":"list","data":[{"id":"Qwen3 8B (FP8)","object":"model"}]}`, "Qwen3 8B (FP8)")
+	conn := newTestConnForReadiness(Config{InstanceStartupTimeout: fastReadinessTimeout()}, &fakeRuntimeBackend{isRunningResult: true})
+
+	if err := conn.waitForReady(context.Background(), "instance-1", "vllm", port, "/models/test-org/test-model"); err != nil {
+		t.Fatalf("waitForReady() error: %v, want the probe to use the id from /v1/models", err)
+	}
+}
+
+func TestWaitForReady_EngineServingTheModelPathStillWorks(t *testing.T) {
+	// An engine started without a served name (an older central app) reports
+	// the model path itself as its id.
+	const path = "/models/test-org/test-model"
+	port, _ := newStrictModelEngineServer(t, `{"data":[{"id":"`+path+`"}]}`, path)
+	conn := newTestConnForReadiness(Config{InstanceStartupTimeout: fastReadinessTimeout()}, &fakeRuntimeBackend{isRunningResult: true})
+
+	if err := conn.waitForReady(context.Background(), "instance-1", "vllm", port, path); err != nil {
+		t.Fatalf("waitForReady() error: %v", err)
+	}
+}
+
+func TestWaitForReady_FallsBackToTheModelPathWhenNoUsableIDIsReported(t *testing.T) {
+	const path = "/models/test-org/test-model"
+	for name, body := range map[string]string{
+		"empty list":     `{"object":"list","data":[]}`,
+		"no data field":  `{}`,
+		"not json":       `not json at all`,
+		"blank id":       `{"data":[{"id":"   "}]}`,
+		"unexpected top": `[1,2,3]`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			port, _ := newStrictModelEngineServer(t, body, path)
+			conn := newTestConnForReadiness(Config{InstanceStartupTimeout: fastReadinessTimeout()}, &fakeRuntimeBackend{isRunningResult: true})
+			if err := conn.waitForReady(context.Background(), "instance-1", "vllm", port, path); err != nil {
+				t.Fatalf("waitForReady() error: %v, want the model path used when the engine names no model", err)
+			}
+		})
+	}
+}
+
+// Negative control: proves the strict fake really fails a probe that names
+// the model wrong, so the passing tests above are not vacuous. Here the
+// engine serves "Profile A" but reports no id, so the probe falls back to the
+// path and is rejected.
+func TestWaitForReady_FailsWhenTheProbeNamesTheModelWrong(t *testing.T) {
+	port, _ := newStrictModelEngineServer(t, `{"data":[]}`, "Profile A")
+	conn := newTestConnForReadiness(Config{InstanceStartupTimeout: fastReadinessTimeout()}, &fakeRuntimeBackend{isRunningResult: true})
+
+	if err := conn.waitForReady(context.Background(), "instance-1", "vllm", port, "/models/test-org/test-model"); err == nil {
+		t.Fatal("waitForReady() succeeded although the engine rejects the model id the probe used")
+	}
+}
+
+func TestFetchServedModelID(t *testing.T) {
+	serve := func(status int, body string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(status)
+			w.Write([]byte(body))
+		}))
+	}
+	client := &http.Client{Timeout: time.Second}
+	for _, tc := range []struct {
+		name          string
+		status        int
+		body          string
+		wantReachable bool
+		wantID        string
+	}{
+		{"id present", 200, `{"data":[{"id":"my-profile"},{"id":"second"}]}`, true, "my-profile"},
+		{"id is trimmed", 200, `{"data":[{"id":"  my-profile \n"}]}`, true, "my-profile"},
+		{"empty list is reachable with no id", 200, `{"data":[]}`, true, ""},
+		{"garbage body is reachable with no id", 200, `<html>`, true, ""},
+		{"server error is not reachable", 500, `{"data":[{"id":"x"}]}`, false, ""},
+		{"not found is not reachable", 404, ``, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := serve(tc.status, tc.body)
+			defer srv.Close()
+			reachable, id := fetchServedModelID(context.Background(), client, srv.URL)
+			if reachable != tc.wantReachable || id != tc.wantID {
+				t.Errorf("fetchServedModelID() = (%v, %q), want (%v, %q)", reachable, id, tc.wantReachable, tc.wantID)
+			}
+		})
+	}
+
+	// Nothing listening at all: not reachable.
+	dead := serve(200, `{}`)
+	dead.Close()
+	if reachable, id := fetchServedModelID(context.Background(), client, dead.URL); reachable || id != "" {
+		t.Errorf("closed server: got (%v, %q), want (false, \"\")", reachable, id)
 	}
 }

@@ -13,7 +13,26 @@
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <p>
     <label for="name">Name</label><br>
-    <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" required>
+    <span class="field-row">
+      <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" maxlength="64" required aria-describedby="name-help">
+      <span class="help-tip" tabindex="0" aria-label="About the profile name">
+        <span class="help-tip-icon" aria-hidden="true">?</span>
+        <span class="help-tip-body" id="name-help" role="tooltip">
+          <span class="help-tip-line">This name is the model id clients use: it is what API clients and editor
+          extensions list and must send as <code>model</code>, and it must be unique. Use letters,
+          digits and <code>. _ - :</code> only, at most 64 characters, starting with a letter or digit - no spaces or commas.
+          A <code>/</code> is allowed between parts (<code>team/qwen3:7b</code>), but some clients treat <code>/</code>
+          and <code>:</code> specially, so prefer plain names.</span>
+          <span class="help-tip-line">Make it self-describing, because several profiles can load the same model with
+          different engines or parameters and every one needs a name that tells it apart. A good shape is
+          <code>&lt;model&gt;-&lt;quantization&gt;-&lt;engine&gt;-&lt;what differs&gt;</code>, for example
+          <code>Qwen3-Coder-Next-NVFP4-GB10-vllm-tp2-ctx32k</code>.</span>
+          <span class="help-tip-line">Avoid names starting with <code>o</code> and a digit, or containing <code>gpt-5</code>,
+          <code>claude</code>, <code>codex</code>, <code>grok-4</code> or <code>deepseek-r</code>: some clients
+          change how they send requests when an id looks like those.</span>
+        </span>
+      </span>
+    </span>
   </p>
   <p>
     <label for="engine_type">Engine type</label><br>

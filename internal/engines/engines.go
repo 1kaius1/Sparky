@@ -95,7 +95,16 @@ type Adapter interface {
 	// expected to have already called ValidateParams successfully -
 	// BuildLaunchSpec does not re-validate ranges/types, only re-parses
 	// the same recognized keys ValidateParams already checked.
-	BuildLaunchSpec(params json.RawMessage) (LaunchSpec, error)
+	//
+	// servedModelName is the id the running engine must report for its
+	// model at GET /v1/models and accept in a request's "model" field - the
+	// profile's name, so an API client and anything that lists the models
+	// sees a short, typeable name instead of the full local model path the
+	// engine would otherwise use. Each adapter turns it into its own
+	// engine's flag. Empty adds no flag (the engine then reports its
+	// default, the model path); the central app never passes empty. A
+	// served_model_name in a profile's own engine_params never overrides it.
+	BuildLaunchSpec(params json.RawMessage, servedModelName string) (LaunchSpec, error)
 }
 
 // Registry maps a db.ProfileEngineType to its Adapter.

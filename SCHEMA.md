@@ -141,7 +141,7 @@ A saved, named configuration for running a model.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | uuid, PK | |
-| `name` | text | |
+| `name` | text, unique | The model id the engine serves and clients send as `model`. Validated in Go, not SQL (`internal/engines.ValidModelID`, same precedent as `engine_params`): letters, digits and `. _ - :` with `/` between parts, each part starting with a letter or digit, at most 64 characters, no spaces or commas. A row saved before this rule may break it; it stays readable and editable, and a launch is refused until it is renamed |
 | `model_ref` | text | Hugging Face repo path, ideally with a pinned revision |
 | `engine_type` | enum | `vllm` / `aphrodite` / `llamacpp` - selects the engine adapter |
 | `engine_params` | jsonb | Engine-specific launch parameters. Deliberately opaque to the database - validated by the engine adapter, not a fixed column per possible flag |

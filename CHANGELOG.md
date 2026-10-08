@@ -44,6 +44,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped from `0.2.4` to `0.2.5` so builds serving the
+  model under the profile name register as newer than the `0.2.4` packages
+  already installed. **Upgrade the agents first, then the server** (see the
+  client-visible entry below). Both packages move together because they share
+  one `VERSION`.
+- **Client-visible:** the model id an engine serves - what an API client
+  sees at `/v1/models` and must send as `model` in a request - is now the
+  **profile's name** instead of the full local model path. The central app
+  passes it to vLLM as `--served-model-name=<name>` and to llama.cpp as
+  `--alias <name>`. Anything that hard-coded the old path as the model id
+  (scripts, benchmark harnesses, client configuration) must switch to the
+  profile name; vLLM's `model_name` metrics label changes with it. Because the
+  name is now the model id, creating or renaming a profile requires a valid
+  one: letters, digits and `. _ - :`, with `/` allowed between parts, each part
+  starting with a letter or digit, at most 64 characters, no spaces or commas
+  (llama.cpp splits `--alias` on commas), and unique across profiles (a
+  duplicate now gets a clear message instead of a server error). A profile
+  saved earlier with a name that breaks this rule keeps working in the list
+  and editor but is refused at launch with a message to rename it. The profile
+  form explains the rule and suggests self-describing names, since several
+  profiles can load the same model. A `served_model_name` already
+  saved in a vLLM profile's `engine_params` is still accepted but ignored (the
+  profile name always wins; a note is logged at launch). Instances that are
+  already running keep their old id until relaunched, and renaming a profile
+  takes effect at its next launch. llama.cpp's `--alias` has not been
+  verified against a real `llama-server` yet. **Upgrade the agents first, then
+  the server**: an agent that still probes with the model path would see
+  vLLM reject it as an unknown model and every load would time out.
+- Agent: the load-time readiness probe now names the model by the id the
+  engine itself reports at `/v1/models` (the first `data[].id`), falling back
+  to the local model path when the engine reports none, instead of always
+  sending the model path. Works against engines serving the path (today's
+  behavior) and against engines serving a different id; the prerequisite for
+  the profile name becoming the served model id (next entry).
 - Packaging: `VERSION` bumped from `0.2.3` to `0.2.4` so builds carrying the
   descriptive container names register as newer than the `0.2.3` packages
   already installed. **Upgrade the agents first, then the server**: this adds a
