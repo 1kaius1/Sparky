@@ -481,9 +481,11 @@ Polls, up to `SPARKY_INSTANCE_STARTUP_TIMEOUT_SECONDS`:
    available.
 2. Once alive, a cheap `GET` to the engine's own OpenAI-compatible `/v1/models`
    - confirms the API layer itself is up before spending a real generation on a
-   check that would just fail anyway.
+   check that would just fail anyway. The first model `id` in its answer is
+   kept for step 3 (see "Model id" below).
 3. Once that responds, one real, minimal `POST /v1/chat/completions` (a fixed
-   prompt, `temperature: 0`, a small `max_tokens`) - confirms the engine can
+   prompt, `temperature: 0`, a small `max_tokens`), naming the model by that
+   id - confirms the engine can
    actually generate, not just that its HTTP server answers. Checked
    structurally (a well-formed, non-empty, non-error response), not against any
    particular "known good" content - a profile can name any model, so there is
@@ -507,6 +509,24 @@ report, not a success to assume. The timeout is generous by design (default 10
 minutes) since it only matters for the rare "never comes up, never crashes"
 case - a real load usually resolves via outcome 1 or 3 long before it, however
 long a large model legitimately takes to load from disk.
+
+**Model id.** The central app launches every engine with the *profile's name*
+as the id it serves its model under (vLLM `--served-model-name=<name>`,
+llama.cpp `--alias <name>`), so what an API client sees at `/v1/models` - and
+must send as `model` in a request - is that short name rather than the full
+local model path the engine would use by default. A `served_model_name` in a
+vLLM profile's `engine_params` is still accepted but ignored (the profile name
+always wins; the server logs a note at launch). Because of this, the readiness
+probe must not name the model by its path: vLLM answers an unknown model id
+with 404, which would make every load time out. It asks the engine instead
+(the id from `/v1/models` in step 2) and falls back to the model path only
+when the engine reports no usable id - which is also what an engine started
+without a served name (an older central app) uses, so the probe works against
+both. The periodic health check below never sends a model id. A profile name
+that starts with `-` is refused at launch with a message to rename it, since an
+engine's argument parser could read it as a flag. Renaming a profile does not
+change the id of an instance that is already running; it applies at the next
+launch.
 
 **Ongoing health check** (`agent/connection.Conn.sendInstanceHealth`, a
 goroutine alongside the heartbeat/telemetry senders - see Service Architecture
