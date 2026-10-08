@@ -34,6 +34,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `secrets.env` predating this change has no such line and is treated as
   already acknowledged, so an upgrade is never retroactively blocked.
 
+### Changed
+- Packaging: `VERSION` bumped from `0.2.0` to `0.2.1` so `.deb`/`.rpm`/tarball
+  builds of `sparky-server` and `sparky-agent` that include the scan-and-import
+  feature register as newer than the `0.2.0` packages already installed, and
+  upgrade cleanly. The scan feature adds a protocol message pair and a
+  migration (`000037`), so the server and every agent must be upgraded
+  together. No version section is added to this file - cutting a release
+  entry remains the maintainer's decision.
+
 ### Added
 - Agent: `sparky-agent scan-models [--path DIR] [--json]`, a read-only,
   local listing of the model copies found under a node's model storage
