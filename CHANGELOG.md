@@ -44,6 +44,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped from `0.2.2` to `0.2.3` so builds carrying the
+  scan-page Select all and the fixed-width dashboard strips register as newer
+  than the `0.2.2` packages already installed. The server and agent share one
+  `VERSION`, so both packages move together even though only the server's
+  web UI changed.
+- Dashboard: the GPU utilization and GPU memory strips in the Running
+  instances table are now a constant width (24 slots, 119px) instead of
+  growing with each sample. The newest reading always fills the rightmost
+  slot and older ones shift left, so a new instance's strip fills in from the
+  right; with no data yet the empty track is drawn at the same width, so the
+  column no longer jumps when the first sample arrives.
 - Packaging: `VERSION` bumped from `0.2.1` to `0.2.2` so builds carrying the
   `SPARKY_MODEL_STORAGE_PATH` default fix (below) register as newer than the
   `0.2.1` packages already installed. Only the agent's behavior changes, but
@@ -57,6 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   entry remains the maintainer's decision.
 
 ### Added
+- Scan page: a "Select all" checkbox in each node's results table
+  (`web/static/js/select_all.js`) ticks or clears every importable row of that
+  table at once, and shows a mixed state when only some are ticked. Blocked
+  rows stay unticked. It is only offered where at least one row can be
+  imported. An import of more than 1000 selected models is now refused with a
+  clear message instead of silently importing only the first 1000.
 - Agent: `sparky-agent scan-models [--path DIR] [--json]`, a read-only,
   local listing of the model copies found under a node's model storage
   directory (`agent/modelscan`), first piece of importing models that were

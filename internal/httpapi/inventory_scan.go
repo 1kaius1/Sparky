@@ -25,7 +25,8 @@ import (
 const maxScanFormBytes = 1 << 20
 
 // maxImportItems bounds how many selected models one import request
-// processes, a backstop independent of the body limit.
+// accepts, a backstop independent of the body limit. A request over it is
+// refused outright, never truncated.
 const maxImportItems = 1000
 
 // scanPageData is the scan page's view model: the nodes to pick from.
@@ -60,6 +61,9 @@ type scanResultNode struct {
 	Known       int
 	Truncated   bool
 	Rows        []scanResultRow
+	// HasSelectable is true when at least one row can be ticked (is not
+	// blocked); the table's Select all control is only offered then.
+	HasSelectable bool
 }
 
 type scanResultRow struct {
@@ -207,8 +211,12 @@ func (a *API) handleImportModels(w http.ResponseWriter, r *http.Request) {
 		indexes = append(indexes, n)
 	}
 	sort.Ints(indexes)
+	// Refuse rather than quietly import only the first maxImportItems: with
+	// the Select all control a user can legitimately tick more than that, and
+	// would otherwise believe every one of them was imported.
 	if len(indexes) > maxImportItems {
-		indexes = indexes[:maxImportItems]
+		a.renderScan(w, r, actor, scanID, []string{fmt.Sprintf("%d models are selected; import at most %d at a time. Nothing was imported.", len(indexes), maxImportItems)})
+		return
 	}
 	items := make([]inventory.ImportItem, 0, len(indexes))
 	for _, n := range indexes {
@@ -329,6 +337,9 @@ func (a *API) renderScan(w http.ResponseWriter, r *http.Request, actor rbac.Acto
 				Blocked:      c.BlockedReason,
 				CanEditQuant: c.Format == db.ModelFormatGGUF,
 			})
+			if c.BlockedReason == "" {
+				node.HasSelectable = true
+			}
 			index++
 		}
 		data.Nodes = append(data.Nodes, node)
