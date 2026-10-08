@@ -369,3 +369,67 @@ func TestNodeModelInventoryRepository_IncompleteStatusRoundTripsAndIsReplacedByA
 		t.Errorf("ListByNode = %d entries, %v; want exactly one (no duplicate beside the partial one)", len(list), err)
 	}
 }
+
+// An entry imported from disk has no placing transfer: "" in, NULL stored,
+// "" out (migration 000037).
+func TestNodeModelInventoryRepository_Upsert_ImportedHasNoPlacedVia(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	inventory := NewNodeModelInventoryRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	modelRef := "test-org/imported-model"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef)
+	})
+
+	inv, err := inventory.Upsert(ctx, node.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusPresent, 2048, "")
+	if err != nil {
+		t.Fatalf("Upsert() with empty placedVia error: %v", err)
+	}
+	if inv.PlacedVia != "" {
+		t.Errorf("PlacedVia = %q, want empty for an imported entry", inv.PlacedVia)
+	}
+
+	var isNull bool
+	if err := pool.QueryRow(ctx, `SELECT placed_via IS NULL FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef).Scan(&isNull); err != nil {
+		t.Fatal(err)
+	}
+	if !isNull {
+		t.Error("placed_via should be stored as NULL, not an empty string or sentinel uuid")
+	}
+
+	got, err := inventory.Get(ctx, node.ID, modelRef, "", ModelFormatSafetensors)
+	if err != nil || got.PlacedVia != "" {
+		t.Errorf("Get() = %+v, %v; want an entry with empty PlacedVia", got, err)
+	}
+}
+
+// Importing over a row an earlier delete marked removed revives it, and
+// drops the old transfer link since the new copy was not placed by it.
+func TestNodeModelInventoryRepository_Upsert_ImportRevivesRemovedRow(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	transfers := NewModelTransferRepository(pool)
+	inventory := NewNodeModelInventoryRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	transfer := createTestTransfer(t, transfers, node.ID, nil)
+	modelRef := "test-org/revived-model"
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM node_model_inventory WHERE node_id = $1 AND model_ref = $2`, node.ID, modelRef)
+	})
+
+	if _, err := inventory.Upsert(ctx, node.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusRemoved, 100, transfer.ID); err != nil {
+		t.Fatal(err)
+	}
+	inv, err := inventory.Upsert(ctx, node.ID, modelRef, "", ModelFormatSafetensors, InventoryStatusPresent, 300, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if inv.Status != InventoryStatusPresent || inv.SizeBytes != 300 || inv.PlacedVia != "" {
+		t.Errorf("revived entry = %+v, want present/300/no placed_via", inv)
+	}
+}

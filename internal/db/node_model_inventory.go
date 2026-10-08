@@ -63,6 +63,8 @@ type NodeModelInventory struct {
 	Status    InventoryStatus
 	SizeBytes int64
 	PlacedAt  time.Time
+	// PlacedVia is the ModelTransfer that produced this entry, or "" for an
+	// entry imported from disk, which no transfer placed (stored as NULL).
 	PlacedVia string
 }
 
@@ -83,7 +85,7 @@ func NewNodeModelInventoryRepository(pool *pgxpool.Pool) *NodeModelInventoryRepo
 	return &NodeModelInventoryRepository{pool: pool}
 }
 
-const nodeModelInventoryColumns = `node_id, model_ref, quantization, format, status, size_bytes, placed_at, placed_via`
+const nodeModelInventoryColumns = `node_id, model_ref, quantization, format, status, size_bytes, placed_at, COALESCE(placed_via::text, '')`
 
 func scanNodeModelInventory(row pgx.Row) (*NodeModelInventory, error) {
 	var inv NodeModelInventory
@@ -105,11 +107,12 @@ func scanNodeModelInventory(row pgx.Row) (*NodeModelInventory, error) {
 // quantization "" means "whole repo" - two different quantizations of the
 // same model_ref coexist as separate rows rather than colliding, and so
 // do two different formats. placedVia must reference the ModelTransfer
-// that produced this entry.
+// that produced this entry, or be "" for an entry imported from disk,
+// which is stored as NULL.
 func (r *NodeModelInventoryRepository) Upsert(ctx context.Context, nodeID, modelRef, quantization string, format ModelFormat, status InventoryStatus, sizeBytes int64, placedVia string) (*NodeModelInventory, error) {
 	row := r.pool.QueryRow(ctx,
 		`INSERT INTO node_model_inventory (node_id, model_ref, quantization, format, status, size_bytes, placed_via)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		 VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, '')::uuid)
 		 ON CONFLICT (node_id, model_ref, quantization, format) DO UPDATE SET
 		     status = EXCLUDED.status, size_bytes = EXCLUDED.size_bytes, placed_at = now(), placed_via = EXCLUDED.placed_via
 		 RETURNING `+nodeModelInventoryColumns,

@@ -48,6 +48,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   carries no path - the agent only ever scans its own configured
   `SPARKY_MODEL_STORAGE_PATH`. As with every protocol change, the agent and
   server must be upgraded together (`DecodePayload` rejects unknown fields).
+- Node model inventory: `placed_via` is now nullable (migration
+  `000037_node_model_inventory_placed_via_nullable`, not yet applied to any
+  environment by this change). `NULL` marks a copy imported from disk, which
+  no transfer placed. `NodeModelInventoryRepository.Upsert` takes `""` for
+  that case and `PlacedVia` reads back as `""`, the same empty-string
+  convention `quantization` already uses.
 - Nodes: a free-text `comment` field (migration `000036_add_nodes_comment`)
   for recording which team/model is currently using a node, ahead of the
   future profile-locking/scheduling system (see PLANNING.md Future Ideas).

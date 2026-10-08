@@ -460,7 +460,7 @@ profiles (intent). This is what the launch-eligibility UI actually queries.
 | `status` | enum | `present` / `stale` / `removed` / `incomplete`. `incomplete` means the node holds partial data for the model - what a cancelled or failed transfer leaves behind (kept on purpose so a new transfer can resume it). It is listed so the operator can see it and delete it to free the space, but it is never offered as a copy source or as a profile's model, and `size_bytes` is only the bytes the central app last saw arrive, not the on-disk size. It is created when a transfer is cancelled while running, or fails after data moved, and only if no usable entry already exists for the same model (a failed re-download never downgrades a working one); a later completed transfer of the same model replaces it. `removed` is set when the agent confirms an in-app deletion (`inventory.Service.Delete`) - the row is kept for history, not hard-deleted, and is hidden from the Inventory page. A re-download of the same model/quantization/format upserts the row back to `present`. `stale` is not yet used |
 | `size_bytes` | bigint | |
 | `placed_at` | timestamptz | |
-| `placed_via` | uuid, FK -> Model transfers.id | |
+| `placed_via` | uuid, nullable, FK -> Model transfers.id | The transfer that placed this copy. `NULL` means the copy was imported from disk - an Admin adopted a model that was put on the node outside Sparky (scan and import, `internal/inventory`) - so no transfer produced it (migration `000037_node_model_inventory_placed_via_nullable`). Every transfer-placed row still has a value |
 
 ---
 
