@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Agent: `SPARKY_MODEL_STORAGE_PATH` now defaults to
+  `/opt/sparky/serviceloop/models` on every `runtime_backend`, not just
+  `bare-metal`. A `docker`/`podman` node with the variable unset (the real
+  Sparks) previously ended up with an empty path, so "Scan nodes for unknown
+  models" failed with "model storage path is not configured", a download
+  failed with an obscure `mkdir ... permission denied`, and a container launch
+  built a malformed model mount. An explicitly configured value is unchanged,
+  and `SPARKY_ENGINE_INSTALL_PATH` keeps its bare-metal-only default. The
+  agent must be upgraded to pick this up.
 - Server install: `sparky-server-db-setup.sh`'s podman path could write
   `DATABASE_URL` and run migrations against a Postgres container that was
   still in its transient first-run restart window, producing a

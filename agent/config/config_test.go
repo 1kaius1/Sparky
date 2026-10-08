@@ -186,16 +186,35 @@ func TestLoad_BareMetalRuntimeBackend_ExplicitModelStoragePathNotOverridden(t *t
 	}
 }
 
-func TestLoad_NonBareMetalRuntimeBackend_NoModelStoragePathDefault(t *testing.T) {
-	setAllRequired(t) // SPARKY_RUNTIME_BACKEND=podman
+func TestLoad_ContainerRuntimeBackends_DefaultModelStoragePath(t *testing.T) {
+	for _, backend := range []string{"docker", "podman"} {
+		t.Run(backend, func(t *testing.T) {
+			setAllRequired(t)
+			t.Setenv("SPARKY_RUNTIME_BACKEND", backend)
+
+			cfg, err := Load()
+			if err != nil {
+				t.Fatalf("Load() returned unexpected error: %v", err)
+			}
+
+			if cfg.ModelStoragePath != "/opt/sparky/serviceloop/models" {
+				t.Errorf("ModelStoragePath = %q, want the default %q for %s too", cfg.ModelStoragePath, "/opt/sparky/serviceloop/models", backend)
+			}
+		})
+	}
+}
+
+func TestLoad_ContainerRuntimeBackend_ExplicitModelStoragePathNotOverridden(t *testing.T) {
+	setAllRequired(t) // podman
+	t.Setenv("SPARKY_MODEL_STORAGE_PATH", "/srv/models")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() returned unexpected error: %v", err)
 	}
 
-	if cfg.ModelStoragePath != "" {
-		t.Errorf("ModelStoragePath = %q, want empty - the bare-metal default must not apply to podman", cfg.ModelStoragePath)
+	if cfg.ModelStoragePath != "/srv/models" {
+		t.Errorf("ModelStoragePath = %q, want the explicitly configured %q", cfg.ModelStoragePath, "/srv/models")
 	}
 }
 
