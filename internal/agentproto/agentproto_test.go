@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -877,5 +878,30 @@ func TestEnvelope_RoundTrip_ScanModelsResult(t *testing.T) {
 	}
 	if got.ScanID != want.ScanID || got.Truncated != want.Truncated || len(got.Models) != 2 || got.Models[1] != want.Models[1] {
 		t.Errorf("ScanModelsResult = %+v, want %+v", got, want)
+	}
+}
+
+func TestEnvelope_RoundTrip_LoadInstance_ContainerName(t *testing.T) {
+	want := LoadInstance{InstanceID: "i-1", ModelRef: "org/m", EngineType: "vllm", Image: "img", Port: 8000, ContainerName: "sparky-p-20261008-100459"}
+	env, err := NewEnvelope(TypeLoadInstance, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	var got LoadInstance
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if got.ContainerName != want.ContainerName {
+		t.Errorf("ContainerName = %q, want %q", got.ContainerName, want.ContainerName)
+	}
+
+	// An older server sends no container_name: the field is omitted on the
+	// wire and decodes to empty, which the agent treats as "use the legacy name".
+	legacy, err := NewEnvelope(TypeLoadInstance, "", LoadInstance{InstanceID: "i-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(legacy.Payload), "container_name") {
+		t.Errorf("empty ContainerName must be omitted from the payload: %s", legacy.Payload)
 	}
 }

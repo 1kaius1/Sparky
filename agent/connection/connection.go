@@ -957,13 +957,14 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 	args := buildEngineLaunchArgs(c.cfg.RuntimeBackend, load.EngineType, load.Image, modelPath, load.Port, load.Args)
 	gpuMechanism, cdiDevices, gpuEnv := gpuPassthrough(c.cfg.RuntimeBackend)
 	spec := runtime.Spec{
-		InstanceID: load.InstanceID,
-		EngineType: load.EngineType,
-		Image:      load.Image,
-		BinaryPath: c.resolveEngineBinaryPath(load.EngineType, load.EngineVersion),
-		Env:        gpuEnv,
-		Args:       args,
-		Port:       load.Port,
+		InstanceID:    load.InstanceID,
+		EngineType:    load.EngineType,
+		Image:         load.Image,
+		ContainerName: load.ContainerName,
+		BinaryPath:    c.resolveEngineBinaryPath(load.EngineType, load.EngineVersion),
+		Env:           gpuEnv,
+		Args:          args,
+		Port:          load.Port,
 		// Read-only: the agent already owns writing to this directory
 		// (runTransfer above) - the containers backend's engine only ever
 		// needs to read the model files back out. Mounted at the identical
@@ -999,9 +1000,9 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 }
 
 // runUnload stops a Running instance, identified by InstanceID - each
-// backend derives its own internal identity from it (see
-// containers.InstanceContainerName and agent/runtime/baremetal.Backend's
-// own tracking map).
+// backend derives its own internal identity from it (the containers
+// backend's instance-id label, see containers.Backend, and
+// agent/runtime/baremetal.Backend's own tracking map).
 func (c *Conn) runUnload(ctx context.Context, conn *websocket.Conn, unload agentproto.UnloadInstance) {
 	// Untracked regardless of Stop's own outcome below - either way, this
 	// instance is no longer something the periodic health check

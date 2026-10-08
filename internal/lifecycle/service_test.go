@@ -39,6 +39,9 @@ type fakeInstanceStore struct {
 	createErr error
 	nextID    string
 	created   []*db.RunningInstance
+	// startedAt, when set, is the started_at the fake gives a created row
+	// (the real table fills it from its default).
+	startedAt time.Time
 
 	findByIDResult *db.RunningInstance
 	findByIDErr    error
@@ -107,6 +110,7 @@ func (f *fakeInstanceStore) Create(_ context.Context, profileID, primaryNodeID s
 	inst := &db.RunningInstance{
 		ID: id, ProfileID: profileID, PrimaryNodeID: primaryNodeID, StartedBy: startedBy,
 		Status: db.RunningInstanceStatusStarting, HealthStatus: db.InstanceHealthUnknown,
+		StartedAt: f.startedAt,
 	}
 	f.created = append(f.created, inst)
 	return inst, nil
@@ -1087,5 +1091,44 @@ func TestService_ListInstances_StoreError(t *testing.T) {
 
 	if _, err := svc.ListInstances(context.Background()); err == nil {
 		t.Fatal("ListInstances() succeeded despite a store failure")
+	}
+}
+
+func TestService_LoadInstance_ContainerNameReachesEnvelope(t *testing.T) {
+	start := time.Date(2026, 10, 8, 10, 4, 59, 0, time.UTC)
+	instances := &fakeInstanceStore{nextID: "instance-1", startedAt: start}
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{}}}
+	dispatch := &fakeDispatcher{connected: true}
+	profile := testProfile()
+	profile.Name = "Qwen3 8B (FP8)"
+	svc := newTestService(profile, instances, adapters, dispatch, &fakeAuditRecorder{})
+
+	if _, err := svc.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatalf("decode load_instance payload: %v", err)
+	}
+	if want := "sparky-Qwen3-8B-FP8-20261008-100459"; payload.ContainerName != want {
+		t.Errorf("ContainerName = %q, want %q (profile name + the instance's started_at in UTC)", payload.ContainerName, want)
+	}
+}
+
+func TestService_LoadInstance_ContainerNameFallsBackToNowWhenStartedAtUnset(t *testing.T) {
+	instances := &fakeInstanceStore{nextID: "instance-1"} // zero started_at
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{}}}
+	dispatch := &fakeDispatcher{connected: true}
+	svc := newTestService(testProfile(), instances, adapters, dispatch, &fakeAuditRecorder{})
+
+	if _, err := svc.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"}); err != nil {
+		t.Fatalf("LoadInstance() error: %v", err)
+	}
+	var payload agentproto.LoadInstance
+	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
+		t.Fatal(err)
+	}
+	if !validContainerName.MatchString(payload.ContainerName) || strings.Contains(payload.ContainerName, "00010101") {
+		t.Errorf("ContainerName = %q, want a valid name stamped with the current time, not the zero time", payload.ContainerName)
 	}
 }
