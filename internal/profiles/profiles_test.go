@@ -5,6 +5,7 @@ package profiles
 import (
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/1kaius1/Sparky/internal/db"
@@ -26,6 +27,8 @@ func TestFields_Validate_Valid(t *testing.T) {
 	memory := 8.0
 	tests := map[string]Fields{
 		"minimal":              validFields(),
+		"slash and colon name": func() Fields { f := validFields(); f.Name = "team/qwen2.5-coder:7b"; return f }(),
+		"name at 64 chars":     func() Fields { f := validFields(); f.Name = strings.Repeat("a", 64); return f }(),
 		"with required_memory": func() Fields { f := validFields(); f.RequiredMemoryGB = &memory; return f }(),
 		"port at lower bound":  func() Fields { f := validFields(); f.Port = 1; return f }(),
 		"port at upper bound":  func() Fields { f := validFields(); f.Port = 65535; return f }(),
@@ -46,6 +49,11 @@ func TestFields_Validate_Invalid(t *testing.T) {
 
 	tests := map[string]Fields{
 		"empty name":           func() Fields { f := validFields(); f.Name = ""; return f }(),
+		"name with spaces":     func() Fields { f := validFields(); f.Name = "my model"; return f }(),
+		"name with comma":      func() Fields { f := validFields(); f.Name = "a,b"; return f }(),
+		"name leading dash":    func() Fields { f := validFields(); f.Name = "-fast"; return f }(),
+		"name too long":        func() Fields { f := validFields(); f.Name = strings.Repeat("a", 65); return f }(),
+		"name untrimmed":       func() Fields { f := validFields(); f.Name = " tiny-model"; return f }(),
 		"empty model_ref":      func() Fields { f := validFields(); f.ModelRef = ""; return f }(),
 		"empty target_node_id": func() Fields { f := validFields(); f.TargetNodeID = ""; return f }(),
 		"zero port":            func() Fields { f := validFields(); f.Port = 0; return f }(),

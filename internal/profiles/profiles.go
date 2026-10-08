@@ -15,6 +15,7 @@ import (
 	"fmt"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/engines"
 )
 
 // ErrInvalidProfile is returned when profile params fail validation -
@@ -82,8 +83,12 @@ type Fields struct {
 // and TargetNodeID's existence are Service's job, since they need
 // internal/engines and internal/nodes respectively).
 func (f Fields) validate() error {
-	if f.Name == "" {
-		return fmt.Errorf("%w: name is required", ErrInvalidProfile)
+	// The name is the model id the engine serves and clients send as
+	// "model" (internal/engines.ValidModelID), so it is held to that rule
+	// here rather than being free text. Service trims surrounding
+	// whitespace before this runs.
+	if err := engines.CheckModelID(f.Name); err != nil {
+		return fmt.Errorf("%w: %v", ErrInvalidProfile, err)
 	}
 	if f.ModelRef == "" {
 		return fmt.Errorf("%w: model_ref is required", ErrInvalidProfile)

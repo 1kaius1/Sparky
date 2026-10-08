@@ -74,6 +74,13 @@ type Profile struct {
 // no matching row.
 var ErrProfileNotFound = errors.New("model profile not found")
 
+// ErrProfileNameTaken is returned by Create and Update when another profile
+// already uses the name. A profile's name is the model id its engine serves,
+// so two profiles sharing one would be indistinguishable to a client - and
+// naming near-identical variants of one model is the everyday case, which
+// makes this a likely, user-facing outcome rather than an edge case.
+var ErrProfileNameTaken = errors.New("model profile name already in use")
+
 // ProfileRepository is the only component that queries the
 // model_profiles table directly - see CLAUDE.md: the repository layer
 // is the only place that accesses the database directly.
@@ -118,6 +125,9 @@ func (r *ProfileRepository) Create(ctx context.Context, name, modelRef string, e
 
 	p, err := scanProfile(row)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return nil, ErrProfileNameTaken
+		}
 		return nil, fmt.Errorf("create model profile: %w", err)
 	}
 	return p, nil
@@ -170,7 +180,11 @@ func (r *ProfileRepository) Update(ctx context.Context, id, name, modelRef strin
 	// Not wrapped: ErrProfileNotFound (id doesn't exist) is an expected,
 	// common outcome here, not an edge case - callers compare against it
 	// directly, same as FindByID.
-	return scanProfile(row)
+	p, err := scanProfile(row)
+	if err != nil && isUniqueViolation(err) {
+		return nil, ErrProfileNameTaken
+	}
+	return p, err
 }
 
 // Delete removes a profile by ID. Returns ErrProfileNotFound if no row

@@ -20,15 +20,15 @@ const (
 	// makes two names ambiguous.
 	containerNameRefLayout = "20060102-150405"
 	// maxContainerNameProfileLen bounds the profile-derived part so a long
-	// free-text profile name cannot produce an unwieldy or rejected name.
+	// profile name cannot produce an unwieldy or rejected name.
 	maxContainerNameProfileLen = 40
 )
 
 // containerName builds the container name for a launch:
-// sparky-<sanitized profile name>-<UTC start time>. A profile name is free
-// text (spaces, slashes, unicode are all allowed), while Docker and Podman
-// only accept [a-zA-Z0-9][a-zA-Z0-9_.-]*, so the profile part is sanitized
-// rather than rejected. Two profiles may sanitize to the same text; the
+// sparky-<sanitized profile name>-<UTC start time>. A profile name may hold
+// "/" and ":" (engines.ValidModelID), while Docker and Podman only accept
+// [a-zA-Z0-9][a-zA-Z0-9_.-]*, so the profile part is sanitized rather than
+// rejected. Two profiles may sanitize to the same text; the
 // timestamp, and the instance-id label the agent also sets, keep them
 // distinguishable.
 func containerName(profileName string, startedAt time.Time) string {

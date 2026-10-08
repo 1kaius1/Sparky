@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
@@ -130,13 +129,17 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 	}
 
 	// The profile's name becomes the id the engine serves its model under
-	// (what a client sees at /v1/models and must send as "model"), passed to
-	// the engine as a command-line value. A name beginning with "-" could be
-	// read by an engine's argument parser as another flag rather than as
-	// that value, so refuse it with a message the operator can act on -
-	// checked before a running_instances row exists, like the other refusals.
-	if strings.HasPrefix(profile.Name, "-") {
-		return nil, fmt.Errorf("%w: the profile name %q cannot start with \"-\" because it is the model id the engine serves; rename the profile", ErrInvalidLoad, profile.Name)
+	// (what a client sees at /v1/models and must send as "model"), passed
+	// to the engine as a command-line value. New and renamed profiles are
+	// held to engines.ValidModelID when saved, but a profile saved before
+	// that rule existed can still carry a name that breaks it (spaces, a
+	// comma that llama.cpp would split into several ids, a leading "-"
+	// that an argument parser could read as a flag). Such a row is left as
+	// it is and refused here with a message the operator can act on -
+	// checked before a running_instances row exists, like the other
+	// refusals.
+	if err := engines.CheckModelID(profile.Name); err != nil {
+		return nil, fmt.Errorf("%w: the profile's name is the model id the engine serves, and it is not valid: %v; rename the profile", ErrInvalidLoad, err)
 	}
 
 	spec, err := adapter.BuildLaunchSpec(profile.EngineParams, profile.Name)

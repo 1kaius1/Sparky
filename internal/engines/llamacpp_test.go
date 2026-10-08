@@ -62,11 +62,11 @@ func TestLlamaCPPAdapter_BuildLaunchSpec(t *testing.T) {
 		served string // the profile name passed as the served model name
 		want   []string
 	}{
-		"empty object, no flags":            {`{}`, "", nil},
-		"all known fields":                  {`{"n_gpu_layers":20,"ctx_size":4096,"threads":8}`, "", []string{"--gpu-layers", "20", "--ctx-size", "4096", "--threads", "8"}},
-		"n_gpu_layers zero (CPU only)":      {`{"n_gpu_layers":0}`, "", []string{"--gpu-layers", "0"}},
-		"alias is the profile name":         {`{"ctx_size":4096}`, "my-profile", []string{"--ctx-size", "4096", "--alias", "my-profile"}},
-		"alias with spaces stays one entry": {`{}`, "Qwen3 8B (Q4)", []string{"--alias", "Qwen3 8B (Q4)"}},
+		"empty object, no flags":               {`{}`, "", nil},
+		"all known fields":                     {`{"n_gpu_layers":20,"ctx_size":4096,"threads":8}`, "", []string{"--gpu-layers", "20", "--ctx-size", "4096", "--threads", "8"}},
+		"n_gpu_layers zero (CPU only)":         {`{"n_gpu_layers":0}`, "", []string{"--gpu-layers", "0"}},
+		"alias is the profile name":            {`{"ctx_size":4096}`, "my-profile", []string{"--ctx-size", "4096", "--alias", "my-profile"}},
+		"alias is passed through as one entry": {`{}`, "Qwen3 8B (Q4)", []string{"--alias", "Qwen3 8B (Q4)"}},
 	}
 	a := llamaCPPAdapter{}
 	for name, tt := range tests {

@@ -306,6 +306,81 @@ func TestService_CreateProfile_InvalidFieldsNotPersistedOrAudited(t *testing.T) 
 	}
 }
 
+func TestService_CreateProfile_InvalidModelIDNameRejected(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
+	actor := rbac.Actor{IsSuperAdmin: true}
+
+	for _, name := range []string{"my model", "a,b", "-fast", "a//b"} {
+		fields := validFields()
+		fields.Name = name
+		_, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: fields})
+		if !errors.Is(err, ErrInvalidProfile) {
+			t.Errorf("CreateProfile(name %q) error = %v, want ErrInvalidProfile", name, err)
+		}
+	}
+	if len(store.created) != 0 {
+		t.Error("profileStore.Create was called for an invalid name")
+	}
+}
+
+func TestService_CreateProfile_TrimsSurroundingWhitespace(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	fields := validFields()
+	fields.Name = "  tiny-model\t"
+	if _, err := svc.CreateProfile(context.Background(), rbac.Actor{IsSuperAdmin: true}, CreateParams{Fields: fields}); err != nil {
+		t.Fatalf("CreateProfile() error = %v", err)
+	}
+	if len(store.created) != 1 || store.created[0].Name != "tiny-model" {
+		t.Errorf("stored name = %+v, want the trimmed %q", store.created, "tiny-model")
+	}
+}
+
+func TestService_CreateProfile_DuplicateNameIsInvalidProfile(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	store.createErr = db.ErrProfileNameTaken
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	_, err := svc.CreateProfile(context.Background(), rbac.Actor{IsSuperAdmin: true}, CreateParams{Fields: validFields()})
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("CreateProfile() error = %v, want ErrInvalidProfile", err)
+	}
+	if !strings.Contains(err.Error(), "tiny-model") || !strings.Contains(err.Error(), "already") {
+		t.Errorf("error %q should name the taken profile name", err)
+	}
+	if len(audit.calls) != 0 {
+		t.Error("audit.Record was called for a refused creation")
+	}
+}
+
+func TestService_UpdateProfile_DuplicateNameIsInvalidProfile(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	store.updateErr = db.ErrProfileNameTaken
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	_, err := svc.UpdateProfile(context.Background(), rbac.Actor{IsSuperAdmin: true}, UpdateParams{ID: "profile-1", Fields: validFields()})
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("UpdateProfile() error = %v, want ErrInvalidProfile", err)
+	}
+}
+
+func TestService_UpdateProfile_InvalidModelIDNameRejected(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	fields := validFields()
+	fields.Name = "has space"
+	_, err := svc.UpdateProfile(context.Background(), rbac.Actor{IsSuperAdmin: true}, UpdateParams{ID: "profile-1", Fields: fields})
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Fatalf("UpdateProfile() error = %v, want ErrInvalidProfile", err)
+	}
+	if len(store.updated) != 0 {
+		t.Error("profileStore.Update was called for an invalid name")
+	}
+}
+
 func TestService_CreateProfile_AdapterValidationFailure(t *testing.T) {
 	store, nodes, inventory, adapters, audit := testDeps()
 	adapters.adapter = fakeAdapter{validateErr: errors.New("bad engine_params")}

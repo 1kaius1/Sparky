@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -2335,6 +2336,12 @@ func TestHandleNewProfileForm_PowerDevAccess(t *testing.T) {
 	if !strings.Contains(rec.Body.String(), `id="inventory-options"`) {
 		t.Errorf("response does not show the profile form: %s", rec.Body.String())
 	}
+	// The name field says what the name is for and what it may contain.
+	for _, want := range []string{`maxlength="64"`, "model id clients use", "no spaces or commas", "Qwen3-Coder-Next-NVFP4-GB10-vllm-tp2-ctx32k"} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Errorf("profile form is missing the name guidance %q", want)
+		}
+	}
 }
 
 func TestHandleNewProfileForm_Forbidden(t *testing.T) {
@@ -2568,6 +2575,25 @@ func TestHandleCreateProfile_InvalidProfile_RedisplaysFormWithError(t *testing.T
 	}
 	if !strings.Contains(body, "form-error") {
 		t.Errorf("response does not show the error message: %s", body)
+	}
+}
+
+func TestHandleCreateProfile_InvalidName_RedisplaysFormWithTheReason(t *testing.T) {
+	viewer := newFakeUserLister()
+	viewer.byID["pd-1"] = &db.User{ID: "pd-1", Tier: db.TierPowerDev}
+	reason := fmt.Errorf("%w: name %q contains whitespace", profiles.ErrInvalidProfile, "my model")
+	profileEditorFake := &fakeProfileEditor{createErr: reason}
+	api := newTestDashboardAPIWithProfileEditor(t, &fakeNodeLister{}, &fakeNodeRegistrar{}, &fakeProfileLister{}, profileEditorFake, &fakeInstanceLister{}, &fakeTransferLister{}, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeSettingsViewer{}, &fakeMetricsLister{})
+
+	req := newAuthenticatedFormRequest(t, "/profiles/new", "pd-1", profileForm(nil))
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if !strings.Contains(rec.Body.String(), "contains whitespace") {
+		t.Errorf("response does not show why the name was refused: %s", rec.Body.String())
 	}
 }
 

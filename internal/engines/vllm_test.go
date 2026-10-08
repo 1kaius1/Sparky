@@ -167,9 +167,11 @@ func TestVLLMAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
 	}
 }
 
-// The served model name is one argv entry in the --flag=value form, so a
-// name with spaces or non-ASCII characters stays a single value and a name
-// beginning with "-" cannot be read as another flag.
+// The adapter passes the name through untouched (ValidModelID is enforced
+// upstream, when a profile is saved and again at launch). As defense in
+// depth the --flag=value form keeps even an unvalidated name to one argv
+// entry, so a name with spaces or a leading "-" cannot be read as another
+// flag.
 func TestVLLMAdapter_BuildLaunchSpec_ServedModelNameIsOneArgvEntry(t *testing.T) {
 	a := vllmAdapter{}
 	for _, name := range []string{"Qwen3 8B (FP8)", "caf\u00e9 model", "team/llama 3.1", "--not-a-flag", "a=b"} {
