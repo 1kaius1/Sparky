@@ -185,7 +185,7 @@ func TestHandleScanResult_RendersCandidates(t *testing.T) {
 	for _, want := range []string{
 		`hx-post="/inventory/import"`, `name="scan_id" value="scan-abc"`,
 		"spark-1", "org/st", "(whole repo)", "3.0 GB", "Possibly incomplete",
-		"org/g", "g.Q4_K_M.gguf", `name="aq_1"`, `placeholder="Q4_K_M"`, "importing restores it",
+		"org/g", "g.Q4_K_M.gguf", `name="aq_1" value="Q4_K_M"`, "importing restores it",
 		"Cannot import as is: shares a directory",
 		"3 models already in the inventory", "spark-2", "node is not connected", "Import selected",
 	} {

@@ -43,7 +43,7 @@
           <td>{{.Format}}</td>
           <td>
             {{if .CanEditQuant}}
-            <input type="text" name="aq_{{.Index}}" placeholder="{{.Quantization}}" maxlength="32" aria-label="Quantization for {{.ModelRef}}">
+            <input type="text" name="aq_{{.Index}}" value="{{.Quantization}}" maxlength="32" aria-label="Quantization for {{.ModelRef}}">
             {{else}}
             {{if .Quantization}}{{.Quantization}}{{else}}(whole repo){{end}}
             {{end}}
