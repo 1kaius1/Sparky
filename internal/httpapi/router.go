@@ -313,6 +313,15 @@ func (a *API) Router() http.Handler {
 	// The RBAC gate (rbac.CanManageModelStore) lives inside
 	// inventory.Service.Delete, same as the other write routes.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/inventory/delete", a.handleDeleteInventoryEntry)
+	// Scan nodes for models on disk that inventory does not know, and
+	// import them. Admin-only; the gate (rbac.CanImportModels) is checked
+	// in every handler and again in inventory.Service. Starting a scan only
+	// reads from the nodes, but dispatches a command to them, so it is CSRF-
+	// protected like a write. Import is the audited write.
+	r.With(a.RequireSession).Get("/inventory/scan", a.handleScanModelsPage)
+	r.With(a.RequireSession, limitBody(maxScanFormBytes), a.RequireCSRF).Post("/inventory/scan", a.handleStartScan)
+	r.With(a.RequireSession).Get("/inventory/scan/{id}", a.handleScanResult)
+	r.With(a.RequireSession, limitBody(maxScanFormBytes), a.RequireCSRF).Post("/inventory/import", a.handleImportModels)
 	// The registration form's own RBAC gate (rbac.CanManageNodes) is
 	// checked directly in both handlers - GET to decide whether to show
 	// the form at all, POST (via nodes.Service.RegisterNode) as the real

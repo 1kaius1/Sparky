@@ -542,6 +542,7 @@ func (s *Service) importOne(ctx context.Context, actor rbac.Actor, scanID string
 	if _, err := s.inventory.Upsert(ctx, item.NodeID, cand.ModelRef, q, cand.Format, db.InventoryStatusPresent, cand.SizeBytes, ""); err != nil {
 		return fmt.Errorf("record imported model: %w", err)
 	}
+	s.dropCandidate(scanID, item.NodeID, cand)
 
 	var actorID *string
 	if !actor.IsSuperAdmin {
@@ -579,4 +580,28 @@ func (s *Service) findScanned(scanID string, item ImportItem) (ScanCandidate, []
 		}
 	}
 	return ScanCandidate{}, nil, ErrNotInScan
+}
+
+// dropCandidate removes an imported model from the stored scan so a
+// re-rendered result (after a partly failed import) does not offer it
+// again. The node's full model list is kept: it is what the neighbour
+// safety checks run against.
+func (s *Service) dropCandidate(scanID, nodeID string, cand ScanCandidate) {
+	s.scansMu.Lock()
+	defer s.scansMu.Unlock()
+	sc, ok := s.scans[scanID]
+	if !ok {
+		return
+	}
+	n, ok := sc.nodes[nodeID]
+	if !ok {
+		return
+	}
+	for i, c := range n.candidates {
+		if c.ModelRef == cand.ModelRef && c.Quantization == cand.Quantization && c.Format == cand.Format {
+			n.candidates = append(n.candidates[:i:i], n.candidates[i+1:]...)
+			n.known++
+			return
+		}
+	}
 }

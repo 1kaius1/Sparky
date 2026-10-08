@@ -61,7 +61,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that directory, and a gguf quantization override must pick out exactly its
   own file. Imports are audited (`imported_model`, against the node). Scan
   results live in memory for 15 minutes, with at most 100 live scans.
-  Not yet reachable from the UI.
+- Inventory page: an Admin-only "Scan nodes for unknown models" link to a
+  new `/inventory/scan` page. Pick one or more nodes, the results appear as
+  each node answers (the page polls `GET /inventory/scan/{id}`, no SSE),
+  then tick the models to add and confirm (`POST /inventory/import`).
+  gguf rows let the Admin correct the guessed quantization; rows that could
+  not be imported safely are shown but cannot be ticked, with the reason.
+  All three POST routes are CSRF-protected and body-limited.
 - Node model inventory: `placed_via` is now nullable (migration
   `000037_node_model_inventory_placed_via_nullable`, not yet applied to any
   environment by this change). `NULL` marks a copy imported from disk, which

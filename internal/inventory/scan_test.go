@@ -339,6 +339,9 @@ func TestImport_RecordsPresentWithNoTransferAndAudits(t *testing.T) {
 	if u.nodeID != scanNode1 || u.status != db.InventoryStatusPresent || u.sizeBytes != 300 || u.placedVia != "" {
 		t.Errorf("upsert = %+v, want present, scanned size, no placing transfer", u)
 	}
+	if v := f.view(t, id); len(v.Candidates) != 0 || v.KnownCount != 2 {
+		t.Errorf("after import: candidates=%+v known=%d, want none left and 2 known", v.Candidates, v.KnownCount)
+	}
 	if len(f.audit.actions) != 2 || f.audit.actions[0] != "imported_model" || f.audit.objIDs[0] != scanNode1 {
 		t.Errorf("audit = %v %v", f.audit.actions, f.audit.objIDs)
 	}
@@ -414,12 +417,6 @@ func TestImport_QuantizationOverride(t *testing.T) {
 		return fails[0].Err
 	}
 
-	if err := imp(ImportItem{ModelRef: "org/solo", Quantization: "UNKNOWN", Format: db.ModelFormatGGUF, AsQuantization: "q5km"}); err != nil {
-		t.Errorf("a label found in the file name is accepted: %v", err)
-	}
-	if last := f.store.upserts[len(f.store.upserts)-1]; last.quantization != "q5km" {
-		t.Errorf("stored quantization = %q, want the override", last.quantization)
-	}
 	if err := imp(ImportItem{ModelRef: "org/pair", Quantization: "Q4_0", Format: db.ModelFormatGGUF}); !errors.Is(err, ErrAmbiguousQuantization) {
 		t.Errorf("Q4_0 also matches Q4_0_4_4's file: err = %v, want ErrAmbiguousQuantization", err)
 	}
@@ -431,6 +428,12 @@ func TestImport_QuantizationOverride(t *testing.T) {
 	}
 	if err := imp(ImportItem{ModelRef: "org/solo", Quantization: "UNKNOWN", Format: db.ModelFormatGGUF, AsQuantization: "bad label!"}); !errors.Is(err, ErrInvalidQuantization) {
 		t.Errorf("malformed label: err = %v", err)
+	}
+	if err := imp(ImportItem{ModelRef: "org/solo", Quantization: "UNKNOWN", Format: db.ModelFormatGGUF, AsQuantization: "q5km"}); err != nil {
+		t.Errorf("a label found in the file name is accepted: %v", err)
+	}
+	if last := f.store.upserts[len(f.store.upserts)-1]; last.quantization != "q5km" {
+		t.Errorf("stored quantization = %q, want the override", last.quantization)
 	}
 	if err := imp(ImportItem{ModelRef: "org/st", Format: db.ModelFormatSafetensors, AsQuantization: "FP16"}); !errors.Is(err, ErrInvalidQuantization) {
 		t.Errorf("safetensors is whole-repo only: err = %v", err)

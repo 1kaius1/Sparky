@@ -330,6 +330,17 @@ type fakeInventoryLister struct {
 
 	// deleteStates maps "nodeID|modelRef" to {state, reason}.
 	deleteStates map[string][2]string
+
+	// Scan and import (inventory_scan_test.go has the methods).
+	canImport       bool
+	startScanErr    error
+	startedNodes    []string
+	scanView        *inventory.ScanView
+	scanViewErr     error
+	importErr       error
+	importFailures  []inventory.ImportFailure
+	importedItems   []inventory.ImportItem
+	importedScanIDs []string
 }
 
 // fakeSizeEstimator implements sizeEstimator for tests.

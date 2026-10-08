@@ -23,6 +23,12 @@ type inventoryLister interface {
 	CanDelete(ctx context.Context, actor rbac.Actor) (bool, error)
 	DeleteState(nodeID, modelRef, quantization string, format db.ModelFormat) (state, reason string)
 	Delete(ctx context.Context, actor rbac.Actor, nodeID, modelRef, quantization string, format db.ModelFormat) error
+
+	// Scan and import of models found on disk but unknown to inventory.
+	CanImport(actor rbac.Actor) bool
+	StartScan(ctx context.Context, actor rbac.Actor, nodeIDs []string) (string, error)
+	ScanResult(actor rbac.Actor, scanID string) (*inventory.ScanView, error)
+	Import(ctx context.Context, actor rbac.Actor, scanID string, items []inventory.ImportItem) (int, []inventory.ImportFailure, error)
 }
 
 // inventoryPageData is the Inventory page's view model - see PLANNING.md's
@@ -36,7 +42,10 @@ type inventoryPageData struct {
 	CanDelete bool
 	// CanTransfer only decides whether the Download / Replicate links are
 	// shown - the real gate is the transfer form's own capability check.
-	CanTransfer    bool
+	CanTransfer bool
+	// CanImport only decides whether the scan link is shown - the scan and
+	// import endpoints check for themselves.
+	CanImport      bool
 	AdvancedGroups []inventoryGroupRow
 	SimpleRows     []inventorySimpleRow
 }
@@ -108,6 +117,7 @@ func (a *API) handleInventory(w http.ResponseWriter, r *http.Request) {
 				a.logger.Printf("httpapi: check initiate-transfer permission for inventory: %v", err)
 			}
 			data.CanTransfer = canTransfer
+			data.CanImport = a.inventory.CanImport(actor)
 		}
 	}
 
