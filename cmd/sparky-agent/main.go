@@ -46,6 +46,10 @@ func main() {
 		case "peer-serve":
 			runPeerServe(os.Args[2:])
 			return
+		case "scan-models":
+			// Run by hand without secrets.env's variables in the shell -
+			// see runScanModels.
+			os.Exit(runScanModels(os.Args[2:]))
 		}
 	}
 

@@ -35,6 +35,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Added
+- Agent: `sparky-agent scan-models [--path DIR] [--json]`, a read-only,
+  local listing of the model copies found under a node's model storage
+  directory (`agent/modelscan`), first piece of importing models that were
+  placed on a node outside Sparky. Format and quantization are inferred from
+  file names (no marker files exist), a leftover rsync temp file flags a
+  copy as possibly incomplete, and symlinks are never followed. Needs none
+  of `secrets.env`'s variables, so it can be run by hand as the `serviceloop`
+  account.
 - Nodes: a free-text `comment` field (migration `000036_add_nodes_comment`)
   for recording which team/model is currently using a node, ahead of the
   future profile-locking/scheduling system (see PLANNING.md Future Ideas).
