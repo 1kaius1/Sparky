@@ -90,6 +90,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped from `0.2.5` to `0.2.8`, catching up three
+  releases at once. Three code changes merged after `0.2.5` without bumping
+  `VERSION`, because the automated workflow on the workstation they were
+  written from was not configured to bump it per PR: the docker-group join in
+  `sparky-agent setup` (should have been `0.2.6`), the Dead instance health
+  state (`0.2.7`) and health reporting resuming after an agent restart
+  (`0.2.8`). Packages built from master were therefore all `0.2.5`, which
+  `apt`/`dnf` treat as no upgrade over the installed `0.2.5` ones. The
+  documentation-only PRs in the same window (the container log archive design
+  and the lifecycle resume checklist) do not change what is packaged and need
+  no bump. The server and agent share one `VERSION`, so both packages move to
+  `0.2.8` together. Upgrade the agents first, then the server (see the
+  health-resume entry under Fixed).
 - Reconnect sweep: an instance the agent finds not running is no longer
   silently set `stopped`; it is reported Dead (see Added) and left for the
   operator to Unload.
