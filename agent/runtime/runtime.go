@@ -124,7 +124,12 @@ type Backend interface {
 	// their own internal identity from Spec.InstanceID.
 	Start(ctx context.Context, spec Spec) (string, error)
 
-	// Stop stops the instance identified by instanceID.
+	// Stop stops the instance identified by instanceID. An instance that is
+	// already gone - its container or process exited, was removed behind
+	// Sparky's back, or was lost when the agent restarted - is not an error:
+	// there is nothing left to stop, and an operator unloading an instance
+	// reported dead must be able to clear it. Any container left behind by an
+	// exited instance is still removed.
 	Stop(ctx context.Context, instanceID string) error
 
 	// Shutdown stops every instance this backend is still tracking, called
@@ -146,6 +151,13 @@ type Backend interface {
 	// the bare-metal backend answers from its own in-memory process map,
 	// which is why a genuine agent crash-and-restart correctly reports
 	// "not running" for anything it no longer remembers starting.
+	//
+	// An instance that does not exist at all (a container removed by hand,
+	// a Docker data wipe, a reimaged node) reports (false, nil), exactly as
+	// one that exited does: both are "not running", and the caller treats
+	// both as dead. A non-nil error means the backend could not find out
+	// (for example the daemon is unreachable) and says nothing about the
+	// instance.
 	IsRunning(ctx context.Context, instanceID string) (bool, error)
 
 	// Logs returns instanceID's most recent stdout/stderr output, up to

@@ -69,11 +69,14 @@ func TestStart_DuplicateInstanceID_FailsClearly(t *testing.T) {
 	}
 }
 
-func TestStop_UnknownInstanceID_FailsClearly(t *testing.T) {
+// An untracked instance is one the agent restarted away from or already
+// stopped. There is nothing to stop, and failing here would leave an
+// operator unable to unload (and so clear) an instance reported dead.
+func TestStop_UnknownInstanceID_IsNotAnError(t *testing.T) {
 	b := New()
 
-	if err := b.Stop(context.Background(), "no-such-instance"); err == nil {
-		t.Fatal("Stop() succeeded for an instance with no tracked process")
+	if err := b.Stop(context.Background(), "no-such-instance"); err != nil {
+		t.Fatalf("Stop() error: %v, want nil for an instance with no tracked process", err)
 	}
 }
 

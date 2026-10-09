@@ -1671,7 +1671,7 @@ func TestConn_Dispatch_CheckInstance_Running_ReportsRunning(t *testing.T) {
 	}
 }
 
-func TestConn_Dispatch_CheckInstance_NotRunning_ReportsStopped(t *testing.T) {
+func TestConn_Dispatch_CheckInstance_NotRunning_ReportsDeadNotStopped(t *testing.T) {
 	checkEnv, err := agentproto.NewEnvelope(agentproto.TypeCheckInstance, "", agentproto.CheckInstance{InstanceID: "instance-1"})
 	if err != nil {
 		t.Fatalf("NewEnvelope() error: %v", err)
@@ -1698,14 +1698,20 @@ func TestConn_Dispatch_CheckInstance_NotRunning_ReportsStopped(t *testing.T) {
 		close(done)
 	}()
 
-	var result agentproto.InstanceResult
+	// Reported as health "dead", not as an instance_result "stopped": the
+	// central app expects this instance to be running, so it must surface
+	// it for the operator rather than silently correcting the row.
+	var health agentproto.InstanceHealth
 	select {
 	case env := <-app.receivedMsgs:
-		if err := env.DecodePayload(&result); err != nil {
+		if env.Type != agentproto.TypeInstanceHealth {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceHealth)
+		}
+		if err := env.DecodePayload(&health); err != nil {
 			t.Fatalf("DecodePayload() error: %v", err)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for instance_result")
+		t.Fatal("timed out waiting for instance_health")
 	}
 
 	cancel()
@@ -1715,8 +1721,8 @@ func TestConn_Dispatch_CheckInstance_NotRunning_ReportsStopped(t *testing.T) {
 		t.Fatal("Run() did not return after context cancellation")
 	}
 
-	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusStopped {
-		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=stopped", result)
+	if health.InstanceID != "instance-1" || health.Status != agentproto.InstanceHealthStatusDead {
+		t.Errorf("instance_health = %+v, want InstanceID=instance-1 Status=dead", health)
 	}
 }
 

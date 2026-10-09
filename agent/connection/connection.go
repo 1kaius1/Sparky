@@ -1027,10 +1027,16 @@ func (c *Conn) runUnload(ctx context.Context, conn *websocket.Conn, unload agent
 // instance's current status" is exactly what that message already carries
 // - no new response type needed.
 //
+// An instance that is not running (exited, OOM-killed, or its container
+// gone) is reported as health "dead", not as `stopped`: the central app
+// expected it to be running, so rather than silently correcting the row it
+// shows the instance as dead for the operator to see and Unload to clean
+// up. See agentproto.InstanceHealthStatusDead.
+//
 // An IsRunning error (e.g. a transient Docker daemon hiccup) deliberately
-// sends nothing back - "I don't know" and "it's stopped" are different
+// sends nothing back - "I don't know" and "it's dead" are different
 // things, and a transient infrastructure error must not falsely mark a
-// row stopped that might still be perfectly fine; the central app's copy
+// row dead that might still be perfectly fine; the central app's copy
 // of running_instances is left exactly as it was, to be re-checked on a
 // future reconnect.
 func (c *Conn) runCheckInstance(ctx context.Context, conn *websocket.Conn, check agentproto.CheckInstance) {
@@ -1040,11 +1046,12 @@ func (c *Conn) runCheckInstance(ctx context.Context, conn *websocket.Conn, check
 		return
 	}
 
-	status := agentproto.InstanceStatusStopped
-	if running {
-		status = agentproto.InstanceStatusRunning
+	if !running {
+		c.logger.Printf("agent connection: instance %s is not running, reporting it dead", check.InstanceID)
+		c.sendInstanceHealthReport(ctx, conn, check.InstanceID, agentproto.InstanceHealthStatusDead, nil)
+		return
 	}
-	c.sendInstanceResult(ctx, conn, check.InstanceID, status, 0, "")
+	c.sendInstanceResult(ctx, conn, check.InstanceID, agentproto.InstanceStatusRunning, 0, "")
 }
 
 // sendInstanceResult reports a load/unload outcome back to the central

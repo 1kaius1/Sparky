@@ -494,6 +494,38 @@ func TestRunningInstanceRepository_UpdateHealth_HealthyWithDetail(t *testing.T) 
 	assertJSONEqual(t, got.HealthDetail, detail)
 }
 
+func TestRunningInstanceRepository_UpdateHealth_Dead(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profile := createTestProfile(t, profiles, node.ID)
+	created := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+	if err := instances.SetStatus(ctx, created.ID, RunningInstanceStatusRunning, nil, nil); err != nil {
+		t.Fatalf("SetStatus() error: %v", err)
+	}
+
+	if err := instances.UpdateHealth(ctx, created.ID, InstanceHealthDead, time.Now().UTC(), nil); err != nil {
+		t.Fatalf("UpdateHealth(dead) error: %v - is migration 000038 applied?", err)
+	}
+
+	got, err := instances.FindByID(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("FindByID() error: %v", err)
+	}
+	if got.HealthStatus != InstanceHealthDead {
+		t.Errorf("HealthStatus = %q, want %q", got.HealthStatus, InstanceHealthDead)
+	}
+	// A dead instance is still a running one as far as lifecycle goes, so it
+	// can be unloaded and its profile is still blocked from a second launch.
+	if got.Status != RunningInstanceStatusRunning {
+		t.Errorf("Status = %q, want it unchanged at %q", got.Status, RunningInstanceStatusRunning)
+	}
+}
+
 func TestRunningInstanceRepository_UpdateHealth_UnhealthyNilDetail(t *testing.T) {
 	pool := newTestPool(t)
 	nodes := NewNodeRepository(pool)

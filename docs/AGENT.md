@@ -558,6 +558,22 @@ interval, forever, for every active instance, is real GPU-cycle overhead this
 periodic check has no need to pay once an instance has already proven at
 launch that it can generate:
 
+- Before probing the engine, the runtime is asked whether the instance's
+  container or process is still running (`runtime.Backend.IsRunning`). If it
+  is not - exited, OOM-killed, or the container was removed behind Sparky's
+  back - the instance is reported `dead` and the engine is not probed at all.
+  `dead` is distinct from `unhealthy`: unhealthy is "running but not
+  answering", dead is "not running". A runtime that cannot be asked at all
+  (for example an unreachable Docker daemon) reports nothing rather than a
+  guess. A container that no longer exists counts as not running, not as an
+  error. The central app leaves such an instance `running` and shows it as
+  dead (red); Unload then clears it - `Stop` treats an already-exited or
+  missing container as success, still removes an exited container, and on the
+  bare-metal backend an instance the agent no longer tracks (it restarted
+  since) is likewise nothing left to stop.
+- The same `dead` report answers the central app's reconnect sweep
+  (`check_instance`): an instance that is not running is reported dead via
+  `instance_health` instead of being silently set `stopped`.
 - A `GET /v1/models` reachability check decides `healthy`/`unhealthy`.
 - A best-effort read of the engine's own Prometheus-format `/metrics` endpoint
   (today: `vllm:num_requests_running`/`vllm:num_requests_waiting`, vLLM and

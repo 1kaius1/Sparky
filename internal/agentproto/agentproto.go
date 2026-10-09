@@ -444,10 +444,19 @@ type EngineTransferProgress struct {
 // InstanceResult.Status: this package has no dependency on internal/db.
 // There is no "unknown" value here - that is running_instances' own
 // initial-row default (SCHEMA.md), never something an agent actively
-// reports; a real check always resolves to one of these two.
+// reports; a real check always resolves to one of these three.
+//
+// Dead is distinct from Unhealthy: unhealthy means the container or process
+// is there but its engine does not answer; dead means the runtime reports
+// the container or process is not running at all (exited, killed by the
+// OOM killer, or removed behind Sparky's back) for an instance the central
+// app still believes is running. The central app leaves such an instance
+// `running` and shows it as dead, so the operator sees the problem and
+// Unload cleans it up, instead of the row silently correcting itself.
 const (
 	InstanceHealthStatusHealthy   = "healthy"
 	InstanceHealthStatusUnhealthy = "unhealthy"
+	InstanceHealthStatusDead      = "dead"
 )
 
 // InstanceHealth is TypeInstanceHealth's payload. CheckedAt is when the
@@ -462,7 +471,7 @@ const (
 // today) - same "opaque, engine-specific shape" reasoning as
 // db.Profile.EngineParams. Never populated when Status is
 // InstanceHealthStatusUnhealthy - an unreachable engine has nothing to
-// read metrics from.
+// read metrics from; the same holds for InstanceHealthStatusDead.
 type InstanceHealth struct {
 	InstanceID string             `json:"instance_id"`
 	Status     string             `json:"status"`

@@ -492,6 +492,24 @@ func (c *Conn) sendInstanceHealth(ctx context.Context, conn *websocket.Conn) {
 // checkInstanceHealth performs and reports one instance's periodic health
 // check - split out of sendInstanceHealth's loop body for readability.
 func (c *Conn) checkInstanceHealth(ctx context.Context, conn *websocket.Conn, client *http.Client, instanceID string, inst activeInstance) {
+	// Ask the runtime before probing the engine: a container or process
+	// that is no longer running is dead, which is a different and more
+	// useful report than the "unhealthy" an unanswered HTTP probe would
+	// give. An error here means the runtime itself could not be asked (for
+	// example the daemon is unreachable), which says nothing about the
+	// instance, so nothing is reported rather than guessing - the same
+	// "I don't know is not a verdict" rule as runCheckInstance.
+	running, err := c.runtime.IsRunning(ctx, instanceID)
+	if err != nil {
+		c.logger.Printf("agent connection: health check for instance %s could not ask the runtime: %v", instanceID, err)
+		return
+	}
+	if !running {
+		c.logger.Printf("agent connection: instance %s is not running, reporting it dead", instanceID)
+		c.sendInstanceHealthReport(ctx, conn, instanceID, agentproto.InstanceHealthStatusDead, nil)
+		return
+	}
+
 	probe, ok := engineProbes[inst.EngineType]
 	if !ok {
 		// Same "can't check it, can't claim it" reasoning as
@@ -510,6 +528,13 @@ func (c *Conn) checkInstanceHealth(ctx context.Context, conn *websocket.Conn, cl
 		detail = readMetrics(ctx, client, base+probe.metricsPath)
 	}
 
+	c.sendInstanceHealthReport(ctx, conn, instanceID, status, detail)
+}
+
+// sendInstanceHealthReport sends one instance_health message - shared by the
+// periodic check above and runCheckInstance's reconnect sweep, which both
+// need to report a dead instance.
+func (c *Conn) sendInstanceHealthReport(ctx context.Context, conn *websocket.Conn, instanceID, status string, detail map[string]float64) {
 	env, err := agentproto.NewEnvelope(agentproto.TypeInstanceHealth, "", agentproto.InstanceHealth{
 		InstanceID: instanceID,
 		Status:     status,
@@ -525,6 +550,8 @@ func (c *Conn) checkInstanceHealth(ctx context.Context, conn *websocket.Conn, cl
 		c.logger.Printf("agent connection: marshal instance_health for %s: %v", instanceID, err)
 		return
 	}
+	// conn.Write is safe for concurrent use - see runTransfer's progress
+	// closure for the same claim and its source.
 	if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
 		c.logger.Printf("agent connection: send instance_health for %s: %v", instanceID, err)
 	}

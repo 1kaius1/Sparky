@@ -122,8 +122,12 @@ func (b *Backend) Stop(ctx context.Context, instanceID string) error {
 	}
 	b.mu.Unlock()
 
+	// Untracked means there is nothing to stop - the agent restarted since
+	// the engine was started, or it was already stopped. That is not a
+	// failure: an operator unloading an instance reported dead has to be able
+	// to clear it. See runtime.Backend.Stop.
 	if !exists {
-		return fmt.Errorf("instance %s has no tracked process", instanceID)
+		return nil
 	}
 	return stopProcess(tp, stopGracePeriod)
 }
