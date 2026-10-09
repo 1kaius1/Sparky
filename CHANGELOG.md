@@ -8,6 +8,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Container log archive: when an instance is unloaded, the agent now saves the
+  container's last 2000 lines of output and its exit reason (state, exit code,
+  whether it was killed for running out of memory) on the central app before
+  removing the container, so why an engine failed or died is no longer lost
+  with it. New **Container logs** page (Models group in the sidebar, Developer
+  and above) lists them, shows one with a download of the full text; viewing is
+  not recorded in the audit log, and logs can contain prompt content. The
+  agent removes the container only after the central app confirms it stored
+  the log - if the upload fails or is not confirmed within 30 seconds the
+  stopped container is kept and Unload still reports `stopped`. The log is
+  uploaded as a series of small gzip chunks (new `container_log_chunk` /
+  `container_log_ack` messages), because the WebSocket library closes the
+  connection on any message over 32768 bytes. New migration
+  `000039_create_container_log_archives`; SCHEMA.md updated. Not in this
+  change: archiving a failed launch, replace-on-launch, a live log view and
+  retention (the stored logs are not expired yet). **Upgrade the agents first,
+  then the server, and run the database migration with the server:** an older
+  server ignores the new message and never confirms, so an upgraded agent keeps
+  every container it would have removed. The bare-metal backend can only save
+  what its 16 KiB in-memory buffer still holds.
 - Running instances: a new health state, **Dead**, for an instance whose
   container or process is not running although it is expected to be (exited,
   OOM-killed, or the container was removed by hand, a Docker data wipe, or a
@@ -90,6 +110,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped to `0.2.9` so builds carrying the container log
+  archive register as newer than the `0.2.8` packages. Both packages move
+  together because they share one `VERSION`.
+- Unload: the agent now halts the instance and reports `stopped` before it
+  archives the log and removes the container, instead of stopping and removing
+  in one step (`runtime.Backend` gained `Halt`, `Capture` and `Remove`; `Stop`
+  remains as Halt plus Remove).
 - Reconnect sweep: an instance the agent finds not running is no longer
   silently set `stopped`; it is reported Dead (see Added) and left for the
   operator to Unload.

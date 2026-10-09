@@ -200,6 +200,43 @@ reduced-capacity launch uses fewer nodes than the profile defines).
 
 ---
 
+## Container log archives
+
+A container's output and exit reason, saved by the agent before it removes the
+container (`docs/AGENT.md` Container log archive), so why an engine failed or
+died is still readable after the container is gone. One row per archived
+container. The log is gzip text in a `bytea` column, sent by the agent in
+chunks and stored whole once the central app has verified it
+(`internal/containerlogs`). Retention is not enforced yet - see `PLANNING.md`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `upload_id` | text, unique | The agent's own random id for one upload. Unique so an agent that retries an upload whose confirmation it never saw cannot store the log twice |
+| `node_id` | uuid, FK -> Nodes.id | The node the log came from, taken from the authenticated connection, never from the agent's description |
+| `instance_id` | uuid, nullable | The Running instances row the container belonged to. A plain uuid with no foreign key: instance rows can be cleaned up and the archive must outlive them. `NULL` when the instance is unknown or belongs to a different node than the one that sent the log |
+| `profile_id` | uuid, nullable | The profile at the time, resolved by the central app from the instance row. No foreign key, for the same reason |
+| `profile_name` | text | A copy of the profile's name then, since a profile can be renamed or deleted. Empty when unknown |
+| `container_name` / `container_id` | text | As the runtime reported them. Informational |
+| `reason` | text | Why the container was archived: `unload` today, later `failed_launch` and `replaced`. `unknown` for a value the central app does not recognise |
+| `container_state` | text | The container's own state word (`exited`, `running`, ...), empty when unknown |
+| `exit_code` | integer, nullable | `NULL` while the instance was still running or when the backend cannot tell. A bare-metal process killed by a signal is `-1` |
+| `oom_killed` | boolean | The runtime reported the container was killed for running out of memory. Always false for bare-metal |
+| `started_at` / `finished_at` | timestamptz, nullable | `NULL` when unknown |
+| `lines_requested` | integer, nullable | How many trailing lines the agent asked for (2000 today). `NULL` means all |
+| `lines_kept` | integer | Lines in the stored log |
+| `truncated` | boolean | Older output was lost to a size cap or a full in-memory buffer (bare-metal), not merely because fewer lines were requested |
+| `size_bytes` | bigint | The log's size before gzip, measured by the central app by decompressing it, not the agent's claim |
+| `log_gz` | bytea | The gzip-compressed log. Capped at 16 MiB compressed and 64 MiB expanded |
+| `created_at` | timestamptz | Indexed, newest first. What retention will expire on |
+
+Nothing references this table, so it can be moved or expired independently of
+the rest of the schema (the future cold storage feature - `PLANNING.md`
+Decisions Log, 2026-10-09). Viewing is Developer and above
+(`rbac.CanViewInstanceLogs`); reads are not recorded in the audit log.
+
+---
+
 ## Running instance nodes
 
 The *actual* node topology for a specific running instance - may be a subset of
