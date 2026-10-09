@@ -56,6 +56,9 @@ type profilesPageData struct {
 	Profiles  []profileRow
 	CanManage bool
 	CanLaunch bool
+	// CanViewLogs only decides whether the Logs link is shown - the live log
+	// page checks for itself.
+	CanViewLogs bool
 }
 
 // nonTerminalInstanceStatuses are the running_instances statuses that mean
@@ -167,13 +170,14 @@ func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	var canManage, canLaunch bool
+	var canManage, canLaunch, canViewLogs bool
 	var logIDs map[string]string
 	if identity, ok := IdentityFromContext(ctx); ok {
 		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
 			canManage = rbac.CanManageProfiles(actor)
 			canLaunch = rbac.CanLaunchInstances(actor)
 			if rbac.CanViewInstanceLogs(actor) {
+				canViewLogs = true
 				ids := make([]string, 0, len(lastByProfile))
 				for profileID, inst := range lastByProfile {
 					if _, active := activeByProfile[profileID]; !active {
@@ -228,7 +232,7 @@ func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 		rows = append(rows, row)
 	}
 
-	a.render(w, r, "profiles", "Model profiles", profilesPageData{Profiles: rows, CanManage: canManage, CanLaunch: canLaunch})
+	a.render(w, r, "profiles", "Model profiles", profilesPageData{Profiles: rows, CanManage: canManage, CanLaunch: canLaunch, CanViewLogs: canViewLogs})
 }
 
 // profileFormPageData is the create/edit form's view model - IsEdit and

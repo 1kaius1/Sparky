@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -24,6 +25,11 @@ type containerLogViewer interface {
 	List(ctx context.Context, actor rbac.Actor, limit int) ([]*db.ContainerLogArchive, error)
 	Read(ctx context.Context, actor rbac.Actor, id string) (*db.ContainerLogArchive, string, error)
 	LatestForInstances(ctx context.Context, actor rbac.Actor, instanceIDs []string) (map[string]string, error)
+	Live(ctx context.Context, actor rbac.Actor, instanceID string, lines int) (*containerlogs.LiveLog, error)
+
+	// The retention setting on the Settings page (Admin).
+	Settings(ctx context.Context, actor rbac.Actor) (*db.ContainerLogSettings, error)
+	UpdateRetention(ctx context.Context, actor rbac.Actor, months int) error
 }
 
 const (
@@ -254,4 +260,93 @@ func (a *API) handleContainerLogDownload(w http.ResponseWriter, r *http.Request)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="container-log-%s-%s.txt"`, arc.CreatedAt.UTC().Format("20060102-150405"), arc.ID[:8]))
 	_, _ = w.Write([]byte(text))
+}
+
+// liveLineOptions are the line counts the live log page offers.
+var liveLineOptions = []int{100, 500, 1000, 2000, 5000}
+
+// instanceLogsPageData is the live log page's view model. Exactly one of Text
+// and Error is meaningful: Error is a reason shown in a banner when the node
+// could not be read, and ArchiveLogID, when set, is the instance's newest
+// saved log - the way to see what the container said when a live read is no
+// longer possible.
+type instanceLogsPageData struct {
+	InstanceID   string
+	ProfileName  string
+	Lines        int
+	LineOptions  []int
+	State        string
+	ExitCode     string
+	Text         string
+	Shown        int
+	Error        string
+	ArchiveLogID string
+}
+
+// handleInstanceLogs is GET /instances/{id}/logs?lines=N: an instance's
+// current output, read from its node on demand. Nothing is stored. The tier
+// check is inside containerlogs.Service.
+func (a *API) handleInstanceLogs(w http.ResponseWriter, r *http.Request) {
+	actor, ok := a.containerLogActor(w, r)
+	if !ok {
+		return
+	}
+	ctx := r.Context()
+	id := chi.URLParam(r, "id")
+	lines := containerlogs.DefaultLiveLines
+	if v := r.URL.Query().Get("lines"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			lines = n
+		}
+	}
+	if lines > containerlogs.MaxLiveLines {
+		lines = containerlogs.MaxLiveLines
+	}
+
+	data := instanceLogsPageData{InstanceID: id, Lines: lines, LineOptions: liveLineOptions}
+	live, err := a.containerLogs.Live(ctx, actor, id, lines)
+	status := http.StatusOK
+	var agentErr *containerlogs.AgentError
+	switch {
+	case err == nil:
+		text, _ := tailLines(ansiEscape.ReplaceAllString(live.Text, ""), containerLogViewLines)
+		data.ProfileName = live.ProfileName
+		data.State = live.Meta.State
+		if live.Meta.ExitCode != nil {
+			data.ExitCode = fmt.Sprintf("%d", *live.Meta.ExitCode)
+		}
+		data.Text = text
+		data.Shown = strings.Count(text, "\n")
+		if text != "" && !strings.HasSuffix(text, "\n") {
+			data.Shown++
+		}
+	case errors.Is(err, rbac.ErrNotPermitted):
+		a.renderForbidden(w, r, actor.Tier)
+		return
+	case errors.Is(err, containerlogs.ErrNotFound):
+		writeError(w, r, http.StatusNotFound, "NOT_FOUND", "instance not found")
+		return
+	case errors.Is(err, containerlogs.ErrBusy):
+		status = http.StatusTooManyRequests
+		data.Error = err.Error()
+	case errors.Is(err, containerlogs.ErrNodeOffline), errors.Is(err, containerlogs.ErrAgentSilent):
+		data.Error = err.Error()
+	case errors.As(err, &agentErr):
+		data.Error = agentErr.Message
+	default:
+		a.logger.Printf("httpapi: live container log for instance %s: %v", id, err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	// When the live read failed, point at the saved log, if there is one.
+	if data.Error != "" {
+		if ids, err := a.containerLogs.LatestForInstances(ctx, actor, []string{id}); err != nil {
+			a.logger.Printf("httpapi: look up saved container log for instance %s: %v", id, err)
+		} else {
+			data.ArchiveLogID = ids[id]
+		}
+	}
+	w.WriteHeader(status)
+	a.render(w, r, "instance_logs", "Instance log", data)
 }

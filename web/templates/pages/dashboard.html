@@ -39,7 +39,7 @@
     <tbody>
       {{range .Data.RunningInstances}}
       <tr data-instance-id="{{.InstanceID}}">
-        <td>{{.Model}}</td>
+        <td>{{.Model}}{{if $.Data.CanViewLogs}} <a class="log-link" href="/instances/{{.InstanceID}}/logs" hx-get="/instances/{{.InstanceID}}/logs" hx-target="#main-content" hx-push-url="true">Logs</a>{{end}}</td>
         <td>{{.Engine}}</td>
         <td>{{.NodeName}}</td>
         <td>{{.StartedAt}}</td>

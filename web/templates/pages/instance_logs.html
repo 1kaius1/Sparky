@@ -1,0 +1,26 @@
+{{define "content"}}
+<h1>Instance log{{if .Data.ProfileName}} - {{.Data.ProfileName}}{{end}}</h1>
+
+<p><a href="/profiles" hx-get="/profiles" hx-target="#main-content" hx-push-url="true">Back to profiles</a></p>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{if .Data.ArchiveLogID}}
+<p>The most recent saved log of this instance: <a href="/logs/{{.Data.ArchiveLogID}}" hx-get="/logs/{{.Data.ArchiveLogID}}" hx-target="#main-content" hx-push-url="true">view it</a>.</p>
+{{end}}
+{{else}}
+<p>Read from the node just now, nothing is stored. State: {{if .Data.State}}{{.Data.State}}{{else}}unknown{{end}}{{if .Data.ExitCode}}, exit code {{.Data.ExitCode}}{{end}}. Showing the last {{.Data.Shown}} lines. Logs can contain prompt content.</p>
+{{end}}
+
+<p>
+  Lines:
+  {{range .Data.LineOptions}}
+  {{if eq . $.Data.Lines}}<strong>{{.}}</strong>{{else}}<a href="/instances/{{$.Data.InstanceID}}/logs?lines={{.}}" hx-get="/instances/{{$.Data.InstanceID}}/logs?lines={{.}}" hx-target="#main-content" hx-push-url="true">{{.}}</a>{{end}}
+  {{end}}
+  - <a href="/instances/{{.Data.InstanceID}}/logs?lines={{.Data.Lines}}" hx-get="/instances/{{.Data.InstanceID}}/logs?lines={{.Data.Lines}}" hx-target="#main-content" hx-push-url="true">Refresh</a>
+</p>
+
+{{if not .Data.Error}}
+<pre class="log-text">{{.Data.Text}}</pre>
+{{end}}
+{{end}}

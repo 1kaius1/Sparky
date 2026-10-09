@@ -349,6 +349,15 @@ node. The chunk handler only buffers (it runs on the node's read loop); the
 database write and the ack run off it. The agent removes the container only on
 a stored ack. See `docs/AGENT.md` Container log archive.
 
+Reading an instance's current output uses `fetch_logs` (central app to agent)
+and the same `container_log_chunk` series back, tagged with the request's
+`fetch_id`. The central app accepts such a series only from the node the
+request went to and only while the page that asked is still waiting; the text
+is shown and discarded, never stored. It waits up to 15 seconds and allows at
+most two requests per node and eight overall. Saved logs expire after the
+retention period in `container_log_settings` (Settings page, Admin): a daily
+job deletes older ones and records the run in the audit log as the system.
+
 ---
 
 ## Request Lifecycle

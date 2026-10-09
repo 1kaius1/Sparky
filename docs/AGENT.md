@@ -313,6 +313,18 @@ deleted or renamed, are not found by this; the scheduled and manual cleanup is
 for them. **Upgrade the agents first, then the server:** an older agent
 rejects `profile_id` in `load_instance`.
 
+**Live view.** A Developer or above can also read an instance's current output
+from the Profiles or Dashboard page. The central app sends `fetch_logs` (an
+instance id and a line count); the agent reads that many trailing lines
+(clamped to 1 to 5000, default 500) with the same `Capture` and answers with
+the same `container_log_chunk` series, tagged with the request's `fetch_id`.
+Nothing is stopped, archived or removed, and no confirmation is expected. An
+instance whose container or process is gone, or a runtime that cannot be read,
+is answered with a single error chunk so the page says why instead of timing
+out; an agent too old to know `fetch_logs` ignores it and the page times out
+after 15 seconds. Saved logs are deleted after the retention period set on the
+Settings page (default 12 months, 1 to 24).
+
 An instance whose container is already gone has nothing to archive and is just
 cleared; one that exited or was OOM-killed (a Dead instance) is archived with
 its exit reason. On the bare-metal backend the log is whatever the in-memory
