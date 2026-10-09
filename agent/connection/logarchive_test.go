@@ -42,9 +42,16 @@ func newArchiveHarness(t *testing.T, rt *fakeRuntimeBackend, confirm func(final 
 	if err != nil {
 		t.Fatal(err)
 	}
+	return newArchiveHarnessFor(t, rt, unload, nil, confirm)
+}
+
+// newArchiveHarnessFor is newArchiveHarness for any first message the central
+// app pushes after the handshake; cfg, if set, adjusts the agent's Config.
+func newArchiveHarnessFor(t *testing.T, rt *fakeRuntimeBackend, first agentproto.Envelope, cfg func(*Config), confirm func(final agentproto.ContainerLogChunk) *agentproto.ContainerLogAck) *archiveHarness {
+	t.Helper()
 	h := &archiveHarness{rt: rt}
 	h.app = newTestCentralApp(true, "")
-	h.app.sendAfterAccept = &unload
+	h.app.sendAfterAccept = &first
 	h.app.receivedMsgs = make(chan agentproto.Envelope, 100)
 	h.msgs = h.app.receivedMsgs
 	h.app.reply = func(env agentproto.Envelope) *agentproto.Envelope {
@@ -70,7 +77,11 @@ func newArchiveHarness(t *testing.T, rt *fakeRuntimeBackend, confirm func(final 
 		return &out
 	}
 	srv := httptest.NewServer(h.app)
-	h.conn = New(Config{CentralURL: wsURL(srv), BearerToken: "t", NodeName: "n"}, rt, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conf := Config{CentralURL: wsURL(srv), BearerToken: "t", NodeName: "n", ModelStoragePath: "/models"}
+	if cfg != nil {
+		cfg(&conf)
+	}
+	h.conn = New(conf, rt, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
 	h.conn.listInterfaces = func() ([]netinfo.Interface, error) { return nil, nil }
 	h.conn.archiveAckTimeout = 300 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -179,3 +179,34 @@ func (r *ContainerLogArchiveRepository) FindByID(ctx context.Context, id string)
 	}
 	return a, logGz, nil
 }
+
+// LatestByInstanceIDs returns, for each of instanceIDs that has any archived
+// log, the id of its newest one - what the Profiles page links a profile's
+// last run to. An instance with no archive is simply absent from the map.
+// Every id must be a valid uuid; internal/containerlogs filters them.
+func (r *ContainerLogArchiveRepository) LatestByInstanceIDs(ctx context.Context, instanceIDs []string) (map[string]string, error) {
+	out := make(map[string]string, len(instanceIDs))
+	if len(instanceIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT DISTINCT ON (instance_id) instance_id::text, id::text
+		 FROM container_log_archives
+		 WHERE instance_id = ANY($1::uuid[])
+		 ORDER BY instance_id, created_at DESC, id`, instanceIDs)
+	if err != nil {
+		return nil, fmt.Errorf("latest container log archives by instance: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var instanceID, archiveID string
+		if err := rows.Scan(&instanceID, &archiveID); err != nil {
+			return nil, fmt.Errorf("latest container log archives by instance: %w", err)
+		}
+		out[instanceID] = archiveID
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("latest container log archives by instance: %w", err)
+	}
+	return out, nil
+}

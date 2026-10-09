@@ -659,7 +659,9 @@ web/static/
   Permission overrides for the PowerDev grant; Admin-only scan of nodes for
   models on disk that the inventory does not know, and import of them) and
   Profiles (Read-only view / Developer launch / PowerDev create, edit, and delete, each picking its model
-  from the target node's own Inventory rather than free text) and Container logs
+  from the target node's own Inventory rather than free text; each profile with no
+  active instance shows how its last run ended, with a link to the saved log for
+  Developer and above) and Container logs
   (Developer and above - archived container output, which can contain prompt
   content; `rbac.CanViewInstanceLogs`), Engines group -
   Inventory (Read-only) and Transfers (Read-only view / Admin+ provision),

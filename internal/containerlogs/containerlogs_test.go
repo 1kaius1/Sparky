@@ -31,11 +31,13 @@ const (
 )
 
 type fakeStore struct {
-	mu      sync.Mutex
-	created []db.NewContainerLogArchive
-	byUpl   map[string]*db.ContainerLogArchive
-	err     error
-	rows    map[string]struct {
+	mu          sync.Mutex
+	created     []db.NewContainerLogArchive
+	byUpl       map[string]*db.ContainerLogArchive
+	err         error
+	latest      map[string]string
+	latestAsked []string
+	rows        map[string]struct {
 		a  *db.ContainerLogArchive
 		gz []byte
 	}
@@ -68,6 +70,13 @@ func (f *fakeStore) FindByID(_ context.Context, id string) (*db.ContainerLogArch
 		return r.a, r.gz, nil
 	}
 	return nil, nil, db.ErrContainerLogArchiveNotFound
+}
+
+func (f *fakeStore) LatestByInstanceIDs(_ context.Context, ids []string) (map[string]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.latestAsked = append([]string(nil), ids...)
+	return f.latest, f.err
 }
 
 func (f *fakeStore) createdCount() int {
@@ -529,5 +538,22 @@ func TestClip(t *testing.T) {
 	}
 	if got := clip("short", 10); got != "short" {
 		t.Errorf("clip = %q", got)
+	}
+}
+
+func TestLatestForInstances_ChecksTheTierAndSkipsInvalidIDs(t *testing.T) {
+	f := newFixture()
+	f.store.latest = map[string]string{instanceID: "archive-1"}
+	ctx := context.Background()
+
+	if _, err := f.svc.LatestForInstances(ctx, rbac.Actor{Tier: db.TierReadOnly}, []string{instanceID}); !errors.Is(err, rbac.ErrNotPermitted) {
+		t.Errorf("read-only err = %v, want ErrNotPermitted", err)
+	}
+	got, err := f.svc.LatestForInstances(ctx, rbac.Actor{Tier: db.TierDeveloper}, []string{instanceID, "not-a-uuid", "x'; DROP TABLE y;--"})
+	if err != nil || got[instanceID] != "archive-1" {
+		t.Fatalf("got %v, %v", got, err)
+	}
+	if len(f.store.latestAsked) != 1 || f.store.latestAsked[0] != instanceID {
+		t.Errorf("store was asked about %v, want only the valid uuid", f.store.latestAsked)
 	}
 }

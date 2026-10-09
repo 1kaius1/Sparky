@@ -200,3 +200,61 @@ func TestHaltAndRemove_OtherErrorsAreErrors(t *testing.T) {
 		t.Error("Remove() swallowed a non-not-found error")
 	}
 }
+
+func TestStart_LabelsTheContainerWithTheProfileID(t *testing.T) {
+	got := startCapturing(t, runtime.Spec{InstanceID: "instance-1", Image: "img", ProfileID: "11111111-aaaa-bbbb-cccc-000000000001"})
+	if got.Config.Labels[labelProfileID] != "11111111-aaaa-bbbb-cccc-000000000001" {
+		t.Errorf("Labels = %v, want the profile id label", got.Config.Labels)
+	}
+	if got.Config.Labels[labelInstanceID] != "instance-1" || got.Config.Labels[labelManaged] != "true" {
+		t.Errorf("Labels = %v, want the existing labels kept", got.Config.Labels)
+	}
+}
+
+// An absent or malformed id must not become a label, since it later becomes a
+// daemon filter value.
+func TestStart_NoProfileLabelWithoutAValidProfileID(t *testing.T) {
+	for _, id := range []string{"", "short", "has space in it 123", "bad=value-1234", strings.Repeat("a", 65)} {
+		got := startCapturing(t, runtime.Spec{InstanceID: "instance-1", Image: "img", ProfileID: id})
+		if _, ok := got.Config.Labels[labelProfileID]; ok {
+			t.Errorf("ProfileID %q produced the label %q", id, got.Config.Labels[labelProfileID])
+		}
+	}
+}
+
+func TestInstancesForProfile_ListsEveryManagedContainerOfTheProfile(t *testing.T) {
+	fake := &fakeDockerClient{listResult: client.ContainerListResult{Items: []container.Summary{
+		{ID: "c1", Labels: map[string]string{labelInstanceID: "inst-1", labelProfileID: "p"}},
+		{ID: "c2", Labels: map[string]string{labelInstanceID: "inst-2", labelProfileID: "p"}},
+		{ID: "c3", Labels: map[string]string{labelProfileID: "p"}}, // no instance label: not something to act on
+	}}}
+	ids, err := (&Backend{cli: fake}).InstancesForProfile(context.Background(), "11111111-aaaa-bbbb-cccc-000000000001")
+	if err != nil {
+		t.Fatalf("InstancesForProfile() error: %v", err)
+	}
+	if len(ids) != 2 || ids[0] != "inst-1" || ids[1] != "inst-2" {
+		t.Errorf("ids = %v, want [inst-1 inst-2]", ids)
+	}
+	if len(fake.listOptions) != 1 || !fake.listOptions[0].All {
+		t.Fatalf("list options = %+v, want one call including stopped containers", fake.listOptions)
+	}
+	f := fake.listOptions[0].Filters
+	if !f["label"]["sparky.managed=true"] || !f["label"]["sparky.profile_id=11111111-aaaa-bbbb-cccc-000000000001"] {
+		t.Errorf("filters = %v, want managed and profile labels", f)
+	}
+}
+
+func TestInstancesForProfile_InvalidIDMatchesNothingWithoutAskingTheDaemon(t *testing.T) {
+	fake := &fakeDockerClient{}
+	ids, err := (&Backend{cli: fake}).InstancesForProfile(context.Background(), "x=y")
+	if err != nil || len(ids) != 0 || len(fake.listOptions) != 0 {
+		t.Errorf("ids=%v err=%v list calls=%d, want nothing", ids, err, len(fake.listOptions))
+	}
+}
+
+func TestInstancesForProfile_ListFailureIsAnError(t *testing.T) {
+	fake := &fakeDockerClient{listErr: errors.New("daemon unreachable")}
+	if _, err := (&Backend{cli: fake}).InstancesForProfile(context.Background(), "11111111-aaaa-bbbb-cccc-000000000001"); err == nil {
+		t.Error("InstancesForProfile() swallowed a list failure")
+	}
+}

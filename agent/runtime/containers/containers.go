@@ -47,6 +47,11 @@ const nvidiaDriver = "nvidia"
 const (
 	labelInstanceID = "sparky.instance_id"
 	labelManaged    = "sparky.managed"
+
+	// labelProfileID names the profile an instance was launched from, so a
+	// later launch of the same profile can find, archive and remove the
+	// containers this one left behind (replace-on-launch).
+	labelProfileID = "sparky.profile_id"
 )
 
 // InstanceContainerName returns the legacy deterministic container name
@@ -62,6 +67,11 @@ func InstanceContainerName(instanceID string) string {
 // length cap. The name arrives from the central app over the wire, so it is
 // checked here rather than trusted to be well-formed.
 var validContainerName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
+// validProfileID is what a profile id label may hold: a uuid-shaped token. The
+// id arrives from the central app over the wire, so it is checked rather than
+// trusted before it becomes a label value and, later, a list filter.
+var validProfileID = regexp.MustCompile(`^[A-Za-z0-9-]{8,64}$`)
 
 // containerNameFor picks the name to create the container with: the
 // central app's descriptive name when it is present and valid, otherwise
@@ -179,11 +189,15 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 		hostConfig.IpcMode = container.IpcMode(spec.IPCMode)
 	}
 
+	labels := map[string]string{labelInstanceID: spec.InstanceID, labelManaged: "true"}
+	if validProfileID.MatchString(spec.ProfileID) {
+		labels[labelProfileID] = spec.ProfileID
+	}
 	config := &container.Config{
 		Image:  spec.Image,
 		Env:    spec.Env,
 		Cmd:    spec.Args,
-		Labels: map[string]string{labelInstanceID: spec.InstanceID, labelManaged: "true"},
+		Labels: labels,
 	}
 	if spec.Port != 0 {
 		port, err := network.ParsePort(fmt.Sprintf("%d/tcp", spec.Port))
@@ -253,6 +267,32 @@ func (b *Backend) resolve(ctx context.Context, instanceID string) (string, error
 		}
 	}
 	return newest.ID, nil
+}
+
+// InstancesForProfile returns the instance ID of every managed container
+// labelled with profileID, stopped or not - see
+// runtime.Backend.InstancesForProfile. A profile id that is not a plain id
+// matches nothing rather than reaching the daemon's filter.
+func (b *Backend) InstancesForProfile(ctx context.Context, profileID string) ([]string, error) {
+	if !validProfileID.MatchString(profileID) {
+		return nil, nil
+	}
+	res, err := b.cli.ContainerList(ctx, client.ContainerListOptions{
+		All: true,
+		Filters: make(client.Filters).
+			Add("label", labelManaged+"=true").
+			Add("label", labelProfileID+"="+profileID),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("list containers for profile %s: %w", profileID, err)
+	}
+	var ids []string
+	for _, c := range res.Items {
+		if id := c.Labels[labelInstanceID]; id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids, nil
 }
 
 // Stop stops and removes the container for instanceID, found by resolve - so

@@ -29,6 +29,9 @@
       <td>{{.Port}}</td>
       <td>
         {{if .InstanceStatus}}<span class="status status-{{.InstanceStatus}}">{{.InstanceStatus}}</span>{{end}}
+        {{with .LastRun}}
+        <div class="last-run">Last run: <span class="status status-{{.Status}}">{{.Status}}</span> {{.When}}{{if .Reason}} - {{.Reason}}{{end}}{{if .LogID}} - <a href="/logs/{{.LogID}}" hx-get="/logs/{{.LogID}}" hx-target="#main-content" hx-push-url="true">View log</a>{{end}}</div>
+        {{end}}
       </td>
       <td>
         {{if .HealthStatus}}<span class="status status-{{.HealthStatus}}">{{.HealthStatus}}</span>{{end}}

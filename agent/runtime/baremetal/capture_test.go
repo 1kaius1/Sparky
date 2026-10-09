@@ -166,3 +166,13 @@ func TestLastLines(t *testing.T) {
 		}
 	}
 }
+
+func TestInstancesForProfile_FindsNothingOnBareMetal(t *testing.T) {
+	b := New()
+	startShell(t, b, "i-1", "exec sleep 30")
+	defer b.Stop(context.Background(), "i-1")
+	ids, err := b.InstancesForProfile(context.Background(), "11111111-aaaa-bbbb-cccc-000000000001")
+	if err != nil || len(ids) != 0 {
+		t.Errorf("ids = %v err = %v, want none", ids, err)
+	}
+}

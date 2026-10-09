@@ -147,6 +147,13 @@ func (b *Backend) Halt(ctx context.Context, instanceID string) error {
 	return stopProcess(tp, stopGracePeriod)
 }
 
+// InstancesForProfile returns nothing: a bare-metal process is tracked in
+// this agent's own memory and cleared by Remove, so there is no leftover
+// from an earlier launch of a profile to go looking for.
+func (b *Backend) InstancesForProfile(ctx context.Context, profileID string) ([]string, error) {
+	return nil, nil
+}
+
 // Remove drops the tracking record Halt left. Untracked is not an error.
 func (b *Backend) Remove(ctx context.Context, instanceID string) error {
 	b.mu.Lock()

@@ -172,6 +172,54 @@ func (c *Conn) archiveAndRemove(ctx context.Context, conn *websocket.Conn, insta
 	}
 }
 
+// cleanUpFailedLaunch is what happens to an instance whose launch failed -
+// the engine could not be started, or started and never became ready. Its
+// container (or process) is stopped so a hung engine gives back its GPU memory
+// and port, then archived and removed like any other. Nothing is left running
+// or piled up, and the log that says why it failed is saved first. A container
+// that was never created is simply cleared. If it cannot even be stopped it is
+// left alone: removing a running container is not on offer, and the operator's
+// failed report has already gone out.
+func (c *Conn) cleanUpFailedLaunch(ctx context.Context, conn *websocket.Conn, instanceID string) {
+	if err := c.runtime.Halt(ctx, instanceID); err != nil {
+		c.logger.Printf("agent connection: stop failed launch %s: %v", instanceID, err)
+		return
+	}
+	c.archiveAndRemove(ctx, conn, instanceID, "failed_launch")
+}
+
+// replaceStaleContainers is replace-on-launch: before a profile's new
+// container is created, every older container the same profile left behind -
+// an earlier run, a failed launch whose archive did not go through, an engine
+// that was OOM-killed - is stopped, archived and removed. A container's
+// command line, image and mounts are fixed when it is created, so one left
+// over from before the profile was edited would otherwise sit there looking
+// current and run stale settings if anyone started it. The central app only
+// sends the load once it has no active instance for the profile, so any
+// container found here is stale; the agent additionally skips an instance it
+// is itself tracking as running. A failure here is logged and never blocks the
+// launch.
+func (c *Conn) replaceStaleContainers(ctx context.Context, conn *websocket.Conn, profileID, currentInstanceID string) {
+	if profileID == "" {
+		return
+	}
+	ids, err := c.runtime.InstancesForProfile(ctx, profileID)
+	if err != nil {
+		c.logger.Printf("agent connection: look for stale containers of profile %s: %v", profileID, err)
+		return
+	}
+	for _, id := range ids {
+		if id == currentInstanceID || c.isActiveInstance(id) {
+			continue
+		}
+		if err := c.runtime.Halt(ctx, id); err != nil {
+			c.logger.Printf("agent connection: stop stale instance %s of profile %s: %v", id, profileID, err)
+			continue
+		}
+		c.archiveAndRemove(ctx, conn, id, "replaced")
+	}
+}
+
 // deliverArchiveAck hands a central app confirmation to the archive waiting
 // for it. An ack nobody waits for (it timed out, or a duplicate) is ignored.
 func (c *Conn) deliverArchiveAck(ack agentproto.ContainerLogAck) {

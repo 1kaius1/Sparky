@@ -72,6 +72,7 @@ type archiveStore interface {
 	Create(ctx context.Context, in db.NewContainerLogArchive) (*db.ContainerLogArchive, error)
 	List(ctx context.Context, limit int) ([]*db.ContainerLogArchive, error)
 	FindByID(ctx context.Context, id string) (*db.ContainerLogArchive, []byte, error)
+	LatestByInstanceIDs(ctx context.Context, instanceIDs []string) (map[string]string, error)
 }
 
 // instanceLookup is the subset of *db.RunningInstanceRepository used to
@@ -325,6 +326,22 @@ func (s *Service) List(ctx context.Context, actor rbac.Actor, limit int) ([]*db.
 		return nil, rbac.ErrNotPermitted
 	}
 	return s.store.List(ctx, limit)
+}
+
+// LatestForInstances returns, for each of instanceIDs that has an archived
+// log, the id of its newest one. Requires rbac.CanViewInstanceLogs. Ids that
+// are not uuids are skipped rather than failing the whole lookup.
+func (s *Service) LatestForInstances(ctx context.Context, actor rbac.Actor, instanceIDs []string) (map[string]string, error) {
+	if !rbac.CanViewInstanceLogs(actor) {
+		return nil, rbac.ErrNotPermitted
+	}
+	valid := make([]string, 0, len(instanceIDs))
+	for _, id := range instanceIDs {
+		if uuidPattern.MatchString(id) {
+			valid = append(valid, id)
+		}
+	}
+	return s.store.LatestByInstanceIDs(ctx, valid)
 }
 
 // Read returns one archived log with its text. Requires

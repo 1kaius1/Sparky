@@ -983,3 +983,21 @@ func TestContainerLogChunk_FullSizeFitsTheMessageLimit(t *testing.T) {
 	}
 	t.Logf("full-size chunk envelope: %d bytes of %d", len(raw), wsReadLimit)
 }
+
+func TestEnvelope_RoundTrip_LoadInstance_ProfileID(t *testing.T) {
+	want := LoadInstance{InstanceID: "i-1", ModelRef: "org/m", EngineType: "vllm", Image: "img", Port: 8000, ProfileID: "p-1"}
+	env, err := NewEnvelope(TypeLoadInstance, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	var got LoadInstance
+	if err := env.DecodePayload(&got); err != nil || got.ProfileID != "p-1" {
+		t.Errorf("got %+v, err %v", got, err)
+	}
+	// Omitted when empty, so a payload without it still decodes on an agent
+	// that predates the field.
+	env, _ = NewEnvelope(TypeLoadInstance, "", LoadInstance{InstanceID: "i-1", Image: "img", Port: 1})
+	if strings.Contains(string(env.Payload), "profile_id") {
+		t.Errorf("payload %s should omit an empty profile_id", env.Payload)
+	}
+}

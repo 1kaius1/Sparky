@@ -23,6 +23,7 @@ import (
 type containerLogViewer interface {
 	List(ctx context.Context, actor rbac.Actor, limit int) ([]*db.ContainerLogArchive, error)
 	Read(ctx context.Context, actor rbac.Actor, id string) (*db.ContainerLogArchive, string, error)
+	LatestForInstances(ctx context.Context, actor rbac.Actor, instanceIDs []string) (map[string]string, error)
 }
 
 const (
