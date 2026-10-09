@@ -821,7 +821,7 @@ func newTestDashboardAPIWithInventory(t *testing.T, nodeList *fakeNodeLister, re
 	svc := NewLoginService(&fakeIdentityProvider{}, newFakeUserStore(), testSessionSecret)
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
-	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, &fakeThemeSettingsReader{}, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, inventoryFake, &fakeSizeEstimator{}, testLogger())
+	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil, nodeList, registrar, profileList, profileEditorFake, instances, launcher, transfers, &fakeTransferInitiator{}, users, auditLog, roster, elevator, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, settingsSvc, &fakeThemeSettingsReader{}, metricsSvc, eventsSrc, engineProvisionerFake, engineTransfersFake, engineInventoryFake, inventoryFake, &fakeSizeEstimator{}, &fakeContainerLogs{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

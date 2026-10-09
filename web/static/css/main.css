@@ -258,6 +258,19 @@ table.data-table:not(.panel .data-table) {
 .check-failed { color: var(--color-status-failed); }
 .check-pending { color: var(--color-status-starting); }
 
+/* Container log viewer: the log text, wide lines scroll sideways instead of
+   stretching the page. */
+.log-text {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  font-size: 0.8rem;
+  line-height: 1.4;
+  overflow-x: auto;
+  white-space: pre;
+}
+
 /* Field help: a small "?" beside a form field that shows its explanation on
    hover or keyboard focus, so long guidance does not take up page space. Pure
    CSS (no script); the field points at the text with aria-describedby so

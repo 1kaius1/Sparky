@@ -23,6 +23,7 @@ type pageData struct {
 	ActiveSection string
 	CSRFToken     string
 	ShowAdminNav  bool
+	ShowLogsNav   bool
 	Theme         themeViewModel
 	Data          any
 }
@@ -73,7 +74,7 @@ type themeViewModel struct {
 // base+one-page per entry keeps each page's "content" definition private
 // to its own set.
 func loadPageTemplates() (map[string]*template.Template, error) {
-	pages := []string{"dashboard", "nodes", "inventory", "profiles", "transfers", "engine_inventory", "engine_transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "node_edit", "node_comment_edit", "profile_form", "provision_engine", "initiate_transfer", "scan_models", "forbidden", "create_local_account", "account"}
+	pages := []string{"dashboard", "nodes", "inventory", "profiles", "transfers", "engine_inventory", "engine_transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "node_edit", "node_comment_edit", "profile_form", "provision_engine", "initiate_transfer", "scan_models", "container_logs", "container_log", "forbidden", "create_local_account", "account"}
 	result := make(map[string]*template.Template, len(pages)+1)
 	for _, name := range pages {
 		t, err := template.ParseFS(web.FS, "templates/layouts/base.html", "templates/pages/"+name+".html")
@@ -165,6 +166,7 @@ func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string,
 		// sidebar... never reload[s]") - so this extra tier lookup is paid
 		// once per full page load, not on every section change.
 		pd.ShowAdminNav = a.canViewAdminNav(r.Context())
+		pd.ShowLogsNav = a.canViewLogsNav(r.Context())
 		pd.Theme = a.resolveTheme(r.Context())
 	}
 
@@ -193,6 +195,22 @@ func (a *API) canViewAdminNav(ctx context.Context) bool {
 		return false
 	}
 	return rbac.CanViewAuditLog(actor)
+}
+
+// canViewLogsNav reports whether to show the Container logs sidebar link,
+// the Developer-floor counterpart of canViewAdminNav: a display nicety whose
+// failure hides the link, with the real gate inside containerlogs.Service.
+func (a *API) canViewLogsNav(ctx context.Context) bool {
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		return false
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for sidebar nav: %v", err)
+		return false
+	}
+	return rbac.CanViewInstanceLogs(actor)
 }
 
 // resolveTheme determines the current viewer's effective theme - a full

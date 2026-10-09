@@ -48,6 +48,12 @@
                 <a href="/profiles" hx-get="/profiles" hx-target="#main-content" hx-push-url="true"
                    class="{{if eq .ActiveSection "profiles"}}active{{end}}">Profiles</a>
               </li>
+              {{if .ShowLogsNav}}
+              <li>
+                <a href="/logs" hx-get="/logs" hx-target="#main-content" hx-push-url="true"
+                   class="{{if or (eq .ActiveSection "container_logs") (eq .ActiveSection "container_log")}}active{{end}}">Container logs</a>
+              </li>
+              {{end}}
             </ul>
           </details>
         </li>
