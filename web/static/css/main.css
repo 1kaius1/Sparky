@@ -258,6 +258,13 @@ table.data-table:not(.panel .data-table) {
 .check-failed { color: var(--color-status-failed); }
 .check-pending { color: var(--color-status-starting); }
 
+/* Profiles page: a profile's most recent finished instance, under its status. */
+.last-run {
+  margin-top: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
 /* Container log viewer: the log text, wide lines scroll sideways instead of
    stretching the page. */
 .log-text {

@@ -82,6 +82,37 @@ type profileRow struct {
 	// value (not yet health-checked) an active instance can genuinely
 	// have. See SCHEMA.md Running instances' health_status.
 	HealthStatus string
+
+	// LastRun describes the profile's most recent finished instance when it
+	// has no active one - the only place a failed launch's reason is shown.
+	// Nil when the profile has never run or is running now.
+	LastRun *lastRunView
+}
+
+// lastRunView is a profile's most recent finished instance. Status is
+// stopped or failed. LogID is the archived container log, empty when none was
+// stored (the viewer is not permitted, or the archive did not go through).
+type lastRunView struct {
+	Status string
+	When   string
+	Reason string
+	LogID  string
+}
+
+// lastRunReasonLimit bounds the failure reason shown on the page; the full
+// message and the container's log are on the log page.
+const lastRunReasonLimit = 200
+
+// firstLine returns the first line of s, shortened to limit characters.
+func firstLine(s string, limit int) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = strings.TrimSpace(s[:i])
+	}
+	if r := []rune(s); len(r) > limit {
+		s = string(r[:limit]) + "..."
+	}
+	return s
 }
 
 func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
@@ -123,6 +154,41 @@ func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// ListInstances is newest first, so the first finished instance seen for
+	// a profile is its last run. Only a profile with no active instance shows
+	// one.
+	lastByProfile := make(map[string]*db.RunningInstance, len(instanceList))
+	for _, inst := range instanceList {
+		if nonTerminalInstanceStatuses[inst.Status] {
+			continue
+		}
+		if _, seen := lastByProfile[inst.ProfileID]; !seen {
+			lastByProfile[inst.ProfileID] = inst
+		}
+	}
+
+	var canManage, canLaunch bool
+	var logIDs map[string]string
+	if identity, ok := IdentityFromContext(ctx); ok {
+		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
+			canManage = rbac.CanManageProfiles(actor)
+			canLaunch = rbac.CanLaunchInstances(actor)
+			if rbac.CanViewInstanceLogs(actor) {
+				ids := make([]string, 0, len(lastByProfile))
+				for profileID, inst := range lastByProfile {
+					if _, active := activeByProfile[profileID]; !active {
+						ids = append(ids, inst.ID)
+					}
+				}
+				var err error
+				if logIDs, err = a.containerLogs.LatestForInstances(ctx, actor, ids); err != nil {
+					// The page still renders without the links.
+					a.logger.Printf("httpapi: look up container logs for the profiles page: %v", err)
+				}
+			}
+		}
+	}
+
 	rows := make([]profileRow, 0, len(profileList))
 	for _, p := range profileList {
 		var targetNode string
@@ -148,16 +214,18 @@ func (a *API) handleModelProfiles(w http.ResponseWriter, r *http.Request) {
 			if active.Status == db.RunningInstanceStatusRunning {
 				row.HealthStatus = string(active.HealthStatus)
 			}
+		} else if last, ok := lastByProfile[p.ID]; ok {
+			when := last.StartedAt
+			if last.StoppedAt != nil {
+				when = *last.StoppedAt
+			}
+			lr := &lastRunView{Status: string(last.Status), When: when.Format("2006-01-02 15:04:05 MST"), LogID: logIDs[last.ID]}
+			if last.ErrorMessage != nil {
+				lr.Reason = firstLine(*last.ErrorMessage, lastRunReasonLimit)
+			}
+			row.LastRun = lr
 		}
 		rows = append(rows, row)
-	}
-
-	var canManage, canLaunch bool
-	if identity, ok := IdentityFromContext(ctx); ok {
-		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
-			canManage = rbac.CanManageProfiles(actor)
-			canLaunch = rbac.CanLaunchInstances(actor)
-		}
 	}
 
 	a.render(w, r, "profiles", "Model profiles", profilesPageData{Profiles: rows, CanManage: canManage, CanLaunch: canLaunch})

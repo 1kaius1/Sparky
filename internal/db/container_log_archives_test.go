@@ -132,3 +132,55 @@ func TestContainerLogArchiveRepository_FindByIDNotFound(t *testing.T) {
 		t.Errorf("err = %v, want ErrContainerLogArchiveNotFound", err)
 	}
 }
+
+func TestContainerLogArchiveRepository_LatestByInstanceIDs(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	repo := NewContainerLogArchiveRepository(pool)
+	ctx := context.Background()
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	cleanupArchives(t, repo, node.ID)
+
+	instA := "aaaaaaaa-0000-0000-0000-00000000000a"
+	instB := "bbbbbbbb-0000-0000-0000-00000000000b"
+	instNone := "cccccccc-0000-0000-0000-00000000000c"
+
+	oldA := archiveInput(node.ID, "upload-"+t.Name()+"-a1")
+	oldA.InstanceID = &instA
+	first, err := repo.Create(ctx, oldA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	newA := archiveInput(node.ID, "upload-"+t.Name()+"-a2")
+	newA.InstanceID = &instA
+	second, err := repo.Create(ctx, newA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inB := archiveInput(node.ID, "upload-"+t.Name()+"-b1")
+	inB.InstanceID = &instB
+	b, err := repo.Create(ctx, inB)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := repo.LatestByInstanceIDs(ctx, []string{instA, instB, instNone})
+	if err != nil {
+		t.Fatalf("LatestByInstanceIDs() error: %v", err)
+	}
+	if got[instA] != second.ID || got[instA] == first.ID {
+		t.Errorf("instance A -> %s, want its newest archive %s", got[instA], second.ID)
+	}
+	if got[instB] != b.ID {
+		t.Errorf("instance B -> %s, want %s", got[instB], b.ID)
+	}
+	if _, ok := got[instNone]; ok || len(got) != 2 {
+		t.Errorf("got %v, want only the two instances that have archives", got)
+	}
+
+	empty, err := repo.LatestByInstanceIDs(ctx, nil)
+	if err != nil || len(empty) != 0 {
+		t.Errorf("empty input: %v, %v", empty, err)
+	}
+}

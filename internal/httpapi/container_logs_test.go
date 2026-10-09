@@ -26,6 +26,19 @@ type fakeContainerLogs struct {
 	text     string
 	readErr  error
 	listErr  error
+
+	// latest answers LatestForInstances (instance id -> archive id);
+	// latestAsked records the ids it was asked about.
+	latest      map[string]string
+	latestAsked []string
+}
+
+func (f *fakeContainerLogs) LatestForInstances(_ context.Context, actor rbac.Actor, ids []string) (map[string]string, error) {
+	if !rbac.CanViewInstanceLogs(actor) {
+		return nil, rbac.ErrNotPermitted
+	}
+	f.latestAsked = append(f.latestAsked, ids...)
+	return f.latest, nil
 }
 
 func (f *fakeContainerLogs) List(_ context.Context, actor rbac.Actor, _ int) ([]*db.ContainerLogArchive, error) {

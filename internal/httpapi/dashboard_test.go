@@ -1072,6 +1072,89 @@ func TestHandleModelProfiles_ShowsInstanceStatusAndLoadControl(t *testing.T) {
 	}
 }
 
+// A profile with no active instance shows how its last run ended - the one
+// place a failed launch's reason is visible - with a link to the saved log.
+func TestHandleModelProfiles_LastRun_ShowsFailureReasonAndLogLink(t *testing.T) {
+	stopped := time.Date(2026, 10, 9, 15, 38, 0, 0, time.UTC)
+	reason := "instance did not become ready: process exited\n\nCUDA out of memory\nmore log lines"
+	profiles := &fakeProfileLister{profiles: []*db.Profile{
+		{ID: "profile-1", Name: "failed-profile"},
+		{ID: "profile-2", Name: "running-profile"},
+		{ID: "profile-3", Name: "never-run"},
+		{ID: "profile-4", Name: "stopped-profile"},
+	}}
+	instances := &fakeInstanceLister{instances: []*db.RunningInstance{
+		// newest first, as ListInstances returns them
+		{ID: "inst-failed-new", ProfileID: "profile-1", Status: db.RunningInstanceStatusFailed, StoppedAt: &stopped, ErrorMessage: &reason},
+		{ID: "inst-stopped-old", ProfileID: "profile-1", Status: db.RunningInstanceStatusStopped},
+		{ID: "inst-running", ProfileID: "profile-2", Status: db.RunningInstanceStatusRunning},
+		{ID: "inst-failed-before-running", ProfileID: "profile-2", Status: db.RunningInstanceStatusFailed},
+		{ID: "inst-stopped", ProfileID: "profile-4", Status: db.RunningInstanceStatusStopped, StoppedAt: &stopped},
+	}}
+	users := newFakeUserLister()
+	users.byID["dev-1"] = &db.User{ID: "dev-1", Tier: db.TierDeveloper}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, profiles, instances, &fakeTransferLister{}, users, &fakeAuditLister{})
+	logs := &fakeContainerLogs{latest: map[string]string{"inst-failed-new": "cccccccc-cccc-cccc-cccc-cccccccccccc"}}
+	api.containerLogs = logs
+
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/profiles", "dev-1"))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "Last run:") || !strings.Contains(body, "status-failed") ||
+		!strings.Contains(body, "instance did not become ready: process exited") {
+		t.Errorf("failed profile's last run is not shown with its reason: %s", body)
+	}
+	if strings.Contains(body, "CUDA out of memory") {
+		t.Error("only the first line of the failure message belongs on the page")
+	}
+	if !strings.Contains(body, `href="/logs/cccccccc-cccc-cccc-cccc-cccccccccccc"`) {
+		t.Error("the last run does not link to its saved log")
+	}
+	if n := strings.Count(body, "Last run:"); n != 2 {
+		t.Errorf("%d last-run lines, want 2 (failed and stopped profiles only; the running and never-run profiles show none)", n)
+	}
+	for _, asked := range logs.latestAsked {
+		if asked == "inst-running" || asked == "inst-failed-before-running" || asked == "inst-stopped-old" {
+			t.Errorf("looked up a log for %s, which is not a last run", asked)
+		}
+	}
+}
+
+func TestHandleModelProfiles_LastRun_NoLogLinkForReadOnly(t *testing.T) {
+	profiles := &fakeProfileLister{profiles: []*db.Profile{{ID: "profile-1", Name: "failed-profile"}}}
+	msg := "boom"
+	instances := &fakeInstanceLister{instances: []*db.RunningInstance{{ID: "inst-1", ProfileID: "profile-1", Status: db.RunningInstanceStatusFailed, ErrorMessage: &msg}}}
+	users := newFakeUserLister()
+	users.byID["ro-1"] = &db.User{ID: "ro-1", Tier: db.TierReadOnly}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, profiles, instances, &fakeTransferLister{}, users, &fakeAuditLister{})
+	api.containerLogs = &fakeContainerLogs{latest: map[string]string{"inst-1": "cccccccc-cccc-cccc-cccc-cccccccccccc"}}
+
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/profiles", "ro-1"))
+	body := rec.Body.String()
+	if !strings.Contains(body, "Last run:") || !strings.Contains(body, "boom") {
+		t.Error("a read-only user should still see how the last run ended")
+	}
+	if strings.Contains(body, "/logs/") {
+		t.Error("a read-only user was shown a link to a container log")
+	}
+}
+
+func TestFirstLine(t *testing.T) {
+	for in, want := range map[string]string{
+		"":                       "",
+		"one line":               "one line",
+		"first\nsecond":          "first",
+		"  padded  \n\nrest":     "padded",
+		strings.Repeat("a", 250): strings.Repeat("a", 200) + "...",
+	} {
+		if got := firstLine(in, 200); got != want {
+			t.Errorf("firstLine(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestHandleModelProfiles_ShowsHealthStatus_OnlyForRunningInstance(t *testing.T) {
 	profiles := &fakeProfileLister{profiles: []*db.Profile{
 		{ID: "profile-1", Name: "healthy-profile"},
