@@ -260,7 +260,8 @@ sanitized for Docker (anything outside `A-Za-z0-9_.-` becomes `-`, trimmed to
 all (an older server), falls back to the legacy `sparky-instance-<instance id>`.
 
 The name is display-only. The agent labels every container it starts with
-`sparky.instance_id=<instance id>` (and `sparky.managed=true`) and finds it again
+`sparky.instance_id=<instance id>` (and `sparky.managed=true`, and
+`sparky.profile_id=<profile id>` when the central app sends one) and finds it again
 by that label - for an unload, a log tail, and the central app's `check_instance`
 sweep after a reconnect or agent restart - so a container is found even though
 its name cannot be recomputed from the instance id. A container with no label is
@@ -293,6 +294,24 @@ happens against an older central app, which ignores the new message type and
 never confirms, so containers pile up exactly as before until the server is
 upgraded - **upgrade the agents first, then the server.** An upload that is
 interrupted (a reconnect mid-way) is not resumed.
+
+The same archive-then-remove rule covers two more paths. **A failed launch**: if
+the engine cannot be started, or starts and never becomes ready, the agent
+reports the load failed first, then stops the container (a hung engine gives
+back its GPU memory and port), archives its log with reason `failed_launch`,
+and removes it. **Replace-on-launch**: every container the agent starts is
+labelled `sparky.profile_id` (the central app sends `profile_id` with
+`load_instance`), and before it creates a profile's new container it stops,
+archives (reason `replaced`) and removes every older container carrying the
+same label - a container's command line, image and mounts are fixed when it is
+created, so one left over from before the profile was edited would otherwise
+look current and run stale settings. It skips the instance being launched and
+any instance the agent is itself tracking as running, and a failure there
+never blocks the launch (a container whose log could not be stored is kept).
+Containers started before the label existed, and those of a profile that was
+deleted or renamed, are not found by this; the scheduled and manual cleanup is
+for them. **Upgrade the agents first, then the server:** an older agent
+rejects `profile_id` in `load_instance`.
 
 An instance whose container is already gone has nothing to archive and is just
 cleared; one that exited or was OOM-killed (a Dead instance) is archived with

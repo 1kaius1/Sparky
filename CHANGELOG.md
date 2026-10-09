@@ -8,6 +8,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Failed launches and replace-on-launch (container lifecycle): a launch that
+  fails to start, or starts and never becomes ready, no longer leaves a
+  container behind. It is reported failed as before, then the container is
+  stopped (a hung engine gives back its GPU memory and port), its log saved to
+  the Container logs page, and it is removed only after the central app
+  confirms it stored the log. Before a profile launches, the agent also stops,
+  archives and removes every older container that profile left behind, so
+  containers carrying a previous, now-stale command line no longer pile up.
+  New `sparky.profile_id` container label and `profile_id` on `load_instance`.
+  The Profiles page now shows each profile's last finished run - stopped or
+  failed, with the first line of why it failed and, for Developer and above, a
+  link to the saved log - the first place a failed launch's reason is visible.
+  **Upgrade the agents first, then the server:** an older agent rejects the new
+  `profile_id` field and drops the whole `load_instance`, leaving the instance
+  stuck in `starting`. Containers started before this release carry no profile
+  label and are not cleaned up by it; the scheduled and manual cleanup (still to
+  build) is for those.
 - Container log archive: when an instance is unloaded, the agent now saves the
   container's last 2000 lines of output and its exit reason (state, exit code,
   whether it was killed for running out of memory) on the central app before
@@ -110,6 +127,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped to `0.2.10` so builds carrying failed-launch
+  cleanup and replace-on-launch register as newer than the `0.2.9` packages.
+  Both packages move together because they share one `VERSION`.
 - Packaging: `VERSION` bumped to `0.2.9` so builds carrying the container log
   archive register as newer than the `0.2.8` packages. Both packages move
   together because they share one `VERSION`.

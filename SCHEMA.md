@@ -218,7 +218,7 @@ chunks and stored whole once the central app has verified it
 | `profile_id` | uuid, nullable | The profile at the time, resolved by the central app from the instance row. No foreign key, for the same reason |
 | `profile_name` | text | A copy of the profile's name then, since a profile can be renamed or deleted. Empty when unknown |
 | `container_name` / `container_id` | text | As the runtime reported them. Informational |
-| `reason` | text | Why the container was archived: `unload` today, later `failed_launch` and `replaced`. `unknown` for a value the central app does not recognise |
+| `reason` | text | Why the container was archived: `unload` (an Unload), `failed_launch` (the engine never started or never became ready) or `replaced` (an older container of the same profile cleared before a new launch). `unknown` for a value the central app does not recognise |
 | `container_state` | text | The container's own state word (`exited`, `running`, ...), empty when unknown |
 | `exit_code` | integer, nullable | `NULL` while the instance was still running or when the backend cannot tell. A bare-metal process killed by a signal is `-1` |
 | `oom_killed` | boolean | The runtime reported the container was killed for running out of memory. Always false for bare-metal |
