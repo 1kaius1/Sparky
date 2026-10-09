@@ -139,6 +139,18 @@ binary, which:
   Also joins the account to whichever of the `video`/`render` groups actually
   exist on this distro/driver combination (both are joined if both exist -
   which one actually gates GPU device access varies)
+- On a `docker`-backend node, joins `serviceloop` to the `docker` group so the
+  agent can reach the Docker socket. Unlike `video`/`render` this is gated on
+  the node's configured backend (`SPARKY_RUNTIME_BACKEND` in the environment,
+  else `/etc/sparky-agent/secrets.env`), not on the group merely existing:
+  `docker` group membership is root-equivalent on the host, so a bare-metal
+  node that happens to have Docker installed is never given it. A fresh
+  install runs this before `secrets.env` is filled in, so setup reports it as
+  "not needed yet"; after setting `SPARKY_RUNTIME_BACKEND=docker`, run
+  `sudo sparky-agent setup` once more (every later upgrade re-runs it
+  automatically) and restart `sparky-agent` if it is already running, since a
+  group change only reaches new processes. Podman is not covered - its socket
+  access is not governed by a `docker` group
 - Generates the node's SSH identity for peer-to-peer model transfer if it has
   none yet (see SSH identity and network interfaces below) - never overwrites
   an existing key

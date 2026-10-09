@@ -61,6 +61,10 @@ const (
 	// SSHDDropInPath is the sshd config drop-in scoping every peer-transfer
 	// setting to PeerUser.
 	SSHDDropInPath = "/etc/ssh/sshd_config.d/50-sparky-peer.conf"
+
+	// DefaultSecretsEnvPath is the agent's systemd EnvironmentFile, where
+	// SPARKY_RUNTIME_BACKEND lives once the operator has filled it in.
+	DefaultSecretsEnvPath = "/etc/sparky-agent/secrets.env"
 )
 
 // sshdDropIn is the complete drop-in. Everything is inside one Match User
@@ -117,11 +121,16 @@ type Provisioner struct {
 	grantDir   string
 	usedDir    string
 	sshdDropIn string
+	// secretsEnvPath / getenv are where EnsureContainerRuntimeGroupMembership
+	// learns the node's runtime backend; fields so tests need neither the
+	// real file nor the real environment.
+	secretsEnvPath string
+	getenv         func(string) string
 }
 
 // New constructs a Provisioner that shells out for real.
 func New() *Provisioner {
-	return &Provisioner{run: runCommand, sshKeyPath: DefaultSSHKeyPath, grantDir: PeerGrantDir, usedDir: PeerUsedDir, sshdDropIn: SSHDDropInPath}
+	return &Provisioner{run: runCommand, sshKeyPath: DefaultSSHKeyPath, grantDir: PeerGrantDir, usedDir: PeerUsedDir, sshdDropIn: SSHDDropInPath, secretsEnvPath: DefaultSecretsEnvPath, getenv: os.Getenv}
 }
 
 // EnsureServiceloopUser creates the serviceloop system account if it
@@ -164,6 +173,97 @@ func (p *Provisioner) EnsureGPUGroupMembership(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// ContainerGroupResult says what EnsureContainerRuntimeGroupMembership did,
+// so `sparky-agent setup` can tell the operator the one thing they might
+// need to do next rather than reporting a bare "OK".
+type ContainerGroupResult int
+
+const (
+	// ContainerGroupNotNeeded: the node's runtime backend is not docker, or
+	// has not been configured yet (a fresh install's secrets.env is still
+	// the template placeholder). Nothing was changed.
+	ContainerGroupNotNeeded ContainerGroupResult = iota
+	// ContainerGroupJoined: serviceloop is now a member of the docker group.
+	ContainerGroupJoined
+	// ContainerGroupMissing: the backend is docker but this host has no
+	// docker group, so Docker is not installed. Nothing was changed.
+	ContainerGroupMissing
+)
+
+// EnsureContainerRuntimeGroupMembership joins serviceloop to the docker group
+// when this node's runtime backend is docker, so the agent can reach the
+// Docker socket. Without it a freshly provisioned docker node cannot start a
+// container at all until an operator runs usermod by hand.
+//
+// Unlike video/render this is gated on the configured backend rather than on
+// the group merely existing: membership in the docker group is root-
+// equivalent on the host, and a bare-metal node that happens to have Docker
+// installed has no need to hand the agent that. The backend comes from the
+// SPARKY_RUNTIME_BACKEND environment variable if set, else from the agent's
+// secrets.env. Setup runs at package install, before an operator has filled
+// that file in, so a first install usually reports ContainerGroupNotNeeded
+// and the operator re-runs `sparky-agent setup` once the file is configured;
+// every later upgrade re-runs it automatically. Podman is not handled here:
+// its socket access is not governed by a docker group.
+func (p *Provisioner) EnsureContainerRuntimeGroupMembership(ctx context.Context) (ContainerGroupResult, error) {
+	backend := strings.TrimSpace(p.getenv("SPARKY_RUNTIME_BACKEND"))
+	if backend == "" {
+		var err error
+		backend, err = readEnvFileValue(p.secretsEnvPath, "SPARKY_RUNTIME_BACKEND")
+		if err != nil {
+			return ContainerGroupNotNeeded, fmt.Errorf("read runtime backend from %s: %w", p.secretsEnvPath, err)
+		}
+	}
+	if backend != "docker" {
+		return ContainerGroupNotNeeded, nil
+	}
+	if err := p.run(ctx, "getent", "group", "docker"); err != nil {
+		return ContainerGroupMissing, nil
+	}
+	if err := p.run(ctx, "usermod", "-aG", "docker", "serviceloop"); err != nil {
+		return ContainerGroupNotNeeded, fmt.Errorf("join serviceloop to group docker: %w", err)
+	}
+	return ContainerGroupJoined, nil
+}
+
+// readEnvFileValue returns the value of key in a systemd EnvironmentFile, or
+// "" if the file or the key is absent - a missing file is the normal state
+// before the package has installed it, not an error. Only the subset of the
+// format this needs is handled: KEY=VALUE lines, # and ; comment lines, and
+// one pair of surrounding quotes; the last assignment wins, as in systemd.
+func readEnvFileValue(path, key string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", nil
+		}
+		return "", err
+	}
+	defer f.Close()
+
+	value := ""
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if line == "" || line[0] == '#' || line[0] == ';' {
+			continue
+		}
+		k, v, ok := strings.Cut(line, "=")
+		if !ok || strings.TrimSpace(k) != key {
+			continue
+		}
+		v = strings.TrimSpace(v)
+		if len(v) >= 2 && (v[0] == '"' || v[0] == '\'') && v[len(v)-1] == v[0] {
+			v = v[1 : len(v)-1]
+		}
+		value = v
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return value, nil
 }
 
 // EnsureSSHKeypair generates this node's own SSH client identity - an
