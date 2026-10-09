@@ -389,3 +389,164 @@ func TestEnsurePeerAccess_MissingDropInDirIsAClearError(t *testing.T) {
 		t.Errorf("error = %v, want one that explains the missing drop-in directory", err)
 	}
 }
+
+func writeSecrets(t *testing.T, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "secrets.env")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func noEnv(string) string { return "" }
+
+func usermodCalls(f *fakeRunner) []call {
+	var out []call
+	for _, c := range f.calls {
+		if c.name == "usermod" {
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+func TestEnsureContainerRuntimeGroupMembership_DockerBackend_JoinsGroup(t *testing.T) {
+	fake := &fakeRunner{}
+	p := &Provisioner{run: fake.run, getenv: noEnv, secretsEnvPath: writeSecrets(t, "SPARKY_RUNTIME_BACKEND=docker\n")}
+
+	got, err := p.EnsureContainerRuntimeGroupMembership(context.Background())
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if got != ContainerGroupJoined {
+		t.Errorf("result = %v, want ContainerGroupJoined", got)
+	}
+	calls := usermodCalls(fake)
+	if len(calls) != 1 || !reflect.DeepEqual(calls[0].args, []string{"-aG", "docker", "serviceloop"}) {
+		t.Errorf("usermod calls = %v, want one 'usermod -aG docker serviceloop'", calls)
+	}
+}
+
+func TestEnsureContainerRuntimeGroupMembership_NotDocker_NeverTouchesGroup(t *testing.T) {
+	for _, backend := range []string{
+		"bare-metal",
+		"podman",
+		"",
+		// The untouched template placeholder on a fresh install.
+		"changeme-docker-podman-or-bare-metal",
+	} {
+		t.Run(backend, func(t *testing.T) {
+			fake := &fakeRunner{}
+			p := &Provisioner{run: fake.run, getenv: noEnv, secretsEnvPath: writeSecrets(t, "SPARKY_RUNTIME_BACKEND="+backend+"\n")}
+
+			got, err := p.EnsureContainerRuntimeGroupMembership(context.Background())
+			if err != nil {
+				t.Fatalf("error: %v", err)
+			}
+			if got != ContainerGroupNotNeeded {
+				t.Errorf("result = %v, want ContainerGroupNotNeeded", got)
+			}
+			if len(fake.calls) != 0 {
+				t.Errorf("commands run = %v, want none (docker group membership is root-equivalent)", fake.calls)
+			}
+		})
+	}
+}
+
+func TestEnsureContainerRuntimeGroupMembership_MissingSecretsFile_NotNeeded(t *testing.T) {
+	fake := &fakeRunner{}
+	p := &Provisioner{run: fake.run, getenv: noEnv, secretsEnvPath: filepath.Join(t.TempDir(), "absent.env")}
+
+	got, err := p.EnsureContainerRuntimeGroupMembership(context.Background())
+	if err != nil {
+		t.Fatalf("a missing secrets.env must not be an error: %v", err)
+	}
+	if got != ContainerGroupNotNeeded || len(fake.calls) != 0 {
+		t.Errorf("result = %v, calls = %v, want NotNeeded and no commands", got, fake.calls)
+	}
+}
+
+func TestEnsureContainerRuntimeGroupMembership_UnreadableSecretsFile_ReturnsError(t *testing.T) {
+	// A directory where the file should be: exists, but cannot be read as one.
+	p := &Provisioner{run: (&fakeRunner{}).run, getenv: noEnv, secretsEnvPath: t.TempDir()}
+
+	if _, err := p.EnsureContainerRuntimeGroupMembership(context.Background()); err == nil {
+		t.Fatal("succeeded despite an unreadable secrets.env")
+	}
+}
+
+func TestEnsureContainerRuntimeGroupMembership_EnvVarOverridesFile(t *testing.T) {
+	fake := &fakeRunner{}
+	p := &Provisioner{
+		run:            fake.run,
+		getenv:         func(k string) string { return map[string]string{"SPARKY_RUNTIME_BACKEND": "docker"}[k] },
+		secretsEnvPath: writeSecrets(t, "SPARKY_RUNTIME_BACKEND=bare-metal\n"),
+	}
+
+	got, err := p.EnsureContainerRuntimeGroupMembership(context.Background())
+	if err != nil || got != ContainerGroupJoined {
+		t.Fatalf("result = %v, err = %v, want Joined (environment wins over the file)", got, err)
+	}
+}
+
+func TestEnsureContainerRuntimeGroupMembership_NoDockerGroup_Skipped(t *testing.T) {
+	fake := &fakeRunner{fn: func(name string, _ []string) error {
+		if name == "getent" {
+			return errors.New("no such group")
+		}
+		return nil
+	}}
+	p := &Provisioner{run: fake.run, getenv: noEnv, secretsEnvPath: writeSecrets(t, "SPARKY_RUNTIME_BACKEND=docker\n")}
+
+	got, err := p.EnsureContainerRuntimeGroupMembership(context.Background())
+	if err != nil {
+		t.Fatalf("a host without Docker must not fail package install: %v", err)
+	}
+	if got != ContainerGroupMissing || len(usermodCalls(fake)) != 0 {
+		t.Errorf("result = %v, usermod calls = %v, want Missing and none", got, usermodCalls(fake))
+	}
+}
+
+func TestEnsureContainerRuntimeGroupMembership_UsermodFails_ReturnsError(t *testing.T) {
+	fake := &fakeRunner{fn: func(name string, _ []string) error {
+		if name == "usermod" {
+			return errors.New("permission denied")
+		}
+		return nil
+	}}
+	p := &Provisioner{run: fake.run, getenv: noEnv, secretsEnvPath: writeSecrets(t, "SPARKY_RUNTIME_BACKEND=docker\n")}
+
+	if _, err := p.EnsureContainerRuntimeGroupMembership(context.Background()); err == nil {
+		t.Fatal("succeeded despite a usermod failure")
+	}
+}
+
+func TestReadEnvFileValue(t *testing.T) {
+	content := "# a comment\n" +
+		"; another comment\n" +
+		"\n" +
+		"OTHER=x\n" +
+		"KEY=first\n" +
+		"  KEY = \"quoted value\"  \n" +
+		"EMPTY=\n"
+	path := writeSecrets(t, content)
+
+	cases := map[string]string{
+		"KEY":     "quoted value", // last assignment wins, quotes and padding stripped
+		"OTHER":   "x",
+		"EMPTY":   "",
+		"MISSING": "",
+	}
+	for key, want := range cases {
+		got, err := readEnvFileValue(path, key)
+		if err != nil || got != want {
+			t.Errorf("readEnvFileValue(%q) = %q, %v; want %q", key, got, err, want)
+		}
+	}
+
+	single, err := readEnvFileValue(writeSecrets(t, "K='v'\n"), "K")
+	if err != nil || single != "v" {
+		t.Errorf("single-quoted value = %q, %v; want v", single, err)
+	}
+}

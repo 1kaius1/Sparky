@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- Agent: `sparky-agent setup` now joins `serviceloop` to the `docker` group on
+  a `docker`-backend node. Previously nothing did, so a freshly provisioned
+  Docker node could not reach the Docker socket until an operator ran
+  `usermod -aG docker serviceloop` by hand. It is gated on the configured
+  backend (`SPARKY_RUNTIME_BACKEND` in the environment, else
+  `/etc/sparky-agent/secrets.env`) rather than on the group existing, because
+  `docker` group membership is root-equivalent and a bare-metal node with
+  Docker installed must not receive it. A fresh install runs setup before
+  `secrets.env` is filled in, so after setting the backend to `docker` re-run
+  `sudo sparky-agent setup` and restart `sparky-agent`; later upgrades do it
+  automatically. Podman is not covered.
 - Agent: `SPARKY_MODEL_STORAGE_PATH` now defaults to
   `/opt/sparky/serviceloop/models` on every `runtime_backend`, not just
   `bare-metal`. A `docker`/`podman` node with the variable unset (the real
