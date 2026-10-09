@@ -207,7 +207,7 @@ container (`docs/AGENT.md` Container log archive), so why an engine failed or
 died is still readable after the container is gone. One row per archived
 container. The log is gzip text in a `bytea` column, sent by the agent in
 chunks and stored whole once the central app has verified it
-(`internal/containerlogs`). Retention is not enforced yet - see `PLANNING.md`.
+(`internal/containerlogs`). Archives are deleted after the retention period in Container log settings below.
 
 | Field | Type | Notes |
 |---|---|---|
@@ -234,6 +234,20 @@ Nothing references this table, so it can be moved or expired independently of
 the rest of the schema (the future cold storage feature - `PLANNING.md`
 Decisions Log, 2026-10-09). Viewing is Developer and above
 (`rbac.CanViewInstanceLogs`); reads are not recorded in the audit log.
+
+---
+
+## Container log settings
+
+Singleton settings row, editable on the Settings page (Admin only), same
+seeded-at-migration-time reasoning as Audit settings above. It holds how long
+Container log archives above are kept.
+
+| Field | Type | Notes |
+|---|---|---|
+| `retention_months` | integer | 1 to 24 (enforced by a CHECK constraint), mirroring the audit log's range. Defaults to 12 on the seeded row. A job in `internal/containerlogs` runs a minute after the server starts and then daily, deleting archives whose `created_at` is older than this many months; a run that deletes anything is recorded in the audit log as `expired_container_logs` by the system (see Audit log). Unlike Audit settings' own `retention_months`, which is only displayed, this one is editable and enforced |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row, and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
 
 ---
 
@@ -384,7 +398,7 @@ see `ARCHITECTURE.md` Audit Log section for the full policy.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | uuid, PK | |
-| `actor_id` | uuid, nullable, FK -> Users.id | Null actor with an `is_superadmin` flag set represents the break-glass account |
+| `actor_id` | uuid, nullable, FK -> Users.id | Null actor with an `is_superadmin` flag set represents the break-glass account. Null actor with the flag unset represents the system itself - a scheduled job with no person behind it (today only the container log expiry, `expired_container_logs`) |
 | `is_superadmin_action` | boolean | |
 | `action` | text | Past-tense verb, e.g. `loaded_model`, `elevated_user`, `deleted_model_copy` |
 | `object_type` / `object_id` | text, uuid | What was affected |

@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Live container logs and log retention: a **Logs** link on the Profiles page
+  (for an active instance) and on the Dashboard's running instances (Developer
+  and above) opens that instance's current output, read from its node on
+  demand (100 to 5000 lines, with a Refresh link; nothing is stored, and logs
+  can contain prompt content). If the node is offline, does not answer within
+  15 seconds, or no longer has the container, the page says why and links the
+  instance's newest saved log. The Settings page gains a **Container logs**
+  section where an Admin sets how long saved logs are kept (1 to 24 months,
+  default 12, audited); a daily job, started a minute after the server starts,
+  deletes older ones and records each run that deleted something in the audit
+  log as `expired_container_logs` by the system (a null actor that is not the
+  break-glass account). New migration `000040_create_container_log_settings`;
+  SCHEMA.md updated. New `fetch_logs` message, and `container_log_chunk` gained
+  optional `fetch_id` and `error` fields. **Upgrade the agents first, then the
+  server, and run the migration with the server:** an older agent ignores
+  `fetch_logs`, so the live page times out for its nodes until it is upgraded.
+  This is the first retention enforcement in the project; the audit log's own
+  retention setting is displayed on the Settings page but is still not enforced.
 - Failed launches and replace-on-launch (container lifecycle): a launch that
   fails to start, or starts and never becomes ready, no longer leaves a
   container behind. It is reported failed as before, then the container is
@@ -127,6 +145,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Packaging: `VERSION` bumped to `0.2.11` so builds carrying the live log view
+  and log retention register as newer than the `0.2.10` packages. Both
+  packages move together because they share one `VERSION`.
 - Packaging: `VERSION` bumped to `0.2.10` so builds carrying failed-launch
   cleanup and replace-on-launch register as newer than the `0.2.9` packages.
   Both packages move together because they share one `VERSION`.
