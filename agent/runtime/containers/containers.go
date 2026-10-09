@@ -262,10 +262,15 @@ func (b *Backend) Stop(ctx context.Context, instanceID string) error {
 	if err != nil {
 		return err
 	}
-	if _, err := b.cli.ContainerStop(ctx, ref, client.ContainerStopOptions{}); err != nil {
+	// "Not found" at either step means the container is already gone, which
+	// is the state Stop is trying to reach, not a failure - see
+	// runtime.Backend.Stop. Stopping a container that exists but has
+	// already exited is not an error to the Engine API either (304), so an
+	// exited instance falls through to the removal below.
+	if _, err := b.cli.ContainerStop(ctx, ref, client.ContainerStopOptions{}); err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("stop container %s: %w", ref, err)
 	}
-	if _, err := b.cli.ContainerRemove(ctx, ref, client.ContainerRemoveOptions{}); err != nil {
+	if _, err := b.cli.ContainerRemove(ctx, ref, client.ContainerRemoveOptions{}); err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("remove container %s: %w", ref, err)
 	}
 	return nil
@@ -280,7 +285,8 @@ func (b *Backend) Shutdown(ctx context.Context) error {
 }
 
 // IsRunning reports whether instanceID's container is currently running -
-// see runtime.Backend's doc comment. Finds the container the same way
+// see runtime.Backend's doc comment, including that a container which no
+// longer exists reports (false, nil). Finds the container the same way
 // Stop does (resolve), so - like it - it needs no state of its own to answer.
 func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error) {
 	ref, err := b.resolve(ctx, instanceID)
@@ -289,6 +295,13 @@ func (b *Backend) IsRunning(ctx context.Context, instanceID string) (bool, error
 	}
 	result, err := b.cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
 	if err != nil {
+		// A container that no longer exists is "not running", not an
+		// inability to find out: without this, an instance whose container
+		// was removed would answer every check with an error and stay
+		// "running" in the central app forever.
+		if cerrdefs.IsNotFound(err) {
+			return false, nil
+		}
 		return false, fmt.Errorf("inspect container %s: %w", ref, err)
 	}
 	if result.Container.State == nil {

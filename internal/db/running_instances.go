@@ -40,6 +40,11 @@ const (
 	InstanceHealthHealthy   InstanceHealthStatus = "healthy"
 	InstanceHealthUnhealthy InstanceHealthStatus = "unhealthy"
 	InstanceHealthUnknown   InstanceHealthStatus = "unknown"
+	// InstanceHealthDead: the instance's container or process is not running
+	// although the central app expects it to be (exited, OOM-killed, or
+	// removed behind Sparky's back). The row's status stays running so the
+	// operator can see it and Unload it.
+	InstanceHealthDead InstanceHealthStatus = "dead"
 )
 
 // RunningInstance mirrors the running_instances table - see SCHEMA.md

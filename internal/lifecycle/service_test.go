@@ -952,6 +952,26 @@ func TestService_HandleInstanceHealth_Unhealthy_NoDetail(t *testing.T) {
 	}
 }
 
+func TestService_HandleInstanceHealth_Dead_RecordsDeadAndLeavesLifecycleStatusAlone(t *testing.T) {
+	instances := &fakeInstanceStore{}
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+
+	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{InstanceID: "instance-1", Status: agentproto.InstanceHealthStatusDead, CheckedAt: time.Now()})
+	svc.HandleInstanceHealth("node-1", env)
+
+	if len(instances.healthCalls) != 1 {
+		t.Fatalf("UpdateHealth called %d times, want 1", len(instances.healthCalls))
+	}
+	if got := instances.healthCalls[0]; got.status != db.InstanceHealthDead || got.detail != nil {
+		t.Errorf("health call = %+v, want status %q and no detail", got, db.InstanceHealthDead)
+	}
+	// Dead must not move the row out of running: the operator needs to see
+	// it and Unload it, and UnloadInstance refuses anything not running.
+	if len(instances.statusCalls) != 0 {
+		t.Errorf("SetStatus called %d times for a dead report, want 0", len(instances.statusCalls))
+	}
+}
+
 func TestService_HandleInstanceHealth_IgnoresOtherMessageTypes(t *testing.T) {
 	instances := &fakeInstanceStore{}
 	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())

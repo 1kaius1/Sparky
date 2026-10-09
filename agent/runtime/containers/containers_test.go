@@ -645,6 +645,46 @@ func TestStop_StopFails(t *testing.T) {
 	}
 }
 
+// A container already removed (by hand, a Docker data wipe) is the state
+// Stop is trying to reach; failing would leave a dead instance impossible to
+// unload.
+func TestStop_ContainerAlreadyGone_IsNotAnError(t *testing.T) {
+	gone := cerrdefs.ErrNotFound.WithMessage("no such container")
+	for name, fake := range map[string]*fakeDockerClient{
+		"stop reports not found":   {stopErr: gone},
+		"remove reports not found": {removeErr: gone},
+		"both report not found":    {stopErr: gone, removeErr: gone},
+	} {
+		t.Run(name, func(t *testing.T) {
+			b := &Backend{cli: fake}
+			if err := b.Stop(context.Background(), "instance-1"); err != nil {
+				t.Fatalf("Stop() error: %v, want nil", err)
+			}
+		})
+	}
+}
+
+// An exited container still has to be removed: Stop must not skip the
+// removal just because there was nothing running to stop.
+func TestStop_ExitedContainer_IsStillRemoved(t *testing.T) {
+	fake := &fakeDockerClient{}
+	b := &Backend{cli: fake}
+
+	if err := b.Stop(context.Background(), "instance-1"); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	if len(fake.removeRefs) != 1 {
+		t.Errorf("remove called %d times, want 1", len(fake.removeRefs))
+	}
+}
+
+func TestStop_NotFoundIsTheOnlyErrorTolerated(t *testing.T) {
+	b := &Backend{cli: &fakeDockerClient{stopErr: cerrdefs.ErrPermissionDenied.WithMessage("denied")}}
+	if err := b.Stop(context.Background(), "instance-1"); err == nil {
+		t.Fatal("Stop() swallowed a non-not-found error")
+	}
+}
+
 func TestStop_RemoveFails(t *testing.T) {
 	fake := &fakeDockerClient{removeErr: errors.New("remove failed")}
 	b := &Backend{cli: fake}
@@ -708,6 +748,20 @@ func TestIsRunning_NilState(t *testing.T) {
 	}
 	if running {
 		t.Error("running = true, want false for a nil State")
+	}
+}
+
+// A container that no longer exists is not running. Reporting an error
+// instead would leave the instance "running" in the central app forever.
+func TestIsRunning_ContainerGone_ReportsNotRunning(t *testing.T) {
+	b := &Backend{cli: &fakeDockerClient{inspectErr: cerrdefs.ErrNotFound.WithMessage("no such container")}}
+
+	running, err := b.IsRunning(context.Background(), "instance-1")
+	if err != nil {
+		t.Fatalf("IsRunning() error: %v, want nil for a container that is gone", err)
+	}
+	if running {
+		t.Error("IsRunning() = true for a container that is gone")
 	}
 }
 

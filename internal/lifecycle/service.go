@@ -297,7 +297,7 @@ func mapInstanceStatus(status string) (db.RunningInstanceStatus, error) {
 }
 
 // mapHealthStatus mirrors mapInstanceStatus above, for
-// agentproto.InstanceHealth.Status's narrower two-value range - see that
+// agentproto.InstanceHealth.Status's narrower three-value range - see that
 // type's own doc comment for why "unknown" never appears on the wire.
 func mapHealthStatus(status string) (db.InstanceHealthStatus, error) {
 	switch status {
@@ -305,6 +305,8 @@ func mapHealthStatus(status string) (db.InstanceHealthStatus, error) {
 		return db.InstanceHealthHealthy, nil
 	case agentproto.InstanceHealthStatusUnhealthy:
 		return db.InstanceHealthUnhealthy, nil
+	case agentproto.InstanceHealthStatusDead:
+		return db.InstanceHealthDead, nil
 	default:
 		return "", fmt.Errorf("unknown instance health status %q", status)
 	}
@@ -408,7 +410,10 @@ func (s *Service) HandleInstanceResult(nodeID string, env agentproto.Envelope) {
 //
 // Not audited - system-internal, not actor-driven, same precedent as
 // HandleInstanceResult/internal/transfers.HandleTransferProgress, neither
-// of which is audited either. A dispatch failure for one instance is
+// of which is audited either. The agent's answer is `running` when the
+// instance is, or an instance_health `dead` report when it is not
+// (HandleInstanceHealth) - the row stays running and is shown dead, rather
+// than being silently corrected, so the operator sees it. A dispatch failure for one instance is
 // logged and does not stop the sweep from asking about the rest.
 func (s *Service) ReconcileNode(ctx context.Context, nodeID string) {
 	instances, err := s.instances.ListRunningByNode(ctx, nodeID)

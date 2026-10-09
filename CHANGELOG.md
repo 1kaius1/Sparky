@@ -7,7 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Running instances: a new health state, **Dead**, for an instance whose
+  container or process is not running although it is expected to be (exited,
+  OOM-killed, or the container was removed by hand, a Docker data wipe, or a
+  reimaged node). It is shown with the same red as Failed/Unhealthy and
+  distinct from Unhealthy (running but not answering). Previously such an
+  instance stayed `running` with a stale health value indefinitely, and
+  because a profile with an active instance cannot be launched again, the
+  profile was stuck. Reported by the agent's periodic health check (which now
+  asks the runtime before probing the engine) and by the reconnect sweep,
+  which used to either set the row `stopped` or, for a missing container,
+  send nothing at all. New migration `000038_add_instance_health_dead` (adds
+  `dead` to `instance_health_status`); SCHEMA.md updated. Upgrade the server
+  before the agents: an older server does not know the new value and logs
+  and ignores it.
+
 ### Fixed
+- Agent: Unload now clears a dead instance. `Stop` treats an already-exited or
+  already-removed container as success (an exited container is still removed)
+  instead of failing, and the bare-metal `Stop` no longer fails for an
+  instance it does not track, so an operator can unload an instance reported
+  Dead and its profile can be launched again. A container that no longer
+  exists is now reported as "not running" rather than as an inspect error.
 - Agent: `sparky-agent setup` now joins `serviceloop` to the `docker` group on
   a `docker`-backend node. Previously nothing did, so a freshly provisioned
   Docker node could not reach the Docker socket until an operator ran
@@ -55,6 +77,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- Reconnect sweep: an instance the agent finds not running is no longer
+  silently set `stopped`; it is reported Dead (see Added) and left for the
+  operator to Unload.
 - Packaging: `VERSION` bumped from `0.2.4` to `0.2.5` so builds serving the
   model under the profile name register as newer than the `0.2.4` packages
   already installed. **Upgrade the agents first, then the server** (see the

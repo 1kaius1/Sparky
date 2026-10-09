@@ -5,6 +5,7 @@ package connection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -325,7 +326,7 @@ func TestSendInstanceHealth_HealthyInstance_ReportsHealthyWithDetail(t *testing.
 	defer engineSrv.Close()
 	port := portFromURL(t, engineSrv.URL)
 
-	rt := &fakeRuntimeBackend{}
+	rt := &fakeRuntimeBackend{isRunningResult: true}
 	conn := newTestConnForReadiness(Config{InstanceHealthCheckInterval: 20 * time.Millisecond}, rt)
 	conn.trackActiveInstance("instance-1", port, "/models/test-org/test-model", "vllm")
 
@@ -357,7 +358,7 @@ func TestSendInstanceHealth_UnreachableInstance_ReportsUnhealthy(t *testing.T) {
 	port := portFromURL(t, engineSrv.URL)
 	engineSrv.Close()
 
-	rt := &fakeRuntimeBackend{}
+	rt := &fakeRuntimeBackend{isRunningResult: true}
 	conn := newTestConnForReadiness(Config{InstanceHealthCheckInterval: 20 * time.Millisecond}, rt)
 	conn.trackActiveInstance("instance-1", port, "/models/test-org/test-model", "vllm")
 
@@ -377,6 +378,76 @@ func TestSendInstanceHealth_UnreachableInstance_ReportsUnhealthy(t *testing.T) {
 	}
 	if health.Detail != nil {
 		t.Errorf("Detail = %v, want nil for an unhealthy check", health.Detail)
+	}
+}
+
+// The container or process is gone: reported dead, which is a different
+// verdict from unhealthy (there, it is running but its engine does not
+// answer). The engine must not even be probed - a stale port could be
+// answered by something else entirely.
+func TestSendInstanceHealth_InstanceNotRunning_ReportsDeadWithoutProbing(t *testing.T) {
+	probed := make(chan struct{}, 10)
+	engineSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		probed <- struct{}{}
+		w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer engineSrv.Close()
+	port := portFromURL(t, engineSrv.URL)
+
+	rt := &fakeRuntimeBackend{isRunningResult: false}
+	conn := newTestConnForReadiness(Config{InstanceHealthCheckInterval: 20 * time.Millisecond}, rt)
+	conn.trackActiveInstance("instance-1", port, "/models/test-org/test-model", "vllm")
+
+	central := newTestCentralApp(true, "")
+	central.receivedMsgs = make(chan agentproto.Envelope, 10)
+	wsSrv := httptest.NewServer(central)
+	defer wsSrv.Close()
+	ws := dialTestAgentConn(t, wsSrv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	go conn.sendInstanceHealth(ctx, ws)
+
+	health := waitForInstanceHealth(t, central.receivedMsgs)
+	if health.Status != agentproto.InstanceHealthStatusDead {
+		t.Errorf("Status = %q, want %q", health.Status, agentproto.InstanceHealthStatusDead)
+	}
+	if health.Detail != nil {
+		t.Errorf("Detail = %v, want nil for a dead instance", health.Detail)
+	}
+	select {
+	case <-probed:
+		t.Error("the engine was probed although the runtime reported the instance not running")
+	default:
+	}
+}
+
+// "I could not ask the runtime" is not a verdict: nothing is reported, so a
+// transient daemon outage cannot mark a live instance dead.
+func TestSendInstanceHealth_RuntimeError_ReportsNothing(t *testing.T) {
+	rt := &fakeRuntimeBackend{isRunningErr: errors.New("docker daemon unreachable")}
+	conn := newTestConnForReadiness(Config{InstanceHealthCheckInterval: 20 * time.Millisecond}, rt)
+	conn.trackActiveInstance("instance-1", 1, "/models/test-org/test-model", "vllm")
+
+	central := newTestCentralApp(true, "")
+	central.receivedMsgs = make(chan agentproto.Envelope, 10)
+	wsSrv := httptest.NewServer(central)
+	defer wsSrv.Close()
+	ws := dialTestAgentConn(t, wsSrv)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	go conn.sendInstanceHealth(ctx, ws)
+
+	select {
+	case env := <-central.receivedMsgs:
+		t.Fatalf("received %+v, want nothing when the runtime could not be asked", env)
+	case <-time.After(250 * time.Millisecond):
+	}
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if len(rt.isRunningCalls) == 0 {
+		t.Error("the runtime was never asked")
 	}
 }
 
