@@ -36,6 +36,13 @@ type Spec struct {
 	// again by an instance-id label, not by this name.
 	ContainerName string
 
+	// ProfileID is the profile this instance is launched from, put on the
+	// container as a label so a later launch of the same profile can find
+	// the containers this one leaves behind (InstancesForProfile). Optional:
+	// empty (an older central app) or not a plain id means no label.
+	// Containers backend only.
+	ProfileID string
+
 	// BinaryPath is the resolved local executable to exec directly - the
 	// bare-metal backend only. Resolved by the caller (agent/connection)
 	// from EngineType via its own per-engine-type configuration, since a
@@ -186,6 +193,14 @@ type Backend interface {
 	// them, its state and exit reason. It does not change the instance. An
 	// instance that does not exist reports ErrNothingToCapture.
 	Capture(ctx context.Context, instanceID string, lines int) (Capture, error)
+
+	// InstancesForProfile returns the instance ID of every container this
+	// backend holds that was launched for profileID, running or not - what
+	// replace-on-launch has to clean up before the profile launches again.
+	// Only containers labelled at launch can be found; one started before the
+	// label existed is not. The bare-metal backend has no such leftovers to
+	// find (an exited process is cleared by Remove) and returns none.
+	InstancesForProfile(ctx context.Context, profileID string) ([]string, error)
 
 	// Remove deletes whatever Halt left behind. An instance that is already
 	// gone is not an error. Call it only after the log has been stored

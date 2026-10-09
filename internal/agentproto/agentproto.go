@@ -381,6 +381,15 @@ type LoadInstance struct {
 	// finds its containers again by a label carrying InstanceID, never by
 	// this value.
 	ContainerName string `json:"container_name,omitempty"`
+	// ProfileID is the profile this instance was launched from. The
+	// containers backend labels the container with it
+	// (sparky.profile_id) so that, before launching, the agent can find
+	// every older container left behind by the same profile, archive its
+	// log and remove it (replace-on-launch). Empty (an older server) skips
+	// that cleanup. Like every payload field, an older agent that does not
+	// know it rejects the whole message, so upgrade agents before the
+	// server.
+	ProfileID string `json:"profile_id,omitempty"`
 }
 
 // UnloadInstance is TypeUnloadInstance's payload. There is no

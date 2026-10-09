@@ -54,6 +54,15 @@ type fakeRuntimeBackend struct {
 	captureErr    error
 	removeCalls   []string
 	removeErr     error
+
+	// forProfile answers InstancesForProfile: the instance IDs of containers
+	// "left behind" by a profile. forProfileCalls records the profile ids asked.
+	forProfile      map[string][]string
+	forProfileErr   error
+	forProfileCalls []string
+	// events records the order Halt/Capture/Remove/Start were called in, as
+	// "halt:<id>", "capture:<id>", "remove:<id>", "start:<id>".
+	events        []string
 	shutdownErr   error
 	shutdownCalls int
 
@@ -92,6 +101,7 @@ func (f *fakeRuntimeBackend) signalCalled() {
 func (f *fakeRuntimeBackend) Start(_ context.Context, spec agentruntime.Spec) (string, error) {
 	f.mu.Lock()
 	f.startCalls = append(f.startCalls, spec)
+	f.events = append(f.events, "start:"+spec.InstanceID)
 	f.mu.Unlock()
 	f.signalCalled()
 	if f.block != nil {
@@ -111,9 +121,17 @@ func (f *fakeRuntimeBackend) Stop(_ context.Context, instanceID string) error {
 	return f.stopErr
 }
 
+func (f *fakeRuntimeBackend) InstancesForProfile(_ context.Context, profileID string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.forProfileCalls = append(f.forProfileCalls, profileID)
+	return f.forProfile[profileID], f.forProfileErr
+}
+
 func (f *fakeRuntimeBackend) Halt(_ context.Context, instanceID string) error {
 	f.mu.Lock()
 	f.haltCalls = append(f.haltCalls, instanceID)
+	f.events = append(f.events, "halt:"+instanceID)
 	f.mu.Unlock()
 	f.signalCalled()
 	if f.block != nil {
@@ -125,6 +143,7 @@ func (f *fakeRuntimeBackend) Halt(_ context.Context, instanceID string) error {
 func (f *fakeRuntimeBackend) Capture(_ context.Context, instanceID string, _ int) (agentruntime.Capture, error) {
 	f.mu.Lock()
 	f.captureCalls = append(f.captureCalls, instanceID)
+	f.events = append(f.events, "capture:"+instanceID)
 	f.mu.Unlock()
 	return f.captureResult, f.captureErr
 }
@@ -132,6 +151,7 @@ func (f *fakeRuntimeBackend) Capture(_ context.Context, instanceID string, _ int
 func (f *fakeRuntimeBackend) Remove(_ context.Context, instanceID string) error {
 	f.mu.Lock()
 	f.removeCalls = append(f.removeCalls, instanceID)
+	f.events = append(f.events, "remove:"+instanceID)
 	f.mu.Unlock()
 	return f.removeErr
 }

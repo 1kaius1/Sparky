@@ -999,11 +999,20 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		CDIDevices:         cdiDevices,
 		ShmSize:            load.ShmSize,
 		IPCMode:            load.IPCMode,
+		ProfileID:          load.ProfileID,
 	}
+
+	// Anything an earlier launch of this profile left behind goes first: its
+	// settings are frozen at the time it was created, and a hung one may still
+	// hold this launch's port.
+	c.replaceStaleContainers(ctx, conn, load.ProfileID, load.InstanceID)
 
 	if _, err := c.runtime.Start(ctx, spec); err != nil {
 		c.logger.Printf("agent connection: start instance %s: %v", load.InstanceID, err)
 		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
+		// Start can fail after the container exists (created, never
+		// started); archive and remove whatever it left.
+		c.cleanUpFailedLaunch(ctx, conn, load.InstanceID)
 		return
 	}
 
@@ -1014,6 +1023,10 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		}
 		c.logger.Printf("agent connection: instance %s did not become ready: %v", load.InstanceID, err)
 		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, msg)
+		// The failure is reported first so the operator is not kept waiting;
+		// then the container is stopped (a hung engine gives its GPU memory
+		// and port back), its log saved, and it removed.
+		c.cleanUpFailedLaunch(ctx, conn, load.InstanceID)
 		return
 	}
 

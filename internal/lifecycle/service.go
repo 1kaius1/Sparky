@@ -190,6 +190,7 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 		ShmSize:                  spec.ShmSizeBytes,
 		IPCMode:                  spec.IPCMode,
 		ContainerName:            containerName(profile.Name, launchTime(inst)),
+		ProfileID:                profile.ID,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("build load_instance envelope: %w", err)

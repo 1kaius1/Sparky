@@ -120,6 +120,15 @@ func (c *Conn) trackActiveInstance(instanceID string, port int, modelPath, engin
 	c.activeInstances[instanceID] = activeInstance{Port: port, ModelPath: modelPath, EngineType: engineType}
 }
 
+// isActiveInstance reports whether this agent is tracking instanceID as a
+// running instance - one it has proven ready or resumed after a restart.
+func (c *Conn) isActiveInstance(instanceID string) bool {
+	c.activeMu.Lock()
+	defer c.activeMu.Unlock()
+	_, ok := c.activeInstances[instanceID]
+	return ok
+}
+
 // resumeHealthTracking starts periodic health checks for an instance the
 // central app says is running but this process did not start - one that
 // survived an agent restart (a container is managed by the runtime daemon,
