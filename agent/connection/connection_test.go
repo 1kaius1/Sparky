@@ -50,6 +50,7 @@ type fakeRuntimeBackend struct {
 	haltCalls     []string
 	haltErr       error
 	captureCalls  []string
+	captureLines  []int
 	captureResult agentruntime.Capture
 	captureErr    error
 	removeCalls   []string
@@ -140,9 +141,10 @@ func (f *fakeRuntimeBackend) Halt(_ context.Context, instanceID string) error {
 	return f.haltErr
 }
 
-func (f *fakeRuntimeBackend) Capture(_ context.Context, instanceID string, _ int) (agentruntime.Capture, error) {
+func (f *fakeRuntimeBackend) Capture(_ context.Context, instanceID string, lines int) (agentruntime.Capture, error) {
 	f.mu.Lock()
 	f.captureCalls = append(f.captureCalls, instanceID)
+	f.captureLines = append(f.captureLines, lines)
 	f.events = append(f.events, "capture:"+instanceID)
 	f.mu.Unlock()
 	return f.captureResult, f.captureErr

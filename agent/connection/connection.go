@@ -620,6 +620,17 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.instanceWG.Done()
 			c.runUnload(ctx, conn, unload)
 		}()
+	case agentproto.TypeFetchLogs:
+		var req agentproto.FetchLogs
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed fetch_logs payload: %v", err)
+			return
+		}
+		c.instanceWG.Add(1)
+		go func() {
+			defer c.instanceWG.Done()
+			c.runFetchLogs(ctx, conn, req)
+		}()
 	case agentproto.TypeContainerLogAck:
 		var ack agentproto.ContainerLogAck
 		if err := env.DecodePayload(&ack); err != nil {
