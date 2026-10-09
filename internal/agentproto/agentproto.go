@@ -205,6 +205,22 @@ const (
 
 	// TypeScanModelsResult is the agent's async reply to TypeScanModels.
 	TypeScanModelsResult MessageType = "scan_models_result"
+
+	// TypeContainerLogChunk is one piece of a container log the agent is
+	// archiving to the central app before it removes the container. A log
+	// can be far larger than one WebSocket message (the library closes the
+	// connection on anything over 32768 bytes), so the agent gzips it and
+	// sends it as an ordered series of small chunks sharing an UploadID. The
+	// first carries Meta, the last has Final set and the total size and
+	// SHA-256. The central app stores the log only when the whole series
+	// arrives intact, then answers with TypeContainerLogAck. An older central
+	// app ignores the type, never acks, and so the agent keeps the container.
+	TypeContainerLogChunk MessageType = "container_log_chunk"
+
+	// TypeContainerLogAck is the central app's reply to a finished
+	// TypeContainerLogChunk series: whether the log is now stored. The agent
+	// removes the container only on Stored true.
+	TypeContainerLogAck MessageType = "container_log_ack"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -675,4 +691,73 @@ type ScanModelsResult struct {
 	Models    []ScannedModel `json:"models"`
 	Truncated bool           `json:"truncated,omitempty"`
 	Error     string         `json:"error,omitempty"`
+}
+
+// ContainerLogMeta describes an archived container log. It is sent with the
+// first chunk of an upload. The central app does not trust it for anything
+// it can know itself: the node comes from the authenticated connection and
+// the profile from the instance row.
+type ContainerLogMeta struct {
+	InstanceID    string `json:"instance_id"`
+	ContainerID   string `json:"container_id,omitempty"`
+	ContainerName string `json:"container_name,omitempty"`
+
+	// Reason says why the container is being archived: "unload", and later
+	// "failed_launch" and "replaced".
+	Reason string `json:"reason"`
+
+	// State is the container's own state word (exited, running, ...).
+	State string `json:"state,omitempty"`
+
+	// ExitCode is absent while the instance was still running or when the
+	// backend cannot tell.
+	ExitCode  *int `json:"exit_code,omitempty"`
+	OOMKilled bool `json:"oom_killed,omitempty"`
+
+	StartedAt  *time.Time `json:"started_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+
+	// LinesRequested is how many trailing lines the agent asked for; 0 means
+	// all. LinesKept is how many the captured log contains.
+	LinesRequested int `json:"lines_requested"`
+	LinesKept      int `json:"lines_kept"`
+
+	// Truncated is true when older output was dropped because the backend
+	// could not hold or read all of it, not merely because fewer lines were
+	// requested.
+	Truncated bool `json:"truncated,omitempty"`
+
+	// SizeBytes is the log's size before gzip.
+	SizeBytes int64 `json:"size_bytes"`
+}
+
+// ContainerLogChunkSize is the most gzip bytes an agent puts in one
+// ContainerLogChunk. Base64 in JSON makes it about 22 KiB on the wire, which
+// with the envelope and a full Meta stays well under the 32768-byte message
+// limit - see the size test in agentproto_test.go. Agent and tests share it
+// so the bound cannot drift.
+const ContainerLogChunkSize = 16 << 10
+
+// ContainerLogChunk is TypeContainerLogChunk's payload. Seq starts at 0 and
+// rises by one per chunk; the central app rejects an upload whose chunks
+// arrive out of order. Data is a slice of the gzip stream. Meta is set on
+// Seq 0 only. TotalBytes and SHA256 (hex) describe the whole gzip stream and
+// are set on the Final chunk only.
+type ContainerLogChunk struct {
+	UploadID   string            `json:"upload_id"`
+	Seq        int               `json:"seq"`
+	Final      bool              `json:"final,omitempty"`
+	Data       []byte            `json:"data,omitempty"`
+	Meta       *ContainerLogMeta `json:"meta,omitempty"`
+	TotalBytes int64             `json:"total_bytes,omitempty"`
+	SHA256     string            `json:"sha256,omitempty"`
+}
+
+// ContainerLogAck is TypeContainerLogAck's payload. Error is a short,
+// operator-safe reason when Stored is false; it never carries a raw
+// database error.
+type ContainerLogAck struct {
+	UploadID string `json:"upload_id"`
+	Stored   bool   `json:"stored"`
+	Error    string `json:"error,omitempty"`
 }
