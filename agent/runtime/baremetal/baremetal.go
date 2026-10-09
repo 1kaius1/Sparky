@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -130,6 +131,95 @@ func (b *Backend) Stop(ctx context.Context, instanceID string) error {
 		return nil
 	}
 	return stopProcess(tp, stopGracePeriod)
+}
+
+// Halt stops the tracked process for instanceID but keeps its record and its
+// captured output, so Capture can still read them - see
+// runtime.Backend.Halt. Remove drops the record. An untracked instance is
+// not an error, as for Stop.
+func (b *Backend) Halt(ctx context.Context, instanceID string) error {
+	b.mu.Lock()
+	tp, exists := b.processes[instanceID]
+	b.mu.Unlock()
+	if !exists {
+		return nil
+	}
+	return stopProcess(tp, stopGracePeriod)
+}
+
+// Remove drops the tracking record Halt left. Untracked is not an error.
+func (b *Backend) Remove(ctx context.Context, instanceID string) error {
+	b.mu.Lock()
+	delete(b.processes, instanceID)
+	b.mu.Unlock()
+	return nil
+}
+
+// Capture returns what instanceID's process has written, and how it ended -
+// see runtime.Backend.Capture. A bare-metal process has no container name or
+// OOM flag, and its output is only what the in-memory buffer still holds
+// (logBufferCapacity bytes, lost on an agent restart), so Truncated is set
+// when that buffer is full. The buffer is not line-aware, so when it has
+// wrapped, the partial first line is dropped.
+func (b *Backend) Capture(ctx context.Context, instanceID string, lines int) (runtime.Capture, error) {
+	b.mu.Lock()
+	tp, exists := b.processes[instanceID]
+	b.mu.Unlock()
+	if !exists {
+		return runtime.Capture{}, runtime.ErrNothingToCapture
+	}
+
+	log, wrapped := tp.logs.snapshot()
+	if wrapped {
+		if i := strings.IndexByte(log, '\n'); i >= 0 {
+			log = log[i+1:]
+		}
+	}
+	log = lastLines(log, lines)
+
+	c := runtime.Capture{
+		ContainerID: fmt.Sprintf("%d", tp.cmd.Process.Pid),
+		State:       "running",
+		Log:         log,
+		LinesKept:   countLines(log),
+		Truncated:   wrapped,
+	}
+	select {
+	case <-tp.done:
+		c.State = "exited"
+		code := tp.cmd.ProcessState.ExitCode() // -1 when killed by a signal
+		c.ExitCode = &code
+	default:
+	}
+	return c, nil
+}
+
+// lastLines returns the last n lines of s (all of s when n <= 0).
+func lastLines(s string, n int) string {
+	if n <= 0 || s == "" {
+		return s
+	}
+	trimmed := strings.TrimSuffix(s, "\n")
+	idx := len(trimmed)
+	for i := 0; i < n; i++ {
+		j := strings.LastIndexByte(trimmed[:idx], '\n')
+		if j < 0 {
+			return s
+		}
+		idx = j
+	}
+	return s[idx+1:]
+}
+
+func countLines(s string) int {
+	if s == "" {
+		return 0
+	}
+	n := strings.Count(s, "\n")
+	if !strings.HasSuffix(s, "\n") {
+		n++
+	}
+	return n
 }
 
 // Shutdown stops every process this Backend is still tracking, concurrently,

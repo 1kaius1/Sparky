@@ -39,8 +39,9 @@ type fakeDockerClient struct {
 	pullCalls int
 	pullErr   error
 
-	logsResult client.ContainerLogsResult
-	logsErr    error
+	logsResult  client.ContainerLogsResult
+	logsErr     error
+	logsOptions []client.ContainerLogsOptions
 
 	// listResult / listErr answer ContainerList; the default (empty) means
 	// "no container carries the label", which exercises the legacy-name
@@ -90,8 +91,9 @@ func (f *fakeDockerClient) ImagePull(_ context.Context, _ string, _ client.Image
 	return &fakePullResponse{}, nil
 }
 
-func (f *fakeDockerClient) ContainerLogs(_ context.Context, ref string, _ client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
+func (f *fakeDockerClient) ContainerLogs(_ context.Context, ref string, options client.ContainerLogsOptions) (client.ContainerLogsResult, error) {
 	f.logsRefs = append(f.logsRefs, ref)
+	f.logsOptions = append(f.logsOptions, options)
 	if f.logsErr != nil {
 		return nil, f.logsErr
 	}

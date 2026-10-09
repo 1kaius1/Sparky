@@ -256,19 +256,38 @@ func (b *Backend) resolve(ctx context.Context, instanceID string) (string, error
 }
 
 // Stop stops and removes the container for instanceID, found by resolve - so
-// no state needs to be tracked between Start and Stop.
+// no state needs to be tracked between Start and Stop. It is Halt followed by
+// Remove; the unload path calls them separately so the log can be archived in
+// between (see runtime.Backend.Capture).
 func (b *Backend) Stop(ctx context.Context, instanceID string) error {
+	if err := b.Halt(ctx, instanceID); err != nil {
+		return err
+	}
+	return b.Remove(ctx, instanceID)
+}
+
+// Halt stops the container for instanceID but leaves it in place, so its log
+// and exit reason can still be captured. "Not found" means the container is
+// already gone, which is the state Halt is trying to reach, not a failure -
+// see runtime.Backend.Halt. Stopping a container that exists but has already
+// exited is not an error to the Engine API either (304).
+func (b *Backend) Halt(ctx context.Context, instanceID string) error {
 	ref, err := b.resolve(ctx, instanceID)
 	if err != nil {
 		return err
 	}
-	// "Not found" at either step means the container is already gone, which
-	// is the state Stop is trying to reach, not a failure - see
-	// runtime.Backend.Stop. Stopping a container that exists but has
-	// already exited is not an error to the Engine API either (304), so an
-	// exited instance falls through to the removal below.
 	if _, err := b.cli.ContainerStop(ctx, ref, client.ContainerStopOptions{}); err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("stop container %s: %w", ref, err)
+	}
+	return nil
+}
+
+// Remove deletes the container for instanceID, which must already be stopped
+// (Halt). An already-removed container is not an error.
+func (b *Backend) Remove(ctx context.Context, instanceID string) error {
+	ref, err := b.resolve(ctx, instanceID)
+	if err != nil {
+		return err
 	}
 	if _, err := b.cli.ContainerRemove(ctx, ref, client.ContainerRemoveOptions{}); err != nil && !cerrdefs.IsNotFound(err) {
 		return fmt.Errorf("remove container %s: %w", ref, err)

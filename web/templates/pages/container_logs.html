@@ -1,0 +1,40 @@
+{{define "content"}}
+<h1>Container logs</h1>
+
+<p>The output of each container Sparky has removed, saved first so that why an engine failed or died can still be read. Logs can contain prompt content.</p>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Saved at</th>
+      <th>Node</th>
+      <th>Profile</th>
+      <th>Container</th>
+      <th>Why</th>
+      <th>State</th>
+      <th>Exit</th>
+      <th>Lines</th>
+      <th>Size</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Rows}}
+    <tr>
+      <td>{{.CreatedAt}}</td>
+      <td>{{.NodeName}}</td>
+      <td>{{if .ProfileName}}{{.ProfileName}}{{else}}-{{end}}</td>
+      <td>{{if .ContainerName}}{{.ContainerName}}{{else}}-{{end}}</td>
+      <td>{{.Reason}}</td>
+      <td>{{if .State}}{{.State}}{{else}}-{{end}}</td>
+      <td>{{if .OOMKilled}}<span class="status status-failed">out of memory</span>{{else if .Signal}}killed by a signal{{else if .ExitCode}}{{.ExitCode}}{{else}}-{{end}}</td>
+      <td>{{.Lines}}{{if .Truncated}} (older output lost){{end}}</td>
+      <td>{{.Size}}</td>
+      <td><a href="/logs/{{.ID}}" hx-get="/logs/{{.ID}}" hx-target="#main-content" hx-push-url="true">View</a></td>
+    </tr>
+    {{else}}
+    <tr><td colspan="10" class="empty">No container logs saved yet. One is saved each time an instance is unloaded.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}

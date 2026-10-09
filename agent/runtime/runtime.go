@@ -6,7 +6,11 @@
 // runtime_backend) - see ARCHITECTURE.md Runtime Backends.
 package runtime
 
-import "context"
+import (
+	"context"
+	"errors"
+	"time"
+)
 
 // Spec describes one engine instance to launch. It is a superset of what
 // either backend needs: containers-only fields (Image, Mounts, CDIDevices)
@@ -168,4 +172,65 @@ type Backend interface {
 	// even when Logs itself errors (e.g. the container was already
 	// removed by the time it's called), it just has less to say why.
 	Logs(ctx context.Context, instanceID string, tailLines int) (string, error)
+
+	// Halt stops instanceID's engine but leaves what it left behind - the
+	// container, or the bare-metal process record and its captured output -
+	// in place, so Capture can still read it. Together with Capture and
+	// Remove it is Stop taken apart: the central app must be able to store an
+	// instance's log before anything that holds it is removed. An instance
+	// that is already gone, or already exited, is not an error.
+	Halt(ctx context.Context, instanceID string) error
+
+	// Capture reads what instanceID left behind: its last lines of output
+	// (lines <= 0 means all that is still held) and, when the backend knows
+	// them, its state and exit reason. It does not change the instance. An
+	// instance that does not exist reports ErrNothingToCapture.
+	Capture(ctx context.Context, instanceID string, lines int) (Capture, error)
+
+	// Remove deletes whatever Halt left behind. An instance that is already
+	// gone is not an error. Call it only after the log has been stored
+	// (agent/connection's archive-then-remove rule).
+	Remove(ctx context.Context, instanceID string) error
+}
+
+// ErrNothingToCapture is returned by Backend.Capture for an instance the
+// backend no longer has - a container removed by hand, a reimaged node, a
+// bare-metal process lost when the agent restarted. There is nothing to
+// archive, which is not a failure.
+var ErrNothingToCapture = errors.New("instance has nothing to capture")
+
+// Capture is what Backend.Capture returns: an instance's output and exit
+// reason, taken before its container or process record is removed.
+type Capture struct {
+	// ContainerID and ContainerName identify the container (or, for
+	// bare-metal, the process by PID with no name). Informational only.
+	ContainerID   string
+	ContainerName string
+
+	// State is the container's own state word (created, running, exited,
+	// dead, ...), or running or exited for a bare-metal process.
+	State string
+
+	// ExitCode is nil while the instance is still running or when the
+	// backend cannot tell. A process killed by a signal reports -1.
+	ExitCode *int
+
+	// OOMKilled is true when the runtime reports the container was killed
+	// for running out of memory. Always false for bare-metal.
+	OOMKilled bool
+
+	// StartedAt and FinishedAt are zero when unknown.
+	StartedAt  time.Time
+	FinishedAt time.Time
+
+	// Log is the captured output, newest last.
+	Log string
+
+	// LinesKept is the number of lines in Log.
+	LinesKept int
+
+	// Truncated is true when older output was dropped because the backend
+	// could not hold or read all of it (a size cap, or the bare-metal
+	// buffer being full), not merely because fewer lines were asked for.
+	Truncated bool
 }

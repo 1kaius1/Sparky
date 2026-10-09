@@ -38,12 +38,22 @@ import (
 // runtime, since many test functions below already use "runtime" as a
 // local variable name for an instance of this fake.
 type fakeRuntimeBackend struct {
-	mu            sync.Mutex
-	startCalls    []agentruntime.Spec
-	startErr      error
-	startID       string
-	stopCalls     []string
-	stopErr       error
+	mu         sync.Mutex
+	startCalls []agentruntime.Spec
+	startErr   error
+	startID    string
+	stopCalls  []string
+	stopErr    error
+
+	// Halt, Capture and Remove are Stop taken apart for the log archive
+	// (runtime.Backend). captureResult/captureErr answer every Capture call.
+	haltCalls     []string
+	haltErr       error
+	captureCalls  []string
+	captureResult agentruntime.Capture
+	captureErr    error
+	removeCalls   []string
+	removeErr     error
 	shutdownErr   error
 	shutdownCalls int
 
@@ -99,6 +109,31 @@ func (f *fakeRuntimeBackend) Stop(_ context.Context, instanceID string) error {
 		<-f.block
 	}
 	return f.stopErr
+}
+
+func (f *fakeRuntimeBackend) Halt(_ context.Context, instanceID string) error {
+	f.mu.Lock()
+	f.haltCalls = append(f.haltCalls, instanceID)
+	f.mu.Unlock()
+	f.signalCalled()
+	if f.block != nil {
+		<-f.block
+	}
+	return f.haltErr
+}
+
+func (f *fakeRuntimeBackend) Capture(_ context.Context, instanceID string, _ int) (agentruntime.Capture, error) {
+	f.mu.Lock()
+	f.captureCalls = append(f.captureCalls, instanceID)
+	f.mu.Unlock()
+	return f.captureResult, f.captureErr
+}
+
+func (f *fakeRuntimeBackend) Remove(_ context.Context, instanceID string) error {
+	f.mu.Lock()
+	f.removeCalls = append(f.removeCalls, instanceID)
+	f.mu.Unlock()
+	return f.removeErr
 }
 
 func (f *fakeRuntimeBackend) Shutdown(_ context.Context) error {
@@ -292,6 +327,12 @@ type testCentralApp struct {
 	// unprompted after every handshake, and the many tests that count or
 	// order receivedMsgs are about other message types.
 	receivedInterfaces chan agentproto.Envelope
+
+	// reply, if set, is called with every message the agent sends after the
+	// handshake (report_interfaces excepted) and may return one envelope to
+	// send straight back - how a test plays the central app's confirmation
+	// of an archived log.
+	reply func(agentproto.Envelope) *agentproto.Envelope
 }
 
 func newTestCentralApp(accept bool, reason string) *testCentralApp {
@@ -367,6 +408,17 @@ func (a *testCentralApp) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		if a.receivedMsgs != nil {
 			a.receivedMsgs <- msgEnv
+		}
+		if a.reply != nil {
+			if out := a.reply(msgEnv); out != nil {
+				outRaw, err := json.Marshal(*out)
+				if err != nil {
+					return
+				}
+				if err := conn.Write(ctx, websocket.MessageText, outRaw); err != nil {
+					return
+				}
+			}
 		}
 	}
 }
@@ -1611,8 +1663,15 @@ func TestConn_Dispatch_UnloadInstance_StopsContainerAndReportsStopped(t *testing
 	if result.InstanceID != "instance-1" || result.Status != agentproto.InstanceStatusStopped {
 		t.Errorf("instance_result = %+v, want InstanceID=instance-1 Status=stopped", result)
 	}
-	if len(runtime.stopCalls) != 1 || runtime.stopCalls[0] != "instance-1" {
-		t.Errorf("stopCalls = %v, want [instance-1]", runtime.stopCalls)
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	if len(runtime.haltCalls) != 1 || runtime.haltCalls[0] != "instance-1" {
+		t.Errorf("haltCalls = %v, want [instance-1]", runtime.haltCalls)
+	}
+	// Unload no longer calls Stop (which removes the container with its log):
+	// it halts, archives, and removes only after the central app confirms.
+	if len(runtime.stopCalls) != 0 {
+		t.Errorf("stopCalls = %v, want none", runtime.stopCalls)
 	}
 }
 

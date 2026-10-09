@@ -23,6 +23,10 @@ const logBufferCapacity = 16 * 1024
 type logBuffer struct {
 	mu   sync.Mutex
 	data []byte
+
+	// wrapped is set once older output has been trimmed away, so a reader
+	// knows the buffer no longer starts at the beginning of the output.
+	wrapped bool
 }
 
 func newLogBuffer() *logBuffer {
@@ -42,6 +46,7 @@ func (b *logBuffer) Write(p []byte) (int, error) {
 		// Logs' "tail" framing (the same reasoning as the containers
 		// backend's Tail option).
 		b.data = append([]byte(nil), b.data[len(b.data)-logBufferCapacity:]...)
+		b.wrapped = true
 	}
 	return len(p), nil
 }
@@ -51,4 +56,11 @@ func (b *logBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return string(b.data)
+}
+
+// snapshot returns what is buffered and whether older output was dropped.
+func (b *logBuffer) snapshot() (string, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return string(b.data), b.wrapped
 }

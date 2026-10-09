@@ -269,6 +269,39 @@ such a container stays stoppable and checkable after an upgrade. Renaming a
 profile later does not rename a running container (the label, not the name, is
 the identity).
 
+### Container log archive
+
+A container's output is saved on the central app before the container is
+removed, so why an engine failed or died is not lost with it. On an Unload the
+agent now halts the instance without removing it (`runtime.Backend.Halt`),
+reports `stopped` at once - the engine is down and its GPU memory and port are
+free - and then, in the same goroutine, reads the container's last 2000 lines
+and its exit reason (`Capture`: state, exit code, whether the runtime reports
+it was killed for running out of memory), gzips the text, and uploads it.
+
+An upload is a series of `container_log_chunk` messages, because the WebSocket
+library closes the connection on any message over 32768 bytes and nothing
+raises that limit. Each chunk carries at most 16 KiB of the gzip stream
+(`agentproto.ContainerLogChunkSize`, about 22 KiB after base64); the first
+carries a description of the container, the last carries the total size and a
+SHA-256. The central app reassembles and verifies the series, stores it, and
+answers `container_log_ack`. **The agent removes the container only on a
+confirmed ack.** If the upload fails, the central app refuses it, or no
+confirmation arrives within 30 seconds, the stopped container is left in place
+and the agent logs a warning; the Unload still reports `stopped`. The same
+happens against an older central app, which ignores the new message type and
+never confirms, so containers pile up exactly as before until the server is
+upgraded - **upgrade the agents first, then the server.** An upload that is
+interrupted (a reconnect mid-way) is not resumed.
+
+An instance whose container is already gone has nothing to archive and is just
+cleared; one that exited or was OOM-killed (a Dead instance) is archived with
+its exit reason. On the bare-metal backend the log is whatever the in-memory
+buffer still holds (16 KiB, lost when the agent restarts), `Halt` keeps the
+process record so it can be read, and `Remove` drops it; a failed archive
+leaves that record in memory. Viewing archives is on the Container logs page
+(Developer and above).
+
 ## Configuration and Data Storage
 
 Deliberately deviates from the generic Service-type default

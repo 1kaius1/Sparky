@@ -200,6 +200,26 @@ func CanManageProfiles(actor Actor) bool {
 	return actor.Tier == db.TierPowerDev
 }
 
+// CanViewInstanceLogs reports whether actor may read a container's output -
+// an archived log, and later the live tail. The floor is Developer, the same
+// people who can launch an instance, because they are the ones who need to
+// see why theirs failed. Logs can contain prompt or request content and
+// tokens, so this is deliberately a wider exposure than the audit log's
+// Admin floor (CanViewAuditLog) - a maintainer decision recorded in
+// PLANNING.md's 2026-10-08 Decisions Log - and no permission override widens
+// or narrows it. A Read-only user cannot see logs.
+func CanViewInstanceLogs(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	switch actor.Tier {
+	case db.TierDeveloper, db.TierPowerDev, db.TierAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
 // CanLaunchInstances reports whether actor may load or unload a Running
 // instance - see CLAUDE.md Frontend Conventions, Model profiles' sidebar
 // tier ("Developer launch"). Deliberately a lower bar than

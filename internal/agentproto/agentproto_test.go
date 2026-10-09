@@ -917,3 +917,69 @@ func TestCheckInstance_OptionalFieldsOmittedWhenEmpty(t *testing.T) {
 		t.Errorf("payload = %s, want only instance_id", raw)
 	}
 }
+
+func TestEnvelope_RoundTrip_ContainerLogChunkAndAck(t *testing.T) {
+	code := 137
+	started := time.Date(2026, 10, 9, 1, 2, 3, 0, time.UTC)
+	want := ContainerLogChunk{
+		UploadID: "u-1", Seq: 0, Data: []byte{0x1f, 0x8b, 0x00, 0xff},
+		Meta: &ContainerLogMeta{InstanceID: "i-1", ContainerName: "sparky-p-20261009-010203", Reason: "unload", State: "exited", ExitCode: &code, OOMKilled: true, StartedAt: &started, LinesRequested: 2000, LinesKept: 12, SizeBytes: 345},
+	}
+	env, err := NewEnvelope(TypeContainerLogChunk, "", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	var got ContainerLogChunk
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload: %v", err)
+	}
+	if got.UploadID != "u-1" || !bytes.Equal(got.Data, want.Data) || got.Meta == nil || *got.Meta.ExitCode != 137 || !got.Meta.OOMKilled || !got.Meta.StartedAt.Equal(started) || got.Meta.FinishedAt != nil {
+		t.Errorf("chunk = %+v, want %+v", got, want)
+	}
+
+	final := ContainerLogChunk{UploadID: "u-1", Seq: 3, Final: true, TotalBytes: 40000, SHA256: strings.Repeat("ab", 32)}
+	env, _ = NewEnvelope(TypeContainerLogChunk, "", final)
+	var gotFinal ContainerLogChunk
+	if err := env.DecodePayload(&gotFinal); err != nil || !gotFinal.Final || gotFinal.Meta != nil || gotFinal.TotalBytes != 40000 {
+		t.Errorf("final chunk = %+v, err %v", gotFinal, err)
+	}
+
+	ack, _ := NewEnvelope(TypeContainerLogAck, "", ContainerLogAck{UploadID: "u-1", Stored: false, Error: "too large"})
+	var gotAck ContainerLogAck
+	if err := ack.DecodePayload(&gotAck); err != nil || gotAck.Stored || gotAck.Error != "too large" || gotAck.UploadID != "u-1" {
+		t.Errorf("ack = %+v, err %v", gotAck, err)
+	}
+}
+
+// A full-size chunk with the largest plausible Meta must serialize under the
+// WebSocket library's 32768-byte read limit, or the connection is closed.
+// Random data is the worst case for base64 and for JSON escaping.
+func TestContainerLogChunk_FullSizeFitsTheMessageLimit(t *testing.T) {
+	const wsReadLimit = 32768
+	data := make([]byte, ContainerLogChunkSize)
+	for i := range data {
+		data[i] = byte(i*131 + 7)
+	}
+	code := 137
+	now := time.Now()
+	chunk := ContainerLogChunk{
+		UploadID: strings.Repeat("f", 32), Seq: 99999, Final: true, Data: data, TotalBytes: 1 << 40, SHA256: strings.Repeat("a", 64),
+		Meta: &ContainerLogMeta{
+			InstanceID: strings.Repeat("i", 36), ContainerID: strings.Repeat("c", 64), ContainerName: strings.Repeat("n", 128),
+			Reason: strings.Repeat("r", 32), State: "restarting", ExitCode: &code, OOMKilled: true, StartedAt: &now, FinishedAt: &now,
+			LinesRequested: 1 << 30, LinesKept: 1 << 30, Truncated: true, SizeBytes: 1 << 40,
+		},
+	}
+	env, err := NewEnvelope(TypeContainerLogChunk, strings.Repeat("q", 64), chunk)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) >= wsReadLimit {
+		t.Errorf("full-size chunk envelope is %d bytes, must stay under %d", len(raw), wsReadLimit)
+	}
+	t.Logf("full-size chunk envelope: %d bytes of %d", len(raw), wsReadLimit)
+}

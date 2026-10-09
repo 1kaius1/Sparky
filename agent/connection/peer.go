@@ -5,6 +5,7 @@ package connection
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"strconv"
 	"time"
@@ -22,21 +23,28 @@ const connectivityDialTimeout = 5 * time.Second
 // send marshals and writes one envelope, logging (not returning) failures
 // like every other agent-to-central sender here.
 func (c *Conn) send(ctx context.Context, conn *websocket.Conn, msgType agentproto.MessageType, requestID string, payload any) {
+	if err := c.trySend(ctx, conn, msgType, requestID, payload); err != nil {
+		c.logger.Printf("agent connection: %v", err)
+	}
+}
+
+// trySend is send for a caller that must know whether the message went out -
+// the log archive upload, which treats any failed chunk as "not archived".
+func (c *Conn) trySend(ctx context.Context, conn *websocket.Conn, msgType agentproto.MessageType, requestID string, payload any) error {
 	env, err := agentproto.NewEnvelope(msgType, requestID, payload)
 	if err != nil {
-		c.logger.Printf("agent connection: build %s: %v", msgType, err)
-		return
+		return fmt.Errorf("build %s: %w", msgType, err)
 	}
 	raw, err := json.Marshal(env)
 	if err != nil {
-		c.logger.Printf("agent connection: marshal %s: %v", msgType, err)
-		return
+		return fmt.Errorf("marshal %s: %w", msgType, err)
 	}
 	// conn.Write is safe for concurrent use - see runTransfer's original
 	// progress closure for the same claim and its source.
 	if err := conn.Write(ctx, websocket.MessageText, raw); err != nil {
-		c.logger.Printf("agent connection: send %s: %v", msgType, err)
+		return fmt.Errorf("send %s: %w", msgType, err)
 	}
+	return nil
 }
 
 // transferProgressFunc returns the callback that reports one transfer's

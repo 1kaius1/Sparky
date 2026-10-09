@@ -32,7 +32,7 @@ func newTestModelTransfersAPI(t *testing.T, nodeList *fakeNodeLister, transfersF
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
 	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil,
-		nodeList, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, transfersFake, initiator, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, &fakeSettingsViewer{}, &fakeThemeSettingsReader{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, &fakeInventoryLister{}, &fakeSizeEstimator{}, testLogger())
+		nodeList, &fakeNodeRegistrar{}, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, transfersFake, initiator, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, &fakeSettingsViewer{}, &fakeThemeSettingsReader{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, &fakeInventoryLister{}, &fakeSizeEstimator{}, &fakeContainerLogs{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}
@@ -254,7 +254,7 @@ func newTransferFormFixture(t *testing.T, tier db.Tier, permitted bool) *transfe
 	localSvc := NewLocalLoginService(newFakeUserStore(), testSessionSecret)
 	breakGlassSvc := NewBreakGlassLoginService(newFakeBreakGlassStore(), testSessionSecret)
 	api, err := New(svc, localSvc, breakGlassSvc, newConfiguredFakeBreakGlassStore(), "", testBreakGlassLoginPath, testAuthRateLimitMaxAttempts, testAuthRateLimitWindow, testAuthRecheckInterval, testSessionSecret, nil,
-		nodeList, f.registrar, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, f.initiator, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, &fakeSettingsViewer{}, &fakeThemeSettingsReader{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, f.inventory, f.estimator, testLogger())
+		nodeList, f.registrar, &fakeProfileLister{}, &fakeProfileEditor{}, &fakeInstanceLister{}, &fakeInstanceLauncher{}, &fakeTransferLister{}, f.initiator, viewer, &fakeAuditLister{}, &fakeUserRoster{}, &fakeUserElevator{}, &fakeLocalAccountManager{}, &fakeSelfAccountManager{}, &fakeSettingsViewer{}, &fakeThemeSettingsReader{}, &fakeMetricsLister{}, events.NewBroker(), &fakeEngineProvisioner{}, &fakeEngineTransferLister{}, &fakeEngineInventoryLister{}, f.inventory, f.estimator, &fakeContainerLogs{}, testLogger())
 	if err != nil {
 		t.Fatalf("New() error: %v", err)
 	}

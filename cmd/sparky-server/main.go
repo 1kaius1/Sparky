@@ -21,6 +21,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/audit"
 	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/config"
+	"github.com/1kaius1/Sparky/internal/containerlogs"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/engineprovision"
 	"github.com/1kaius1/Sparky/internal/engines"
@@ -135,6 +136,10 @@ func main() {
 	// controls' own writes (LoadInstance/UnloadInstance) - same
 	// twice-passed-value reasoning as nodeService/profileService above.
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
+	// containerLogService stores the container logs agents archive before
+	// removing a container (the container_log_chunk handling in onMessage
+	// below) and backs the Container logs pages.
+	containerLogService := containerlogs.NewService(db.NewContainerLogArchiveRepository(pool), instanceRepo, profileRepo, agentRegistry, logger)
 	// transferService additionally gets nodeService (SSH identity and
 	// interface resolution) and inventoryService (source-presence check) for
 	// peer_node transfers.
@@ -216,6 +221,9 @@ func main() {
 		case agentproto.TypeScanModelsResult:
 			// No SSE publish: the scan page polls its own result.
 			inventoryService.HandleScanModelsResult(nodeID, env)
+		case agentproto.TypeContainerLogChunk:
+			// No SSE publish: the Container logs page loads on demand.
+			containerLogService.HandleChunk(nodeID, env)
 		case agentproto.TypeEngineTransferProgress:
 			engineProvisionService.HandleEngineTransferProgress(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
@@ -246,7 +254,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

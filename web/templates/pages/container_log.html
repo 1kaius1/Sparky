@@ -1,0 +1,30 @@
+{{define "content"}}
+<h1>Container log</h1>
+
+<p><a href="/logs" hx-get="/logs" hx-target="#main-content" hx-push-url="true">Back to container logs</a></p>
+
+<table class="data-table">
+  <tbody>
+    <tr><th>Saved at</th><td>{{.Data.Row.CreatedAt}}</td></tr>
+    <tr><th>Node</th><td>{{.Data.Row.NodeName}}</td></tr>
+    <tr><th>Profile</th><td>{{if .Data.Row.ProfileName}}{{.Data.Row.ProfileName}}{{else}}-{{end}}</td></tr>
+    <tr><th>Container</th><td>{{if .Data.Row.ContainerName}}{{.Data.Row.ContainerName}}{{else}}-{{end}}</td></tr>
+    <tr><th>Why it was saved</th><td>{{.Data.Row.Reason}}</td></tr>
+    <tr><th>State</th><td>{{if .Data.Row.State}}{{.Data.Row.State}}{{else}}-{{end}}</td></tr>
+    <tr><th>Exit</th><td>{{if .Data.Row.OOMKilled}}killed for running out of memory{{end}}{{if and .Data.Row.OOMKilled .Data.Row.ExitCode}}, {{end}}{{if .Data.Row.Signal}}killed by a signal{{else if .Data.Row.ExitCode}}exit code {{.Data.Row.ExitCode}}{{end}}{{if not (or .Data.Row.OOMKilled .Data.Row.ExitCode)}}-{{end}}</td></tr>
+    <tr><th>Started</th><td>{{if .Data.StartedAt}}{{.Data.StartedAt}}{{else}}-{{end}}</td></tr>
+    <tr><th>Finished</th><td>{{if .Data.FinishedAt}}{{.Data.FinishedAt}}{{else}}-{{end}}</td></tr>
+    <tr><th>Lines asked for</th><td>{{.Data.LinesRequested}}</td></tr>
+    <tr><th>Lines saved</th><td>{{.Data.Row.Lines}}{{if .Data.Row.Truncated}} - older output was lost before it could be saved{{end}}</td></tr>
+    <tr><th>Size</th><td>{{.Data.Row.Size}}</td></tr>
+  </tbody>
+</table>
+
+<p><a href="/logs/{{.Data.Row.ID}}/download">Download the full text</a></p>
+
+{{if .Data.Cut}}
+<p>Showing the last {{.Data.Shown}} lines. Earlier lines are in the download.</p>
+{{end}}
+
+<pre class="log-text">{{.Data.Text}}</pre>
+{{end}}

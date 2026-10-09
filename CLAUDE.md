@@ -176,6 +176,7 @@ sparky/
   - profiles/             # Model profile CRUD against an Inventory-picked model, engine adapter registry
   - lifecycle/            # Load/unload orchestration, Green/Blue/Red eligibility, reduced-capacity flow
   - inventory/            # Node model inventory read/delete - cross-node grouping for the Inventory page
+  - containerlogs/        # Container logs agents archive before removing a container: chunk reassembly, storage, Developer-floor viewing
   - transfers/            # Download + peer-to-peer rsync replication orchestration, cancellation
   - modelsource/           # Download size estimation (Hugging Face)
   - metrics/              # Telemetry ingestion, retention/downsample, NFS/S3 export
@@ -658,7 +659,9 @@ web/static/
   Permission overrides for the PowerDev grant; Admin-only scan of nodes for
   models on disk that the inventory does not know, and import of them) and
   Profiles (Read-only view / Developer launch / PowerDev create, edit, and delete, each picking its model
-  from the target node's own Inventory rather than free text), Engines group -
+  from the target node's own Inventory rather than free text) and Container logs
+  (Developer and above - archived container output, which can contain prompt
+  content; `rbac.CanViewInstanceLogs`), Engines group -
   Inventory (Read-only) and Transfers (Read-only view / Admin+ provision),
   Metrics (Read-only), Users & permissions (Admin), Audit log (Admin), Settings
   (Admin). Models' flat transfer history (`GET /transfers`) is reachable from

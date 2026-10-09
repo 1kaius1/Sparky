@@ -336,6 +336,19 @@ as `imported_model` in the audit log. The copy is stored as `present` with a
 `NULL` `placed_via` - no transfer placed it (`SCHEMA.md` Node model inventory).
 Scan results are held in memory for 15 minutes.
 
+Saving a container's log before the agent removes the container uses another
+pair, `container_log_chunk` (agent to central app) and `container_log_ack`
+(central app to agent). The agent gzips the log and sends it as ordered chunks
+of at most 16 KiB under one upload id, because a message over 32768 bytes
+closes the connection; the central app (`internal/containerlogs`) rejects an
+upload that is out of order, over 16 MiB compressed, over 64 MiB expanded, not
+valid gzip, or whose size or SHA-256 does not match, and allows a node at most
+four unfinished uploads. It takes the node from the authenticated connection
+and links the log to a profile only through an instance that belongs to that
+node. The chunk handler only buffers (it runs on the node's read loop); the
+database write and the ack run off it. The agent removes the container only on
+a stored ack. See `docs/AGENT.md` Container log archive.
+
 ---
 
 ## Request Lifecycle

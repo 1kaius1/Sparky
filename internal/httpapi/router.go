@@ -55,6 +55,7 @@ type API struct {
 	engineTransfers      engineTransferLister
 	engineInventory      engineInventoryLister
 	inventory            inventoryLister
+	containerLogs        containerLogViewer
 	sizeEstimator        sizeEstimator
 	templates            map[string]*template.Template
 	partials             map[string]*template.Template
@@ -133,7 +134,8 @@ type API struct {
 // rbac.CanManageModelStore (Admin/SuperAdmin always, PowerDev only with the
 // manage_model_store override - see SCHEMA.md Permission overrides) - a
 // distinct interface from transfers, same "same value, multiple interfaces"
-// pattern as registrar/nodes; logger is used for
+// pattern as registrar/nodes; containerLogsSvc backs the Container logs pages via
+// containerlogs.Service.List/Read, gated by rbac.CanViewInstanceLogs; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
@@ -156,7 +158,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -209,6 +211,7 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		engineTransfers:        engineTransfersSvc,
 		engineInventory:        engineInventorySvc,
 		inventory:              inventorySvc,
+		containerLogs:          containerLogsSvc,
 		sizeEstimator:          sizeEstimatorSvc,
 		templates:              templates,
 		partials:               partials,
@@ -360,6 +363,14 @@ func (a *API) Router() http.Handler {
 	// write route above.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/profiles/{id}/load", a.handleLoadInstance)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/instances/{id}/unload", a.handleUnloadInstance)
+	// Archived container logs (docs/AGENT.md Container log archive). The
+	// Developer-floor gate (rbac.CanViewInstanceLogs) is checked inside
+	// containerlogs.Service, same RequireSession-only-at-the-router-level
+	// reasoning as the other routes. Read-only, so no CSRF and no audit
+	// record (reads are never audited - PLANNING.md Decisions Log).
+	r.With(a.RequireSession).Get("/logs", a.handleContainerLogs)
+	r.With(a.RequireSession).Get("/logs/{id}", a.handleContainerLog)
+	r.With(a.RequireSession).Get("/logs/{id}/download", a.handleContainerLogDownload)
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	// The initiate form's own RBAC gate (rbac.CanManageModelStore) is
 	// checked directly in both handlers - GET to decide whether to show
