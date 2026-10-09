@@ -1046,6 +1046,74 @@ func TestService_ReconcileNode_DispatchesCheckInstancePerRunningRow(t *testing.T
 	}
 }
 
+func decodeCheckInstances(t *testing.T, d *fakeDispatcher) map[string]agentproto.CheckInstance {
+	t.Helper()
+	out := map[string]agentproto.CheckInstance{}
+	for _, env := range d.sent {
+		var p agentproto.CheckInstance
+		if err := env.DecodePayload(&p); err != nil {
+			t.Fatalf("decode check_instance payload: %v", err)
+		}
+		out[p.InstanceID] = p
+	}
+	return out
+}
+
+// The agent loses its in-memory tracking when it restarts, so the sweep
+// carries what it needs to resume health reporting.
+func TestService_ReconcileNode_CarriesPortAndEngineType(t *testing.T) {
+	port := 8001
+	instances := &fakeInstanceStore{runningByNodeResult: []*db.RunningInstance{
+		{ID: "instance-1", ProfileID: "profile-1", Status: db.RunningInstanceStatusRunning, ActualPort: &port},
+	}}
+	dispatch := &fakeDispatcher{connected: true}
+	profiles := &fakeProfileLookup{profile: &db.Profile{ID: "profile-1", EngineType: db.ProfileEngineVLLM}}
+	svc := NewService(profiles, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+
+	svc.ReconcileNode(context.Background(), "node-1")
+
+	got := decodeCheckInstances(t, dispatch)["instance-1"]
+	if got.Port != 8001 || got.EngineType != "vllm" {
+		t.Errorf("check_instance = %+v, want port 8001 and engine vllm", got)
+	}
+}
+
+// Resuming health reporting is a bonus on top of the liveness check, so
+// failing to look up the engine type must not stop the check itself.
+func TestService_ReconcileNode_ProfileLookupFails_StillChecksLiveness(t *testing.T) {
+	port := 8001
+	instances := &fakeInstanceStore{runningByNodeResult: []*db.RunningInstance{
+		{ID: "instance-1", ProfileID: "profile-1", Status: db.RunningInstanceStatusRunning, ActualPort: &port},
+	}}
+	dispatch := &fakeDispatcher{connected: true}
+	svc := NewService(&fakeProfileLookup{err: errors.New("db down")}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+
+	svc.ReconcileNode(context.Background(), "node-1")
+
+	got, ok := decodeCheckInstances(t, dispatch)["instance-1"]
+	if !ok {
+		t.Fatal("no check_instance sent when the profile lookup failed")
+	}
+	if got.EngineType != "" || got.Port != 8001 {
+		t.Errorf("check_instance = %+v, want port 8001 and no engine type", got)
+	}
+}
+
+func TestService_ReconcileNode_NoRecordedPort_SendsNone(t *testing.T) {
+	instances := &fakeInstanceStore{runningByNodeResult: []*db.RunningInstance{
+		{ID: "instance-1", ProfileID: "profile-1", Status: db.RunningInstanceStatusRunning},
+	}}
+	dispatch := &fakeDispatcher{connected: true}
+	profiles := &fakeProfileLookup{profile: &db.Profile{EngineType: db.ProfileEngineLlamaCPP}}
+	svc := NewService(profiles, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+
+	svc.ReconcileNode(context.Background(), "node-1")
+
+	if got := decodeCheckInstances(t, dispatch)["instance-1"]; got.Port != 0 || got.EngineType != "llamacpp" {
+		t.Errorf("check_instance = %+v, want port 0 and engine llamacpp", got)
+	}
+}
+
 func TestService_ReconcileNode_NoneRunning_NoDispatch(t *testing.T) {
 	instances := &fakeInstanceStore{runningByNodeResult: nil}
 	dispatch := &fakeDispatcher{connected: true}

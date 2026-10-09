@@ -609,3 +609,176 @@ func TestFetchServedModelID(t *testing.T) {
 		t.Errorf("closed server: got (%v, %q), want (false, \"\")", reachable, id)
 	}
 }
+
+// resumeFixture wires a Conn to a fake central app and a live fake engine,
+// for the tests of resuming health tracking for an instance this process did
+// not start (one that survived an agent restart).
+func resumeFixture(t *testing.T, rt *fakeRuntimeBackend) (*Conn, *websocket.Conn, chan agentproto.Envelope, int) {
+	t.Helper()
+	engineSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	t.Cleanup(engineSrv.Close)
+
+	central := newTestCentralApp(true, "")
+	central.receivedMsgs = make(chan agentproto.Envelope, 10)
+	wsSrv := httptest.NewServer(central)
+	t.Cleanup(wsSrv.Close)
+
+	conn := newTestConnForReadiness(Config{InstanceHealthCheckInterval: time.Hour}, rt)
+	return conn, dialTestAgentConn(t, wsSrv), central.receivedMsgs, portFromURL(t, engineSrv.URL)
+}
+
+func nextEnvelope(t *testing.T, msgs chan agentproto.Envelope) agentproto.Envelope {
+	t.Helper()
+	select {
+	case env := <-msgs:
+		return env
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for a message")
+		return agentproto.Envelope{}
+	}
+}
+
+func expectNoMessage(t *testing.T, msgs chan agentproto.Envelope) {
+	t.Helper()
+	select {
+	case env := <-msgs:
+		t.Fatalf("received unexpected message %+v", env)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// The instance survived an agent restart, so the agent's in-memory tracking
+// is empty. The sweep's answer must start health reporting again, and start
+// it at once, not after a full interval.
+func TestRunCheckInstance_RunningUntrackedInstance_ResumesHealthTracking(t *testing.T) {
+	rt := &fakeRuntimeBackend{isRunningResult: true}
+	conn, ws, msgs, port := resumeFixture(t, rt)
+
+	conn.runCheckInstance(context.Background(), ws, agentproto.CheckInstance{InstanceID: "instance-1", Port: port, EngineType: "vllm"})
+
+	if env := nextEnvelope(t, msgs); env.Type != agentproto.TypeInstanceResult {
+		t.Fatalf("first message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+	}
+	health := waitForInstanceHealth(t, msgs)
+	if health.InstanceID != "instance-1" || health.Status != agentproto.InstanceHealthStatusHealthy {
+		t.Errorf("health = %+v, want instance-1 healthy", health)
+	}
+	got, ok := conn.snapshotActiveInstances()["instance-1"]
+	if !ok || got.Port != port || got.EngineType != "vllm" {
+		t.Errorf("tracked = %+v (present=%v), want port %d engine vllm", got, ok, port)
+	}
+}
+
+// Without a usable port or a known engine type there is nothing to probe, so
+// the instance stays untracked - exactly the behaviour before this fix, and
+// what an older central app that sends neither produces.
+func TestRunCheckInstance_RunningInstance_NotResumedWithoutUsableFacts(t *testing.T) {
+	for name, check := range map[string]agentproto.CheckInstance{
+		"no port and no engine type (older central app)": {InstanceID: "instance-1"},
+		"engine type but no port":                        {InstanceID: "instance-1", EngineType: "vllm"},
+		"port but no engine type":                        {InstanceID: "instance-1", Port: 8000},
+		"engine type the health check does not know":     {InstanceID: "instance-1", Port: 8000, EngineType: "nonesuch"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			rt := &fakeRuntimeBackend{isRunningResult: true}
+			conn, ws, msgs, _ := resumeFixture(t, rt)
+
+			conn.runCheckInstance(context.Background(), ws, check)
+
+			if env := nextEnvelope(t, msgs); env.Type != agentproto.TypeInstanceResult {
+				t.Fatalf("message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+			}
+			expectNoMessage(t, msgs)
+			if n := len(conn.snapshotActiveInstances()); n != 0 {
+				t.Errorf("tracked %d instances, want 0", n)
+			}
+		})
+	}
+}
+
+// An instance this process started is already tracked with its real model
+// path; the sweep must neither overwrite that nor send a second, redundant
+// health report.
+func TestRunCheckInstance_AlreadyTracked_IsLeftAlone(t *testing.T) {
+	rt := &fakeRuntimeBackend{isRunningResult: true}
+	conn, ws, msgs, port := resumeFixture(t, rt)
+	conn.trackActiveInstance("instance-1", port, "/models/real-path", "vllm")
+
+	conn.runCheckInstance(context.Background(), ws, agentproto.CheckInstance{InstanceID: "instance-1", Port: 1, EngineType: "llamacpp"})
+
+	if env := nextEnvelope(t, msgs); env.Type != agentproto.TypeInstanceResult {
+		t.Fatalf("message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+	}
+	expectNoMessage(t, msgs)
+	if got := conn.snapshotActiveInstances()["instance-1"]; got.Port != port || got.ModelPath != "/models/real-path" || got.EngineType != "vllm" {
+		t.Errorf("tracking was overwritten: %+v", got)
+	}
+}
+
+// A dead instance is reported dead and nothing more; it is not tracked, since
+// there is no engine to probe on a schedule.
+func TestRunCheckInstance_Dead_IsNotTracked(t *testing.T) {
+	rt := &fakeRuntimeBackend{isRunningResult: false}
+	conn, ws, msgs, port := resumeFixture(t, rt)
+
+	conn.runCheckInstance(context.Background(), ws, agentproto.CheckInstance{InstanceID: "instance-1", Port: port, EngineType: "vllm"})
+
+	if health := waitForInstanceHealth(t, msgs); health.Status != agentproto.InstanceHealthStatusDead {
+		t.Errorf("Status = %q, want dead", health.Status)
+	}
+	expectNoMessage(t, msgs)
+	if n := len(conn.snapshotActiveInstances()); n != 0 {
+		t.Errorf("tracked %d instances, want 0", n)
+	}
+}
+
+// End to end through the periodic loop: once resumed, an engine that later
+// stops answering is noticed - the exact failure the bug let go unnoticed.
+func TestResumedInstance_LaterEngineFailure_IsReportedUnhealthy(t *testing.T) {
+	var down atomic.Bool
+	engineSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if down.Load() {
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Write([]byte(`{"object":"list","data":[]}`))
+	}))
+	defer engineSrv.Close()
+
+	central := newTestCentralApp(true, "")
+	central.receivedMsgs = make(chan agentproto.Envelope, 20)
+	wsSrv := httptest.NewServer(central)
+	defer wsSrv.Close()
+	ws := dialTestAgentConn(t, wsSrv)
+
+	rt := &fakeRuntimeBackend{isRunningResult: true}
+	conn := newTestConnForReadiness(Config{InstanceHealthCheckInterval: 30 * time.Millisecond}, rt)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go conn.sendInstanceHealth(ctx, ws)
+
+	conn.runCheckInstance(ctx, ws, agentproto.CheckInstance{InstanceID: "instance-1", Port: portFromURL(t, engineSrv.URL), EngineType: "vllm"})
+	if env := nextEnvelope(t, central.receivedMsgs); env.Type != agentproto.TypeInstanceResult {
+		t.Fatalf("first message type = %q, want instance_result", env.Type)
+	}
+	if h := waitForInstanceHealth(t, central.receivedMsgs); h.Status != agentproto.InstanceHealthStatusHealthy {
+		t.Fatalf("initial Status = %q, want healthy", h.Status)
+	}
+
+	down.Store(true)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case env := <-central.receivedMsgs:
+			var h agentproto.InstanceHealth
+			if err := env.DecodePayload(&h); err == nil && h.Status == agentproto.InstanceHealthStatusUnhealthy {
+				return
+			}
+		case <-deadline:
+			t.Fatal("never saw an unhealthy report after the engine went down")
+		}
+	}
+}

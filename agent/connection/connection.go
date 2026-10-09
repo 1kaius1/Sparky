@@ -1052,6 +1052,7 @@ func (c *Conn) runCheckInstance(ctx context.Context, conn *websocket.Conn, check
 		return
 	}
 	c.sendInstanceResult(ctx, conn, check.InstanceID, agentproto.InstanceStatusRunning, 0, "")
+	c.resumeHealthTracking(ctx, conn, check)
 }
 
 // sendInstanceResult reports a load/unload outcome back to the central

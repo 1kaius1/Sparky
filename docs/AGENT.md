@@ -571,6 +571,17 @@ launch that it can generate:
   missing container as success, still removes an exited container, and on the
   bare-metal backend an instance the agent no longer tracks (it restarted
   since) is likewise nothing left to stop.
+- The set of instances being checked is held in memory, so it is empty after
+  an agent restart even though a container (managed by the runtime daemon)
+  survives one. The central app's reconnect sweep (`check_instance`) therefore
+  carries each running instance's port and engine type, and when the agent
+  finds an instance running that it is not tracking, it starts tracking it and
+  runs the first check at once. Without this, every agent upgrade or
+  crash-restart froze the health of whatever was loaded at its last value. It
+  works for every container, including ones started by an agent old enough to
+  have labelled them with nothing, because the facts come from the central app,
+  not from the container. An older central app that sends neither leaves the
+  instance untracked, as before.
 - The same `dead` report answers the central app's reconnect sweep
   (`check_instance`): an instance that is not running is reported dead via
   `instance_health` instead of being silently set `stopped`.

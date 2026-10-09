@@ -376,10 +376,21 @@ type UnloadInstance struct {
 	InstanceID string `json:"instance_id"`
 }
 
-// CheckInstance is TypeCheckInstance's payload - same shape as
-// UnloadInstance, since both only need to name which instance.
+// CheckInstance is TypeCheckInstance's payload. InstanceID names which
+// instance. Port and EngineType are what the agent needs to resume the
+// periodic health check for an instance it did not start in this process:
+// the agent's tracking of running instances is in memory only, and a
+// container (or a bare-metal engine's port) outlives an agent restart, so
+// without them every agent upgrade or crash-restart silently ended health
+// reporting for whatever was loaded. The central app knows both (the row's
+// actual port, the profile's engine type) and sending them works for every
+// container, including ones started by an agent old enough to have labelled
+// them with nothing. Both are optional: an agent that gets neither simply
+// cannot resume health reporting for that instance, exactly as before.
 type CheckInstance struct {
 	InstanceID string `json:"instance_id"`
+	Port       int    `json:"port,omitempty"`
+	EngineType string `json:"engine_type,omitempty"`
 }
 
 // InstanceStatus* are InstanceResult.Status's possible values - plain

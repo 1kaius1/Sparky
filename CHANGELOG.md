@@ -19,11 +19,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   asks the runtime before probing the engine) and by the reconnect sweep,
   which used to either set the row `stopped` or, for a missing container,
   send nothing at all. New migration `000038_add_instance_health_dead` (adds
-  `dead` to `instance_health_status`); SCHEMA.md updated. Upgrade the server
-  before the agents: an older server does not know the new value and logs
-  and ignores it.
+  `dead` to `instance_health_status`); SCHEMA.md updated. Upgrade the
+  server's database migrations together with the server, and the agents
+  before the server (see the health-resume entry under Fixed): a Dead report
+  from a new agent is simply ignored by an older server, which logs it.
 
 ### Fixed
+- Agent: health reporting now resumes for an instance that was already running
+  when the agent restarted. The agent only checked instances it had loaded
+  itself in the current process, so after any agent upgrade or crash-restart
+  a loaded model's health froze at its last value on the Dashboard and an
+  engine that later hung or died was never noticed, although the container
+  (deliberately) kept running. The central app's reconnect sweep
+  (`check_instance`) now carries the instance's port and engine type, and the
+  agent starts tracking an instance it finds running and checks it at once.
+  This works for containers started by older agents too. **Upgrade the agents
+  first, then the server:** an older agent rejects the new fields in
+  `check_instance`, which would stop the reconnect sweep (including Dead
+  detection) on that agent until it is upgraded.
 - Agent: Unload now clears a dead instance. `Stop` treats an already-exited or
   already-removed container as success (an exited container is still removed)
   instead of failing, and the bare-metal `Stop` no longer fails for an
