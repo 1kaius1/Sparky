@@ -266,6 +266,29 @@ func TestCanLaunchInstances(t *testing.T) {
 	}
 }
 
+func TestCanViewInstanceLogs(t *testing.T) {
+	tests := []struct {
+		actor Actor
+		want  bool
+	}{
+		{Actor{IsSuperAdmin: true}, true},
+		{Actor{Tier: db.TierAdmin}, true},
+		{Actor{Tier: db.TierPowerDev}, true},
+		{Actor{Tier: db.TierDeveloper}, true},
+		{Actor{Tier: db.TierReadOnly}, false},
+		{Actor{}, false},
+	}
+
+	for _, tt := range tests {
+		name := fmt.Sprintf("tier=%s,superadmin=%v", tt.actor.Tier, tt.actor.IsSuperAdmin)
+		t.Run(name, func(t *testing.T) {
+			if got := CanViewInstanceLogs(tt.actor); got != tt.want {
+				t.Errorf("CanViewInstanceLogs() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCanManageModelStore(t *testing.T) {
 	tests := []struct {
 		actor       Actor
