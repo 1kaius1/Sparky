@@ -1984,6 +1984,42 @@ at the phase level in Milestones above, which is more precise than a separate li
 here can stay in sync with; this section exists for a one-line pointer, not a
 duplicate checklist.
 
+- **Container lifecycle work in progress (as of 2026-10-08).** Done and merged:
+  the docker-group join in `sparky-agent setup` (#154), the Dead instance
+  health state (#156), health reporting resuming after an agent restart
+  (#157). Still to build, in this order, each as its own PR - the full design
+  and the reasons are in the 2026-10-08 "container cleanup and log archive"
+  Decisions Log entry; this is the checklist to resume from:
+  1. **Archive before remove.** New migration and table for archived logs (one
+     row per container: instance, node, profile, container name, state, exit
+     code, OOM flag, lines requested and kept, gzip body; update SCHEMA.md in
+     the same change). The agent captures the log (`runtime.Backend.Logs`
+     takes a tail count today and `containers.Backend.Stop` removes the
+     container with no capture), uploads it, and removes the container only
+     after the central app confirms it stored it; a failed archive leaves the
+     container. Covers a normal Unload and replace-on-launch. Needs: chunked
+     upload, because nothing in the code raises the WebSocket read limit
+     (`SetReadLimit` is not called anywhere), so a large log cannot go in one
+     message; a `sparky.profile_id` container label and a `profile_id` field on
+     `load_instance` for replace-on-launch (strictly decoded, so agents are
+     upgraded before the server); the archive's own retention period (proposed:
+     follow the audit log's, default 12 months, up to 24 or keep forever -
+     still to confirm with the maintainer); viewing at Developer and above.
+  2. **Scheduled and manual cleanup.** A singleton Admin settings row (enabled,
+     schedule, default lines 1 to ALL with 2000 as the default, minimum age), a
+     server-side scheduler that sends the agent a sweep naming only containers
+     whose instance is not `starting`/`running`/`stopping`, a preview of what
+     would be removed, and a manual cleanup page where the operator picks lines
+     per container (Admin-gated, audited per container). Needs a "system"
+     actor in the audit log for scheduled runs (a small schema addition - the
+     existing nullable actor plus `is_superadmin_action` flag would record it as
+     the break-glass account). Safety rules from the Known Issues row still
+     apply: never touch a container whose instance is live, never touch a
+     container that is not Sparky's, and decide how to treat legacy
+     `sparky-instance-<id>` containers with no label (proposed: only if exited).
+  3. Then the GUI log viewer and the file-backed bare-metal engine logs (both
+     v1.0.0 milestone items above).
+
 - The live-page data-refresh "Level A + Tier 0" fix (2026-09-08 Decisions
   Log) landed the same day it was approved - morph-swap, per-page topic
   scoping, the focus guard, and the `instance_health` listener are all in
@@ -2278,6 +2314,8 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | The Dashboard's per-instance "load strips" (2026-09-10 Decisions Log entry) source their GPU utilization/memory from `gpu_metrics` rows correlated to a running instance by `internal/metrics.Service.HandleTelemetry`, which attributes a telemetry tick to at most **one** active instance per node (`FindActiveByNode`). On a node running more than one instance concurrently, every such instance's strip would show the same node-total load rather than that instance's own share | Low | The fleet runs one instance per node today, so per-node load == per-instance load and the strips are exact. True per-instance GPU attribution would need the agent to break telemetry down per running engine (a bigger agent + protocol + ingestion change); `buildDashboardLiveData` already averages multiple GPU indices per reading, so the remaining gap is specifically multiple *instances* sharing one node, not multiple GPUs |
 | Containers the Docker/Podman backend creates are only ever removed by a normal unload (`containers.Backend.Stop`, called from `agent/connection`'s `runUnload`); nothing else cleans them up, so stale containers accumulate and are never reconciled against what the central app thinks is running. Leftovers come from: (a) a launch that fails after its container exists - `runLoad` reports `failed` both when `Start` errors (a `ContainerStart` failure after a successful create leaves a created-but-never-started container) and when the load-time readiness check fails, but in neither case stops or removes the container, so a hung engine keeps holding its GPU memory and host port (a relaunch then fails with a bind error) and a crashed one leaves an exited container; (b) an engine that exits or is OOM-killed later (no `AutoRemove` is set, deliberately, since the failure report needs the container's logs); (c) a failed unload. The user's concern, found during PR #150's manual testing on the Sparks: a container's command line, image, environment and mounts are fixed at create time, so as a profile is edited and relaunched (engine params, image, model or quantization, port) the older containers keep the previous, now-static configuration - they pile up, are easily mistaken for the current one, and would run the stale configuration if anyone ran `docker start` on one. | Medium - required for the 1.0.0 release | Not fixed in PR #150 (descriptive container names), which was kept scoped to naming and label-based lookup; recorded here at the user's request to be fixed in its own change, which the maintainer has made a requirement for the 1.0.0 release (2026-10-08). Needs decisions before building: (1) what happens to the container of a failed or crashed launch - it must stay available for the 1.0.0 GUI log viewer (its own v1.0.0 milestone item) until the operator unloads it or the profile is launched again, or its log tail and exit reason must be captured and stored before it is removed, so removing it the moment it fails is no longer an option; (2) before creating a container for a profile, remove that profile's earlier containers - this needs a `sparky.profile_id` label (PR #150 sets only `sparky.instance_id` and `sparky.managed`); (3) a sweep at agent start/reconnect that removes `sparky.managed=true` containers whose instance the central app does not list as `starting`/`running` (the reconnect reconciliation, `lifecycle.ReconcileNode`, today only asks about rows it already believes are `running`, so it would need an authoritative list); (4) how to treat containers from before the label existed (legacy `sparky-instance-<id>` names, no label) without ever touching a still-running engine from an older agent; (5) whether the agent decides alone or the central app directs removal. Safety rules for whatever is built: never touch a container whose instance is `starting`/`running`/`stopping` per the central app, never touch a container that is not Sparky's (`sparky.managed` label or the legacy name prefix), and consider a report-only first pass since this deletes real containers. **Design decided 2026-10-08** - see that date's "container cleanup and log archive" Decisions Log entry: archive the log before any removal, a server-driven scheduled sweep with a preview, and a manual cleanup with a per-container line count; it replaces decision (1) above, since an archived log means a failed container no longer has to stay alive. |
 | Bare-metal engine output is kept only in an in-memory, byte-capped ring (`agent/runtime/baremetal` `logBuffer`), not line-aware and lost when the agent restarts. Anything that archives a bare-metal instance's log (the 2026-10-08 container log archive) can therefore save only what the buffer still holds, so "ALL lines" means "everything in the buffer" there, and a crashed agent loses the log entirely. | Medium - required for the 1.0.0 release | Accepted for the first version of the log archive by the maintainer (2026-10-08); the proper fix is the v1.0.0 "Bare-metal engine log retention" milestone item (file-backed, rotated engine logs processed like container logs). Containers are not affected by the restart part: Docker holds their output itself, subject to its log driver's own rotation. |
+| Not verified on real hardware or in a browser, for the three 2026-10-08 lifecycle fixes: (a) the docker-group join (`EnsureContainerRuntimeGroupMembership`) was only unit-tested, never run through a real `usermod` on a Docker host - re-run `sudo sparky-agent setup` on a Spark with `SPARKY_RUNTIME_BACKEND=docker` and confirm `serviceloop` is in the `docker` group and the agent reaches the socket; (b) the Dead state and `Stop` on an exited or missing container were verified against a real Podman daemon and a real Postgres but not a real Docker daemon, and the red Dead badge was not looked at in a browser; (c) health-resume was never exercised with a real agent restart against a real server and container (kill or upgrade the agent with a model loaded and confirm the Dashboard health keeps updating). | Low | Found while closing the three fixes; the logic is covered by tests (with mutation checks) and the daemon calls were checked on Podman, but each needs a human with the Sparks. Fold into the next real fleet-testing pass. |
+| A `check_instance` that gets no answer at all - the agent is up but its runtime daemon is unreachable, so `runCheckInstance` logs and sends nothing - leaves the row exactly as it was, with no timeout, so a node whose Docker daemon is down shows its instances as healthy or running at their last values indefinitely. Related and also deferred: the Dead report carries no exit code or OOM flag (the health detail is numeric-only), so the operator sees that an instance is dead but not why until the log viewer and archive exist. | Low | Left out of the Dead-state change to keep it scoped (2026-10-08 Decisions Log); the exit reason is expected to arrive with the log archive. A server-side timeout would need a decision on what the central app should show when an agent is connected but silent. |
 
 ---
 
