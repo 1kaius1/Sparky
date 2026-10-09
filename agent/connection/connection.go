@@ -218,6 +218,17 @@ type Conn struct {
 	activeMu        sync.Mutex
 	activeInstances map[string]activeInstance
 
+	// archiveMu guards archiveWaiters and archiving - see logarchive.go.
+	// archiveWaiters maps an in-flight log upload's ID to the channel its
+	// central app confirmation is delivered on; archiving is the set of
+	// instances whose log is being archived right now. archiveAckTimeout is
+	// how long an upload waits for that confirmation; a field, not a
+	// constant, so tests can shrink it.
+	archiveMu         sync.Mutex
+	archiveWaiters    map[string]chan agentproto.ContainerLogAck
+	archiving         map[string]struct{}
+	archiveAckTimeout time.Duration
+
 	// listInterfaces is a fakeable seam over netinfo.List.
 	listInterfaces func() ([]netinfo.Interface, error)
 
@@ -249,10 +260,14 @@ func New(cfg Config, runtime runtimeBackend, transferExec transferExecutor, engi
 		minBackoff:      defaultMinBackoff,
 		maxBackoff:      defaultMaxBackoff,
 		activeInstances: make(map[string]activeInstance),
-		listInterfaces:  netinfo.List,
-		authorizer:      peertransfer.NewAuthorizer(peertransfer.GrantDir, peertransfer.UsedDir, cfg.ModelStoragePath, cfg.PeerTransferAuthTTL),
-		puller:          peertransfer.NewPuller(cfg.SSHKeyPath, cfg.ModelStoragePath),
-		dial:            net.DialTimeout,
+		archiveWaiters:  make(map[string]chan agentproto.ContainerLogAck),
+		archiving:       make(map[string]struct{}),
+
+		archiveAckTimeout: defaultArchiveAckTimeout,
+		listInterfaces:    netinfo.List,
+		authorizer:        peertransfer.NewAuthorizer(peertransfer.GrantDir, peertransfer.UsedDir, cfg.ModelStoragePath, cfg.PeerTransferAuthTTL),
+		puller:            peertransfer.NewPuller(cfg.SSHKeyPath, cfg.ModelStoragePath),
+		dial:              net.DialTimeout,
 	}
 }
 
@@ -605,6 +620,13 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.instanceWG.Done()
 			c.runUnload(ctx, conn, unload)
 		}()
+	case agentproto.TypeContainerLogAck:
+		var ack agentproto.ContainerLogAck
+		if err := env.DecodePayload(&ack); err != nil {
+			c.logger.Printf("agent connection: received malformed container_log_ack payload: %v", err)
+			return
+		}
+		c.deliverArchiveAck(ack)
 	case agentproto.TypeCheckInstance:
 		var check agentproto.CheckInstance
 		if err := env.DecodePayload(&check); err != nil {
@@ -1004,19 +1026,26 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 // backend's instance-id label, see containers.Backend, and
 // agent/runtime/baremetal.Backend's own tracking map).
 func (c *Conn) runUnload(ctx context.Context, conn *websocket.Conn, unload agentproto.UnloadInstance) {
-	// Untracked regardless of Stop's own outcome below - either way, this
+	// Untracked regardless of Halt's own outcome below - either way, this
 	// instance is no longer something the periodic health check
 	// (readiness.go's sendInstanceHealth) should keep polling; a failed
-	// Stop is reported back for an operator to retry, not silently
+	// Halt is reported back for an operator to retry, not silently
 	// covered for by continuing to health-check it here.
 	defer c.untrackActiveInstance(unload.InstanceID)
 
-	if err := c.runtime.Stop(ctx, unload.InstanceID); err != nil {
+	// Halt, not Stop: the container must outlive the engine until its log
+	// has been stored, because removing it takes the log with it.
+	if err := c.runtime.Halt(ctx, unload.InstanceID); err != nil {
 		c.logger.Printf("agent connection: stop instance %s: %v", unload.InstanceID, err)
 		c.sendInstanceResult(ctx, conn, unload.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
 		return
 	}
+	// The engine is down and its GPU memory and port are free, so report
+	// that now; archiving can take seconds and must not hold the operator's
+	// view of the instance in "stopping".
 	c.sendInstanceResult(ctx, conn, unload.InstanceID, agentproto.InstanceStatusStopped, 0, "")
+
+	c.archiveAndRemove(ctx, conn, unload.InstanceID, "unload")
 }
 
 // runCheckInstance answers the central app's running_instances staleness
