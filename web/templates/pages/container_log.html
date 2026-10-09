@@ -11,7 +11,7 @@
     <tr><th>Container</th><td>{{if .Data.Row.ContainerName}}{{.Data.Row.ContainerName}}{{else}}-{{end}}</td></tr>
     <tr><th>Why it was saved</th><td>{{.Data.Row.Reason}}</td></tr>
     <tr><th>State</th><td>{{if .Data.Row.State}}{{.Data.Row.State}}{{else}}-{{end}}</td></tr>
-    <tr><th>Exit</th><td>{{if .Data.Row.OOMKilled}}killed for running out of memory{{end}}{{if and .Data.Row.OOMKilled .Data.Row.ExitCode}}, {{end}}{{if .Data.Row.ExitCode}}exit code {{.Data.Row.ExitCode}}{{end}}{{if not (or .Data.Row.OOMKilled .Data.Row.ExitCode)}}-{{end}}</td></tr>
+    <tr><th>Exit</th><td>{{if .Data.Row.OOMKilled}}killed for running out of memory{{end}}{{if and .Data.Row.OOMKilled .Data.Row.ExitCode}}, {{end}}{{if .Data.Row.Signal}}killed by a signal{{else if .Data.Row.ExitCode}}exit code {{.Data.Row.ExitCode}}{{end}}{{if not (or .Data.Row.OOMKilled .Data.Row.ExitCode)}}-{{end}}</td></tr>
     <tr><th>Started</th><td>{{if .Data.StartedAt}}{{.Data.StartedAt}}{{else}}-{{end}}</td></tr>
     <tr><th>Finished</th><td>{{if .Data.FinishedAt}}{{.Data.FinishedAt}}{{else}}-{{end}}</td></tr>
     <tr><th>Lines asked for</th><td>{{.Data.LinesRequested}}</td></tr>

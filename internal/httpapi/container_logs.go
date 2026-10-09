@@ -48,6 +48,7 @@ type containerLogRow struct {
 	Reason        string
 	State         string
 	ExitCode      string
+	Signal        bool
 	OOMKilled     bool
 	Lines         int
 	Size          string
@@ -92,8 +93,12 @@ func containerLogReasonLabel(reason string) string {
 
 func containerLogRowOf(a *db.ContainerLogArchive) containerLogRow {
 	exit := ""
+	signalled := false
 	if a.ExitCode != nil {
 		exit = fmt.Sprintf("%d", *a.ExitCode)
+		// A bare-metal process killed by a signal has no exit code; the
+		// agent reports -1 for it.
+		signalled = *a.ExitCode == -1
 	}
 	return containerLogRow{
 		ID:            a.ID,
@@ -104,6 +109,7 @@ func containerLogRowOf(a *db.ContainerLogArchive) containerLogRow {
 		Reason:        containerLogReasonLabel(a.Reason),
 		State:         a.State,
 		ExitCode:      exit,
+		Signal:        signalled,
 		OOMKilled:     a.OOMKilled,
 		Lines:         a.LinesKept,
 		Size:          formatLogSize(a.SizeBytes),

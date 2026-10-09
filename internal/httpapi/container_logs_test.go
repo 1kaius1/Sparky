@@ -239,3 +239,16 @@ func TestFormatLogSize(t *testing.T) {
 		}
 	}
 }
+
+func TestContainerLogs_ExitCodeMinusOneIsShownAsKilledBySignal(t *testing.T) {
+	arc := sampleArchive()
+	code := -1
+	arc.ExitCode, arc.OOMKilled = &code, false
+	api, uid := logsAPI(t, db.TierDeveloper, &fakeContainerLogs{archives: []*db.ContainerLogArchive{arc}, text: "x\n"})
+	for _, path := range []string{"/logs", "/logs/" + testLogID} {
+		body := getAs(t, api, uid, path).Body.String()
+		if !strings.Contains(body, "killed by a signal") || strings.Contains(body, "exit code -1") {
+			t.Errorf("%s: exit -1 not shown as killed by a signal", path)
+		}
+	}
+}
