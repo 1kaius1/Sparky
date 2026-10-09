@@ -120,6 +120,44 @@ func (c *Conn) trackActiveInstance(instanceID string, port int, modelPath, engin
 	c.activeInstances[instanceID] = activeInstance{Port: port, ModelPath: modelPath, EngineType: engineType}
 }
 
+// resumeHealthTracking starts periodic health checks for an instance the
+// central app says is running but this process did not start - one that
+// survived an agent restart (a container is managed by the runtime daemon,
+// and a bare-metal engine's port is the central app's record). The tracking
+// map is in memory only, so without this every agent upgrade or
+// crash-restart silently ended health reporting for whatever was loaded: its
+// health froze at the last pre-restart value and an engine that later hung
+// or died was never noticed. An instance already tracked is left alone, and
+// one the central app gave no usable port or engine type for (an older
+// central app) cannot be resumed. The first check runs at once rather than
+// after a full interval, so the Dashboard stops showing the frozen value
+// straight away.
+func (c *Conn) resumeHealthTracking(ctx context.Context, conn *websocket.Conn, check agentproto.CheckInstance) {
+	if check.Port <= 0 {
+		return
+	}
+	if _, ok := engineProbes[check.EngineType]; !ok {
+		c.logger.Printf("agent connection: cannot resume health checks for instance %s: engine type %q is not one the health check knows", check.InstanceID, check.EngineType)
+		return
+	}
+
+	c.activeMu.Lock()
+	_, tracked := c.activeInstances[check.InstanceID]
+	if !tracked {
+		// No model path: the health check never uses it, and the central
+		// app does not need to send it.
+		c.activeInstances[check.InstanceID] = activeInstance{Port: check.Port, EngineType: check.EngineType}
+	}
+	c.activeMu.Unlock()
+	if tracked {
+		return
+	}
+
+	c.logger.Printf("agent connection: resumed health checks for instance %s on port %d", check.InstanceID, check.Port)
+	client := &http.Client{Timeout: healthCheckHTTPTimeout}
+	c.checkInstanceHealth(ctx, conn, client, check.InstanceID, activeInstance{Port: check.Port, EngineType: check.EngineType})
+}
+
 // untrackActiveInstance stops sendInstanceHealth from checking instanceID
 // - called by runUnload regardless of whether the stop itself succeeded.
 func (c *Conn) untrackActiveInstance(instanceID string) {

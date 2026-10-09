@@ -333,7 +333,7 @@ func TestEnvelope_RoundTrip_UnloadInstance(t *testing.T) {
 }
 
 func TestEnvelope_RoundTrip_CheckInstance(t *testing.T) {
-	want := CheckInstance{InstanceID: "instance-1"}
+	want := CheckInstance{InstanceID: "instance-1", Port: 8000, EngineType: "vllm"}
 
 	env, err := NewEnvelope(TypeCheckInstance, "", want)
 	if err != nil {
@@ -903,5 +903,17 @@ func TestEnvelope_RoundTrip_LoadInstance_ContainerName(t *testing.T) {
 	}
 	if strings.Contains(string(legacy.Payload), "container_name") {
 		t.Errorf("empty ContainerName must be omitted from the payload: %s", legacy.Payload)
+	}
+}
+
+// Port and EngineType are optional so an older central app, which sends
+// neither, still produces a payload every agent decodes.
+func TestCheckInstance_OptionalFieldsOmittedWhenEmpty(t *testing.T) {
+	raw, err := json.Marshal(CheckInstance{InstanceID: "instance-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(raw) != `{"instance_id":"instance-1"}` {
+		t.Errorf("payload = %s, want only instance_id", raw)
 	}
 }

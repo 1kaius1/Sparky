@@ -423,7 +423,20 @@ func (s *Service) ReconcileNode(ctx context.Context, nodeID string) {
 	}
 
 	for _, inst := range instances {
-		env, err := agentproto.NewEnvelope(agentproto.TypeCheckInstance, "", agentproto.CheckInstance{InstanceID: inst.ID})
+		check := agentproto.CheckInstance{InstanceID: inst.ID}
+		if inst.ActualPort != nil {
+			check.Port = *inst.ActualPort
+		}
+		// The engine type lets the agent resume the periodic health check
+		// for an instance that outlived its own restart. A failed lookup
+		// only costs that resumption, not the liveness check itself, so it
+		// must not stop the sweep.
+		if profile, err := s.profiles.FindByID(ctx, inst.ProfileID); err != nil {
+			s.logger.Printf("lifecycle: look up profile %s for instance %s: %v", inst.ProfileID, inst.ID, err)
+		} else if profile != nil {
+			check.EngineType = string(profile.EngineType)
+		}
+		env, err := agentproto.NewEnvelope(agentproto.TypeCheckInstance, "", check)
 		if err != nil {
 			s.logger.Printf("lifecycle: build check_instance envelope for instance %s: %v", inst.ID, err)
 			continue
