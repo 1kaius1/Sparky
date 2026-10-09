@@ -210,3 +210,13 @@ func (r *ContainerLogArchiveRepository) LatestByInstanceIDs(ctx context.Context,
 	}
 	return out, nil
 }
+
+// DeleteOlderThan removes every archive created before cutoff and returns how
+// many it removed - the retention job's only write.
+func (r *ContainerLogArchiveRepository) DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM container_log_archives WHERE created_at < $1`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete expired container log archives: %w", err)
+	}
+	return tag.RowsAffected(), nil
+}

@@ -139,7 +139,7 @@ func main() {
 	// containerLogService stores the container logs agents archive before
 	// removing a container (the container_log_chunk handling in onMessage
 	// below) and backs the Container logs pages.
-	containerLogService := containerlogs.NewService(db.NewContainerLogArchiveRepository(pool), instanceRepo, profileRepo, agentRegistry, logger)
+	containerLogService := containerlogs.NewService(db.NewContainerLogArchiveRepository(pool), db.NewContainerLogSettingsRepository(pool), auditRecorder, instanceRepo, profileRepo, agentRegistry, logger)
 	// transferService additionally gets nodeService (SSH identity and
 	// interface resolution) and inventoryService (source-presence check) for
 	// peer_node transfers.
@@ -263,6 +263,12 @@ func main() {
 		Addr:    ":" + cfg.ListenPort,
 		Handler: api.Router(),
 	}
+
+	// The retention job deletes saved container logs older than the Settings
+	// page's retention period; it stops with the process.
+	retentionCtx, stopRetention := context.WithCancel(context.Background())
+	defer stopRetention()
+	go containerLogService.RunRetention(retentionCtx)
 
 	serveErr := make(chan error, 1)
 	go func() {

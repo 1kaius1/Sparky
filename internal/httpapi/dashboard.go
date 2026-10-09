@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/rbac"
 )
 
 // nodeLister is the subset of *nodes.Service this package needs, narrow
@@ -41,6 +42,9 @@ type dashboardData struct {
 	TotalInstances   int
 	RunningCount     int
 	RunningInstances []dashboardRunningRow
+	// CanViewLogs only decides whether each row's Logs link is shown - the
+	// live log page checks for itself.
+	CanViewLogs bool
 	// LiveDataJSON seeds web/static/js/dashboard.js's load strips on the
 	// initial render, exactly the way metrics.html seeds chartData - same
 	// shape as GET /dashboard/live-data's body, so the strips are populated
@@ -283,7 +287,15 @@ func (a *API) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	var canViewLogs bool
+	if identity, ok := IdentityFromContext(ctx); ok {
+		if actor, err := a.actorFromIdentity(ctx, identity); err == nil {
+			canViewLogs = rbac.CanViewInstanceLogs(actor)
+		}
+	}
+
 	a.render(w, r, "dashboard", "Dashboard", dashboardData{
+		CanViewLogs:      canViewLogs,
 		TotalNodes:       len(nodes),
 		OnlineNodes:      onlineNodes,
 		TotalInstances:   len(instances),

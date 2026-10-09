@@ -184,3 +184,36 @@ func TestContainerLogArchiveRepository_LatestByInstanceIDs(t *testing.T) {
 		t.Errorf("empty input: %v, %v", empty, err)
 	}
 }
+
+func TestContainerLogArchiveRepository_DeleteOlderThan(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	repo := NewContainerLogArchiveRepository(pool)
+	ctx := context.Background()
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	cleanupArchives(t, repo, node.ID)
+
+	old, err := repo.Create(ctx, archiveInput(node.ID, "upload-"+t.Name()+"-old"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh, err := repo.Create(ctx, archiveInput(node.ID, "upload-"+t.Name()+"-fresh"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Age one of them by hand.
+	if _, err := pool.Exec(ctx, `UPDATE container_log_archives SET created_at = now() - interval '400 days' WHERE id = $1`, old.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	n, err := repo.DeleteOlderThan(ctx, time.Now().AddDate(0, 0, -365))
+	if err != nil || n < 1 {
+		t.Fatalf("DeleteOlderThan() = %d, %v, want at least our one old row removed", n, err)
+	}
+	if _, _, err := repo.FindByID(ctx, old.ID); err != ErrContainerLogArchiveNotFound {
+		t.Errorf("the old archive is still there: %v", err)
+	}
+	if _, _, err := repo.FindByID(ctx, fresh.ID); err != nil {
+		t.Errorf("the fresh archive was deleted: %v", err)
+	}
+}
