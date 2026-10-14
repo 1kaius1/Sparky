@@ -228,6 +228,13 @@ func (p *Provisioner) EnsureContainerRuntimeGroupMembership(ctx context.Context)
 	return ContainerGroupJoined, nil
 }
 
+// ReadEnvFileValue is readEnvFileValue for callers outside this package -
+// the diagnostics that need the node's backend or socket from secrets.env
+// when run by hand, without the service's environment.
+func ReadEnvFileValue(path, key string) (string, error) {
+	return readEnvFileValue(path, key)
+}
+
 // readEnvFileValue returns the value of key in a systemd EnvironmentFile, or
 // "" if the file or the key is absent - a missing file is the normal state
 // before the package has installed it, not an error. Only the subset of the

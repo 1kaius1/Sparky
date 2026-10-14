@@ -79,4 +79,6 @@ func runSetup(logger *log.Logger) {
 
 	fmt.Println()
 	fmt.Println("Setup complete.")
+	fmt.Println("Once secrets.env is filled in, verify GPU passthrough for this node's runtime with:")
+	fmt.Println("  sudo -u serviceloop sparky-agent check-gpu")
 }

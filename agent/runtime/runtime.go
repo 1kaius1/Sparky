@@ -43,6 +43,13 @@ type Spec struct {
 	// Containers backend only.
 	ProfileID string
 
+	// Probe marks a short-lived diagnostic container (agent/gpucheck), not a
+	// model instance. The containers backend labels it `sparky.probe` instead
+	// of `sparky.managed`, so nothing that sweeps managed containers (stale
+	// launch cleanup, a future scheduled cleanup) can mistake it for one of
+	// Sparky's engine containers.
+	Probe bool
+
 	// BinaryPath is the resolved local executable to exec directly - the
 	// bare-metal backend only. Resolved by the caller (agent/connection)
 	// from EngineType via its own per-engine-type configuration, since a
@@ -245,4 +252,53 @@ type Capture struct {
 	// could not hold or read all of it (a size cap, or the bare-metal
 	// buffer being full), not merely because fewer lines were asked for.
 	Truncated bool
+}
+
+// GPURequest returns how a container must ask for its GPU on the given runtime
+// backend: the mechanism, the CDI device names for the CDI mechanism, and the
+// environment to set alongside. Bare-metal (or any other or unset backend)
+// requests no GPU device at all: a bare-metal process already has direct GPU
+// access, with no passthrough boundary to cross.
+//
+// It lives here, not in agent/connection, because the model launch path, the
+// per-launch GPU guard and the GPU diagnostic (agent/gpucheck) must all send
+// the identical request - a diagnostic that asked differently would prove
+// nothing about launches. See GPUDeviceMechanismNvidia and
+// GPUDeviceMechanismCDI for the empirical findings behind each mechanism.
+//
+// NVIDIA_VISIBLE_DEVICES=all is set alongside the nvidia mechanism for parity
+// with the one piece of real evidence available (the real launch script this
+// mechanism is confirmed against sets it explicitly alongside --gpus all);
+// whether it is still required alongside the modern DeviceRequests API, or
+// purely redundant, has not been confirmed - see PLANNING.md Known Issues.
+func GPURequest(runtimeBackend string) (mechanism GPUDeviceMechanism, cdiDevices []string, env []string) {
+	switch runtimeBackend {
+	case "docker":
+		return GPUDeviceMechanismNvidia, nil, []string{"NVIDIA_VISIBLE_DEVICES=all"}
+	case "podman":
+		return GPUDeviceMechanismCDI, []string{"nvidia.com/gpu=all"}, nil
+	default:
+		return "", nil, nil
+	}
+}
+
+// ErrNoGPU is wrapped by a GPUVerifier's error when the GPU request definitely
+// did not take effect.
+var ErrNoGPU = errors.New("GPU request did not take effect")
+
+// GPUVerifier is implemented by a backend that can check, after a container
+// has started, that the GPU request actually took effect. It is separate from
+// Backend because only a container runtime has anything to check: a daemon
+// can accept a GPU request and silently drop it (Podman's Docker-compatible
+// API did exactly that for CDI), and the container then starts with no GPU
+// and no error, which the engine inside only reveals minutes later, if
+// clearly at all. Bare-metal has no passthrough boundary and does not
+// implement it.
+type GPUVerifier interface {
+	// VerifyGPU returns an error wrapping ErrNoGPU, describing what is
+	// missing, when the container for instanceID does not have the GPU that
+	// mechanism asks for. Any other error means the check itself could not be
+	// made (for example the daemon was unreachable) and says nothing about the
+	// GPU: a caller must not treat it as a verdict.
+	VerifyGPU(ctx context.Context, instanceID string, mechanism GPUDeviceMechanism) error
 }
