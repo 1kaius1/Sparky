@@ -763,9 +763,9 @@ but does not fail the action being audited.
 
 - No caching layer - all reads hit Postgres directly. Acceptable at the target scale
 - No historical metrics until v0.3.0 - only live telemetry in earlier milestones
-- CDI GPU passthrough on Podman is verified on one host only (rootless Podman
-  4.9.3, RTX 4090 laptop, 2026-10-13, at the backend level); the rootful socket,
-  the packaged agent as `serviceloop`, other Podman versions and Rocky/SELinux
+- CDI GPU passthrough on Podman is verified on one host only (Podman 4.9.3, rootless
+  and rootful sockets, RTX 4090 laptop, 2026-10-13, at the backend level); the
+  packaged agent as `serviceloop`, other Podman versions and Rocky/SELinux
   hosts are not yet verified
 
 ---
