@@ -62,6 +62,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from a new agent is simply ignored by an older server, which logs it.
 
 ### Fixed
+- Agent: a Podman node now actually gets its GPU. The agent asked Podman for a
+  CDI GPU through the Docker-compatible API, which silently drops the request,
+  so every container on a `podman` node started with no GPU and no error
+  (verified on rootless Podman 4.9.3 with a valid CDI spec on an RTX 4090: the
+  container saw no GPU and `podman inspect` listed no devices). A container
+  that needs a CDI GPU is now created through Podman's native API, which
+  resolves the CDI name exactly as `podman run --device nvidia.com/gpu=all`
+  does; start, logs, stop, remove, list and pull still use the compat API, and
+  Docker nodes are unchanged. The same create now omits the shm size when the
+  IPC namespace is `host`, because Podman refuses that combination (a vLLM
+  profile with `shm_size_gb` could not launch on Podman at all). New gated
+  test `agent/runtime/containers/realdaemon_test.go` (build tag
+  `realdaemon`) proves this against a real daemon and GPU.
+  Note: `nvidia-ctk` 1.20.1 generates a CDI spec (`/var/run/cdi/nvidia.yaml`,
+  `cdiVersion` 0.7.0, with an `additionalGids` field) that Podman 4.9.3
+  rejects at debug level only; Podman then falls back to a spec in `/etc/cdi`.
+  Not verified: the rootful socket, a Podman other than 4.9.3, the packaged
+  agent as `serviceloop`, Rocky/SELinux. The agent must be upgraded.
+- Packaging: `VERSION` bumped to `0.2.11` so builds carrying the Podman GPU
+  fix register as newer than the `0.2.10` packages.
 - Agent: health reporting now resumes for an instance that was already running
   when the agent restarted. The agent only checked instances it had loaded
   itself in the current process, so after any agent upgrade or crash-restart

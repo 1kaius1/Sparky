@@ -117,6 +117,22 @@ func runToExit(t *testing.T, b *Backend, spec runtime.Spec) (logs, inspect strin
 	return logs, string(evidence)
 }
 
+// After Stop the container is gone, which IsRunning reports as not running
+// (the Dead-state contract), and the compat API finds nothing by label.
+func assertGoneAfterStop(t *testing.T, b *Backend, instanceID string) {
+	t.Helper()
+	ctx := context.Background()
+	if err := b.Stop(ctx, instanceID); err != nil {
+		t.Fatalf("Stop() error: %v", err)
+	}
+	if running, err := b.IsRunning(ctx, instanceID); err != nil || running {
+		t.Errorf("after Stop: IsRunning() = %v, %v, want false, nil", running, err)
+	}
+	if got, err := b.InstancesForProfile(ctx, "no-such-profile"); err != nil || len(got) != 0 {
+		t.Errorf("InstancesForProfile() = %v, %v, want none", got, err)
+	}
+}
+
 func realSpec(id string, args []string, mech runtime.GPUDeviceMechanism, cdi []string, mounts []string) runtime.Spec {
 	return runtime.Spec{
 		InstanceID:         id,
@@ -153,6 +169,53 @@ func TestRealDaemon_PodmanCDIGivesTheContainerAGPU(t *testing.T) {
 	if !strings.Contains(logs, "model-marker") {
 		t.Errorf("the read-only bind mount was not readable inside the container.\noutput: %s", logs)
 	}
+	assertGoneAfterStop(t, b, spec.InstanceID)
+}
+
+// The image's own ENTRYPOINT must survive: Sparky's args replace the image's
+// CMD, as with the compat API. nginx has an ENTRYPOINT script that execs its
+// arguments.
+func TestRealDaemon_PodmanCDIKeepsTheImageEntrypoint(t *testing.T) {
+	b := realBackend(t)
+
+	mech, cdi := podmanCDISpec()
+	spec := realSpec(fmt.Sprintf("realdaemon-entry-%d", time.Now().UnixNano()),
+		[]string{"echo", "args-replaced-the-cmd"}, mech, cdi, nil)
+	spec.Image = "docker.io/library/nginx:latest"
+	spec.Env = []string{"SPARKY_TEST_ENV=from-spec"}
+
+	logs, inspect := runToExit(t, b, spec)
+	t.Logf("container output:\n%s", logs)
+	t.Logf("inspect evidence: %s", inspect)
+
+	if !strings.Contains(logs, "args-replaced-the-cmd") {
+		t.Errorf("the arguments did not reach the entrypoint.\noutput: %s", logs)
+	}
+	if !strings.Contains(inspect, "SPARKY_TEST_ENV=from-spec") {
+		t.Errorf("the environment was not applied: %s", inspect)
+	}
+	assertGoneAfterStop(t, b, spec.InstanceID)
+}
+
+// What a vLLM profile with shm_size_gb sends: a published port, host IPC and a
+// shm size together with the GPU. Podman refuses a shm size under host IPC, so
+// the native path must drop it rather than fail the launch.
+func TestRealDaemon_PodmanCDIWithHostIPCShmSizeAndPort(t *testing.T) {
+	b := realBackend(t)
+
+	mech, cdi := podmanCDISpec()
+	spec := realSpec(fmt.Sprintf("realdaemon-ipc-%d", time.Now().UnixNano()),
+		[]string{"sh", "-c", "nvidia-smi -L"}, mech, cdi, nil)
+	spec.Port = 18999
+	spec.IPCMode = "host"
+	spec.ShmSize = 2 << 30
+
+	logs, _ := runToExit(t, b, spec)
+	t.Logf("container output:\n%s", logs)
+	if !strings.Contains(logs, "GPU 0") {
+		t.Errorf("no GPU visible with host IPC, a shm size and a port.\noutput: %s", logs)
+	}
+	assertGoneAfterStop(t, b, spec.InstanceID)
 }
 
 // Negative control: without a GPU request the same container must not see a
