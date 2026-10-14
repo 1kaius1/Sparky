@@ -7,6 +7,7 @@ package containers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/moby/moby/client"
 
+	"github.com/1kaius1/Sparky/agent/gpucheck"
 	"github.com/1kaius1/Sparky/agent/runtime"
 )
 
@@ -169,6 +171,10 @@ func TestRealDaemon_PodmanCDIGivesTheContainerAGPU(t *testing.T) {
 	if !strings.Contains(logs, "model-marker") {
 		t.Errorf("the read-only bind mount was not readable inside the container.\noutput: %s", logs)
 	}
+	// The per-launch guard agrees with what the container really saw.
+	if err := b.VerifyGPU(context.Background(), spec.InstanceID, mech); err != nil {
+		t.Errorf("VerifyGPU() on a container that has its GPU = %v, want nil", err)
+	}
 	assertGoneAfterStop(t, b, spec.InstanceID)
 }
 
@@ -233,5 +239,39 @@ func TestRealDaemon_NoGPURequestMeansNoGPU(t *testing.T) {
 
 	if strings.Contains(logs, "GPU 0") {
 		t.Errorf("a GPU was visible without any GPU request - the control is invalid.\noutput: %s", logs)
+	}
+	// ...and the guard calls it: a container that was meant to have a CDI GPU
+	// and has none is exactly the silent failure it exists to catch.
+	mech, _ := podmanCDISpec()
+	if err := b.VerifyGPU(context.Background(), spec.InstanceID, mech); !errors.Is(err, runtime.ErrNoGPU) {
+		t.Errorf("VerifyGPU() on a container with no GPU = %v, want ErrNoGPU", err)
+	}
+}
+
+// The diagnostic `sparky-agent check-gpu` runs reports a working node as ok.
+func TestRealDaemon_GPUCheckReportsAWorkingPodmanNode(t *testing.T) {
+	b := realBackend(t)
+
+	res := gpucheck.Run(context.Background(), b, "podman", gpucheck.Options{Image: realImage()})
+	t.Logf("result: %+v", res)
+	if res.Status != gpucheck.StatusOK || res.GPUs < 1 {
+		t.Errorf("result = %+v, want ok with at least one GPU", res)
+	}
+	// The probe removed itself.
+	if running, err := b.IsRunning(context.Background(), "gpucheck-anything"); err != nil || running {
+		t.Errorf("IsRunning() = %v, %v", running, err)
+	}
+}
+
+// Negative control for the diagnostic: asking a Podman daemon for a GPU the way
+// Docker does is accepted and silently dropped, and the check must say so
+// rather than report a pass.
+func TestRealDaemon_GPUCheckFailsWhenTheRequestIsTheWrongKindForTheDaemon(t *testing.T) {
+	b := realBackend(t)
+
+	res := gpucheck.Run(context.Background(), b, "docker", gpucheck.Options{Image: realImage()})
+	t.Logf("result: %+v", res)
+	if res.Status != gpucheck.StatusFailed {
+		t.Errorf("result = %+v, want failed: a Docker-style GPU request is not honored by Podman", res)
 	}
 }

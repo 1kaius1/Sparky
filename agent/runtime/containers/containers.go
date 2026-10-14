@@ -45,6 +45,12 @@ const (
 	// later launch of the same profile can find, archive and remove the
 	// containers this one left behind (replace-on-launch).
 	labelProfileID = "sparky.profile_id"
+
+	// labelProbe marks a diagnostic container (agent/gpucheck) in place of
+	// labelManaged, so nothing that sweeps managed containers can take it
+	// for an engine container. It still carries labelInstanceID, which is
+	// how the probe's own Logs and Stop find it.
+	labelProbe = "sparky.probe"
 )
 
 // InstanceContainerName returns the legacy deterministic container name
@@ -177,7 +183,12 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 		hostConfig.IpcMode = container.IpcMode(spec.IPCMode)
 	}
 
-	labels := map[string]string{labelInstanceID: spec.InstanceID, labelManaged: "true"}
+	labels := map[string]string{labelInstanceID: spec.InstanceID}
+	if spec.Probe {
+		labels[labelProbe] = "true"
+	} else {
+		labels[labelManaged] = "true"
+	}
 	if validProfileID.MatchString(spec.ProfileID) {
 		labels[labelProfileID] = spec.ProfileID
 	}
@@ -401,4 +412,62 @@ func (b *Backend) Logs(ctx context.Context, instanceID string, tailLines int) (s
 		return "", fmt.Errorf("read logs for container %s: %w", ref, err)
 	}
 	return out.String(), nil
+}
+
+// VerifyGPU checks, from what the daemon reports about the created container,
+// that the GPU the mechanism asks for was actually applied - see
+// runtime.GPUVerifier for why this exists. It reads the container's own
+// inspect data rather than starting anything, so it costs one API call.
+//
+// What counts as applied differs by runtime, because the daemons report it
+// differently: Podman resolves a CDI name into concrete devices, which show
+// up in HostConfig.Devices (found against a real daemon: seven devices for
+// nvidia.com/gpu=all, none at all when the request was dropped), while Docker
+// records the request itself in HostConfig.DeviceRequests. Docker's side is
+// unit-tested against the field it documents but has not been run against a
+// real Docker daemon.
+func (b *Backend) VerifyGPU(ctx context.Context, instanceID string, mechanism runtime.GPUDeviceMechanism) error {
+	if mechanism == "" {
+		return nil
+	}
+	ref, err := b.resolve(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	res, err := b.cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("inspect container %s: %w", ref, err)
+	}
+	hc := res.Container.HostConfig
+	if hc == nil {
+		return fmt.Errorf("the daemon reported no host configuration for container %s, so its GPU cannot be confirmed", ref)
+	}
+
+	switch mechanism {
+	case runtime.GPUDeviceMechanismCDI:
+		if len(hc.Devices) == 0 {
+			return fmt.Errorf("%w: the container has no devices - the daemon accepted the CDI GPU request but injected nothing", runtime.ErrNoGPU)
+		}
+	case runtime.GPUDeviceMechanismNvidia:
+		for _, req := range hc.DeviceRequests {
+			if req.Driver == nvidiaDriver || hasCapability(req.Capabilities, "gpu") {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: the container has no GPU device request - the daemon dropped it", runtime.ErrNoGPU)
+	default:
+		return fmt.Errorf("unknown GPU mechanism %q", mechanism)
+	}
+	return nil
+}
+
+func hasCapability(caps [][]string, want string) bool {
+	for _, and := range caps {
+		for _, c := range and {
+			if c == want {
+				return true
+			}
+		}
+	}
+	return false
 }

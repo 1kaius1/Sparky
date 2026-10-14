@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Agent: GPU passthrough is now verified instead of trusted, for Docker and
+  Podman nodes. After every container start the agent checks what the daemon
+  says the container actually received (injected devices on Podman, the GPU
+  device request on Docker) and, on a definite "no GPU" verdict, fails the
+  launch at once with a message naming the cause, instead of letting the
+  engine fail minutes later with an error that never says why; the failed
+  container is cleaned up like any other failed launch. A check that merely
+  could not be made never fails a launch. New `sparky-agent check-gpu`
+  command (new package `agent/gpucheck`): starts a short container with exactly
+  the GPU request a model launch sends, runs `nvidia-smi -L` in it, and prints
+  what it saw, with a hint for the causes it recognizes (unusable CDI spec,
+  missing Docker NVIDIA runtime, unpullable image, inaccessible socket). Runs
+  as the service account from `secrets.env` before the node is fully
+  configured; exit 0 ok or not applicable, 1 failed, 2 configuration problem.
+  The probe container is labelled `sparky.probe`, not `sparky.managed`. New
+  optional `SPARKY_GPU_CHECK_IMAGE`. `sparky-agent setup` prints the command as
+  a next step. Agent only: no protocol, server or schema change. The Docker
+  branch of the launch check is unit-tested but has not been run against a real
+  Docker daemon. `VERSION` bumped to `0.2.12`.
 - Failed launches and replace-on-launch (container lifecycle): a launch that
   fails to start, or starts and never becomes ready, no longer leaves a
   container behind. It is reported failed as before, then the container is

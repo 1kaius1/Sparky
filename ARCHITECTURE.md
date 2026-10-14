@@ -266,7 +266,10 @@ any particular hardware class:
   API (`agent/runtime/containers/libpod.go`) and then driven through the compat
   API like any other; see `agent/runtime/containers`' own doc comment for the
   empirical findings and `PLANNING.md`'s 2026-10-13 Decisions Log entry for the
-  full history.
+  full history. Because a daemon can drop a GPU request without any error, the
+  agent verifies passthrough rather than trusting the start: a per-launch check
+  of what the container actually got, and `sparky-agent check-gpu` for an
+  operator (`docs/AGENT.md` Verifying GPU passthrough).
 
 #### Telemetry Collector
 Reads `nvidia-smi` and `/proc/stat`, `/proc/meminfo`, `/proc/diskstats` directly -
