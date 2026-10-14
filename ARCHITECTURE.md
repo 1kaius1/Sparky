@@ -260,11 +260,13 @@ any particular hardware class:
   `runtime_backend`, not standardized on one mechanism across both: Docker
   requests GPU access via `DeviceRequests{Driver: "nvidia"}` (the same mechanism
   `docker run --gpus all` uses, confirmed working against real production
-  Docker/DGX Spark hardware), while Podman uses CDI
-  (`DeviceRequests{Driver: "cdi"}`, `nvidia.com/gpu=all`) - the two runtimes need
-  different mechanisms through this same Engine API, not just different flags for
-  the same one; see `agent/runtime/containers`' own doc comment for the empirical
-  findings behind each and `PLANNING.md`'s Decisions Log for the full history.
+  Docker/DGX Spark hardware), while Podman uses CDI (`nvidia.com/gpu=all`).
+  Podman's Docker-compatible API cannot carry a CDI request - it silently drops
+  it - so a container that needs a CDI GPU is created through Podman's native
+  API (`agent/runtime/containers/libpod.go`) and then driven through the compat
+  API like any other; see `agent/runtime/containers`' own doc comment for the
+  empirical findings and `PLANNING.md`'s 2026-10-13 Decisions Log entry for the
+  full history.
 
 #### Telemetry Collector
 Reads `nvidia-smi` and `/proc/stat`, `/proc/meminfo`, `/proc/diskstats` directly -
@@ -439,9 +441,13 @@ Service Layer -> Agent-Communication Layer -> WebSocket message (JSON, request I
 - First-run setup is CLI-only (`sparky setup`), not a web wizard - avoids exposing an
   unauthenticated configuration surface on the network before setup completes.
   Requires shell access, matching the trust boundary ops already operates in via SSH
-- GPU passthrough via CDI on both Docker and Podman - known gotcha: CDI hooks can
-  behave differently on Podman when writing to a read-only-mounted filesystem; verify
-  on target hardware (see `PLANNING.md` Open Questions)
+- GPU passthrough: Docker's native `nvidia` mechanism, and CDI on Podman (created
+  through Podman's native API, see Runtime Backends) - known gotcha: CDI hooks can
+  behave differently on Podman when writing to a read-only-mounted filesystem. The
+  model-storage mount is always read-only, and a real run with it worked on rootless
+  Podman 4.9.3 (2026-10-13); other Podman versions and hosts remain to be verified.
+  Also: `nvidia-ctk` 1.20.1 writes CDI specs Podman 4.9.3 cannot parse (see
+  `PLANNING.md` Known Issues)
 - Model file lifecycle stays inside the app - sysadmin SSH access is for host-level
   concerns outside the app's managed storage, not for manually touching model files,
   so the database can stay authoritative without filesystem-reconciliation logic
@@ -757,8 +763,10 @@ but does not fail the action being audited.
 
 - No caching layer - all reads hit Postgres directly. Acceptable at the target scale
 - No historical metrics until v0.3.0 - only live telemetry in earlier milestones
-- CDI GPU-passthrough behavior on Podman not yet verified against real target
-  hardware
+- CDI GPU passthrough on Podman is verified on one host only (rootless Podman
+  4.9.3, RTX 4090 laptop, 2026-10-13, at the backend level); the rootful socket,
+  the packaged agent as `serviceloop`, other Podman versions and Rocky/SELinux
+  hosts are not yet verified
 
 ---
 

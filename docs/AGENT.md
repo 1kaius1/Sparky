@@ -29,7 +29,7 @@ connections itself - see `ARCHITECTURE.md` Protocol for why.
 | Config format   | Environment variables                          | Consistent with the server, not the generic Service-type default of `~/.app_name/config.yaml` - see Configuration below |
 | Transport       | Agent-initiated persistent WebSocket, JSON     | See `ARCHITECTURE.md` Protocol             |
 | Container mgmt  | `github.com/moby/moby/client` (Docker Engine API) | Targets Docker and Podman identically - see CLAUDE.md Tech Stack for the import-path rename note |
-| GPU passthrough | `nvidia` mechanism (Docker) / CDI (Podman) - see `runtime.GPUDeviceMechanism` | Chosen per `runtime_backend`, not one mechanism standardized across both - Docker and Podman need genuinely different requests through the same Engine API, confirmed empirically (see `ARCHITECTURE.md` Runtime Backends) |
+| GPU passthrough | `nvidia` mechanism (Docker) / CDI via Podman's native create API (Podman) - see `runtime.GPUDeviceMechanism` | Chosen per `runtime_backend`, not one mechanism standardized across both - Podman's Docker-compatible API silently drops a CDI request, so only the create call goes through its native API; everything else stays on the compat API (see `ARCHITECTURE.md` Runtime Backends) |
 
 ---
 

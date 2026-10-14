@@ -52,6 +52,7 @@ type fakeDockerClient struct {
 
 	// The container id or name each call was addressed with.
 	stopRefs, removeRefs, inspectRefs, logsRefs []string
+	startRefs                                   []string
 }
 
 func (f *fakeDockerClient) ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -59,7 +60,8 @@ func (f *fakeDockerClient) ContainerCreate(ctx context.Context, options client.C
 	return f.createFunc(ctx, options)
 }
 
-func (f *fakeDockerClient) ContainerStart(_ context.Context, _ string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
+func (f *fakeDockerClient) ContainerStart(_ context.Context, ref string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
+	f.startRefs = append(f.startRefs, ref)
 	return client.ContainerStartResult{}, f.startErr
 }
 
@@ -218,40 +220,6 @@ func TestStart_StartFails(t *testing.T) {
 	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err == nil {
 		t.Fatal("Start() succeeded despite a start failure")
-	}
-}
-
-func TestStart_SetsCDIDeviceRequest(t *testing.T) {
-	var captured client.ContainerCreateOptions
-	fake := &fakeDockerClient{
-		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
-			captured = options
-			return client.ContainerCreateResult{ID: "container-1"}, nil
-		},
-	}
-	b := &Backend{cli: fake}
-
-	_, err := b.Start(context.Background(), runtime.Spec{
-		Image:              "example/engine:latest",
-		GPUDeviceMechanism: runtime.GPUDeviceMechanismCDI,
-		CDIDevices:         []string{"nvidia.com/gpu=all"},
-	})
-	if err != nil {
-		t.Fatalf("Start() error: %v", err)
-	}
-
-	if captured.HostConfig == nil {
-		t.Fatal("HostConfig is nil")
-	}
-	reqs := captured.HostConfig.DeviceRequests
-	if len(reqs) != 1 {
-		t.Fatalf("DeviceRequests = %v, want exactly 1 entry", reqs)
-	}
-	if reqs[0].Driver != cdiDriver {
-		t.Errorf("Driver = %q, want %q", reqs[0].Driver, cdiDriver)
-	}
-	if len(reqs[0].DeviceIDs) != 1 || reqs[0].DeviceIDs[0] != "nvidia.com/gpu=all" {
-		t.Errorf("DeviceIDs = %v, want [nvidia.com/gpu=all]", reqs[0].DeviceIDs)
 	}
 }
 

@@ -110,15 +110,12 @@ const (
 	// a fallback.
 	GPUDeviceMechanismNvidia GPUDeviceMechanism = "nvidia"
 
-	// GPUDeviceMechanismCDI requests GPU access via
-	// container.HostConfig.DeviceRequests{Driver: "cdi"} - Podman's own
-	// canonical mechanism. Verified NOT to trigger CDI resolution against
-	// a real local Podman 4.9.3 daemon through this Docker-Engine-API-
-	// compatible socket, even though Podman's own CLI resolves the same
-	// CDI names correctly (PLANNING.md's 2026-08-10 Decisions Log entry) -
-	// kept as Podman's mechanism regardless, since it is the documented,
-	// correct API contract and the best available attempt pending
-	// verification against the actual target Podman version.
+	// GPUDeviceMechanismCDI requests GPU access by CDI-qualified device name
+	// (Spec.CDIDevices), Podman's canonical mechanism. Podman's Docker-
+	// compatible API cannot carry it - HostConfig.DeviceRequests with Driver
+	// "cdi" is silently dropped, verified on a real GPU host with a valid CDI
+	// spec - so the containers backend creates such a container through
+	// Podman's native API instead (agent/runtime/containers/libpod.go).
 	GPUDeviceMechanismCDI GPUDeviceMechanism = "cdi"
 )
 
