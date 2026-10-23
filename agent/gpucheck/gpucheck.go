@@ -162,8 +162,10 @@ func fail(runtimeBackend, detail, evidence string) Result {
 // hintFor maps an error or output Sparky has seen, on a real host, to what to
 // do about it. It matches on the text the container tools print, so it only
 // recognises messages seen on a real host or documented by the tool (the
-// Podman ones were observed on a real GPU host; the Docker ones have not been
-// run against a real Docker daemon); anything else gets no hint rather than a
+// Podman ones were observed on a real GPU host; the Docker ones are from the
+// tool's documentation - the success path was run on a real Docker daemon, but
+// its failure cases were not provoked, and a node that works without a
+// registered "nvidia" runtime exists); anything else gets no hint rather than a
 // guess.
 func hintFor(runtimeBackend, text string) string {
 	t := strings.ToLower(text)

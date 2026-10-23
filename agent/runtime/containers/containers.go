@@ -423,9 +423,11 @@ func (b *Backend) Logs(ctx context.Context, instanceID string, tailLines int) (s
 // differently: Podman resolves a CDI name into concrete devices, which show
 // up in HostConfig.Devices (found against a real daemon: seven devices for
 // nvidia.com/gpu=all, none at all when the request was dropped), while Docker
-// records the request itself in HostConfig.DeviceRequests. Docker's side is
-// unit-tested against the field it documents but has not been run against a
-// real Docker daemon.
+// records the request itself in HostConfig.DeviceRequests. Docker's side was
+// run against a real daemon on a DGX Spark (Docker 29.2.1): a container
+// created through this backend passed it. A container started with the docker
+// CLI's own --gpus all reports an empty Driver there, which is why a "gpu"
+// capability is accepted as well as the "nvidia" driver.
 func (b *Backend) VerifyGPU(ctx context.Context, instanceID string, mechanism runtime.GPUDeviceMechanism) error {
 	if mechanism == "" {
 		return nil
