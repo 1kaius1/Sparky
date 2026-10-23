@@ -25,8 +25,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   The probe container is labelled `sparky.probe`, not `sparky.managed`. New
   optional `SPARKY_GPU_CHECK_IMAGE`. `sparky-agent setup` prints the command as
   a next step. Agent only: no protocol, server or schema change. The Docker
-  branch of the launch check is unit-tested but has not been run against a real
-  Docker daemon. `VERSION` bumped to `0.2.12`.
+  branch of the launch check and `check-gpu` were run against a real Docker
+  daemon on a DGX Spark (Docker 29.2.1, DGX OS 7.5.0) and passed; a full
+  profile launch through the packaged agent and the Docker error-text hints
+  have not been exercised. `VERSION` bumped to `0.2.12`.
 - Failed launches and replace-on-launch (container lifecycle): a launch that
   fails to start, or starts and never becomes ready, no longer leaves a
   container behind. It is reported failed as before, then the container is
