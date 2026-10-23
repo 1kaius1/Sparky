@@ -8,6 +8,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `scripts/collect_spark_launch_evidence.sh`: maintainer-run script that
+  records one real model launch through the packaged agent on a Docker node
+  (a DGX Spark) into a single log: node and agent baseline, `check-gpu` as
+  the service account, the agent journal, the `DeviceRequests` and labels of
+  the container the agent created, engine reachability, GPU utilization
+  sampled while a request is served, and the state after Unload. Two
+  optional steps (agent restart with a model loaded, a container killed
+  behind Sparky's back) each ask first. The operator drives Load and Unload
+  from the UI; the script changes no configuration and never copies
+  `secrets.env`.
 - Agent: GPU passthrough is now verified instead of trusted, for Docker and
   Podman nodes. After every container start the agent checks what the daemon
   says the container actually received (injected devices on Podman, the GPU
