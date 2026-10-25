@@ -368,6 +368,7 @@ func (a *API) Router() http.Handler {
 	// containerlogs.Service, same RequireSession-only-at-the-router-level
 	// reasoning as the other routes. Read-only, so no CSRF and no audit
 	// record (reads are never audited - PLANNING.md Decisions Log).
+	r.With(a.RequireSession).Get("/instances/{id}/logs", a.handleInstanceLogs)
 	r.With(a.RequireSession).Get("/logs", a.handleContainerLogs)
 	r.With(a.RequireSession).Get("/logs/{id}", a.handleContainerLog)
 	r.With(a.RequireSession).Get("/logs/{id}/download", a.handleContainerLogDownload)
@@ -437,6 +438,9 @@ func (a *API) Router() http.Handler {
 	// form above - two entry points (a plain preset dropdown and a YAML
 	// custom-theme upload) into the same service method.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/theme", a.handleUpdateDefaultTheme)
+	// How long saved container logs are kept - the RBAC gate (Admin) is
+	// inside containerlogs.Service.UpdateRetention.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/container-logs", a.handleUpdateContainerLogRetention)
 	// limitBody runs ahead of RequireCSRF, not just inside the handler -
 	// RequireCSRF itself must parse the multipart body to find the
 	// csrf_token field (see its own doc comment), so the hard size cap has

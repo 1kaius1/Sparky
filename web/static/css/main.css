@@ -265,6 +265,11 @@ table.data-table:not(.panel .data-table) {
   color: var(--color-text-muted);
 }
 
+.log-link {
+  margin-left: 0.4rem;
+  font-size: 0.8rem;
+}
+
 /* Container log viewer: the log text, wide lines scroll sideways instead of
    stretching the page. */
 .log-text {

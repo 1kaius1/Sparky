@@ -221,6 +221,14 @@ const (
 	// TypeContainerLogChunk series: whether the log is now stored. The agent
 	// removes the container only on Stored true.
 	TypeContainerLogAck MessageType = "container_log_ack"
+
+	// TypeFetchLogs is sent by the central app (a Developer-or-above viewer
+	// opened the live log page) to ask the node for an instance's current
+	// output. The agent answers with the same container_log_chunk series an
+	// archive uses, tagged with the request's FetchID and carrying no
+	// confirmation request: nothing is stored and nothing is removed. An
+	// older agent ignores the type, so the page simply times out.
+	TypeFetchLogs MessageType = "fetch_logs"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -752,8 +760,16 @@ const ContainerLogChunkSize = 16 << 10
 // arrive out of order. Data is a slice of the gzip stream. Meta is set on
 // Seq 0 only. TotalBytes and SHA256 (hex) describe the whole gzip stream and
 // are set on the Final chunk only.
+//
+// FetchID is set only when the chunks answer a TypeFetchLogs request rather
+// than archive a container: it echoes the request's id, UploadID repeats it,
+// and the central app shows the text to the person waiting instead of storing
+// it. Error, with FetchID, is a single final chunk saying the instance could
+// not be read (no container, daemon unreachable); it carries no data.
 type ContainerLogChunk struct {
 	UploadID   string            `json:"upload_id"`
+	FetchID    string            `json:"fetch_id,omitempty"`
+	Error      string            `json:"error,omitempty"`
 	Seq        int               `json:"seq"`
 	Final      bool              `json:"final,omitempty"`
 	Data       []byte            `json:"data,omitempty"`
@@ -769,4 +785,13 @@ type ContainerLogAck struct {
 	UploadID string `json:"upload_id"`
 	Stored   bool   `json:"stored"`
 	Error    string `json:"error,omitempty"`
+}
+
+// FetchLogs is TypeFetchLogs' payload. FetchID is minted by the central app
+// and echoed on every reply chunk. Lines is how many trailing lines to
+// return; the agent clamps it to its own bounds.
+type FetchLogs struct {
+	FetchID    string `json:"fetch_id"`
+	InstanceID string `json:"instance_id"`
+	Lines      int    `json:"lines"`
 }

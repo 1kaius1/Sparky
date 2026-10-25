@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -37,6 +38,8 @@ type fakeStore struct {
 	err         error
 	latest      map[string]string
 	latestAsked []string
+	deleted     int64
+	cutoffs     []time.Time
 	rows        map[string]struct {
 		a  *db.ContainerLogArchive
 		gz []byte
@@ -79,10 +82,62 @@ func (f *fakeStore) LatestByInstanceIDs(_ context.Context, ids []string) (map[st
 	return f.latest, f.err
 }
 
+func (f *fakeStore) DeleteOlderThan(_ context.Context, cutoff time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cutoffs = append(f.cutoffs, cutoff)
+	return f.deleted, f.err
+}
+
 func (f *fakeStore) createdCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.created)
+}
+
+type fakeSettings struct {
+	cfg       db.ContainerLogSettings
+	getErr    error
+	updates   []int
+	updateErr error
+}
+
+func (f *fakeSettings) Get(context.Context) (*db.ContainerLogSettings, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
+	c := f.cfg
+	return &c, nil
+}
+
+func (f *fakeSettings) Update(_ context.Context, months int, _ *string) error {
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	f.updates = append(f.updates, months)
+	f.cfg.RetentionMonths = months
+	return nil
+}
+
+type auditCall struct {
+	actorID    *string
+	superAdmin bool
+	action     string
+	objectType string
+	detail     map[string]any
+}
+
+type fakeAudit struct {
+	calls []auditCall
+	err   error
+}
+
+func (f *fakeAudit) Record(_ context.Context, actorID *string, superAdmin bool, action, objectType, _ string, detail map[string]any) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.calls = append(f.calls, auditCall{actorID, superAdmin, action, objectType, detail})
+	return nil
 }
 
 type fakeInstances struct {
@@ -115,32 +170,55 @@ type sentAck struct {
 }
 
 type fakeDispatch struct {
-	acks chan sentAck
+	acks      chan sentAck
+	offline   bool
+	fetches   chan agentproto.FetchLogs
+	onFetch   func(agentproto.FetchLogs)
+	sendCalls atomic.Int32
 }
 
+func (f *fakeDispatch) Connected(string) bool { return !f.offline }
+
 func (f *fakeDispatch) Send(_ context.Context, nodeID string, env agentproto.Envelope) error {
-	var ack agentproto.ContainerLogAck
-	if err := env.DecodePayload(&ack); err != nil {
-		return err
+	f.sendCalls.Add(1)
+	switch env.Type {
+	case agentproto.TypeContainerLogAck:
+		var ack agentproto.ContainerLogAck
+		if err := env.DecodePayload(&ack); err != nil {
+			return err
+		}
+		f.acks <- sentAck{nodeID, ack}
+	case agentproto.TypeFetchLogs:
+		var req agentproto.FetchLogs
+		if err := env.DecodePayload(&req); err != nil {
+			return err
+		}
+		f.fetches <- req
+		if f.onFetch != nil {
+			go f.onFetch(req)
+		}
 	}
-	f.acks <- sentAck{nodeID, ack}
 	return nil
 }
 
 type fixture struct {
-	svc   *Service
-	store *fakeStore
-	disp  *fakeDispatch
-	now   time.Time
+	svc      *Service
+	settings *fakeSettings
+	audit    *fakeAudit
+	store    *fakeStore
+	disp     *fakeDispatch
+	now      time.Time
 }
 
 func newFixture() *fixture {
 	f := &fixture{
 		store: &fakeStore{},
-		disp:  &fakeDispatch{acks: make(chan sentAck, 20)},
+		disp:  &fakeDispatch{acks: make(chan sentAck, 20), fetches: make(chan agentproto.FetchLogs, 20)},
 		now:   time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC),
 	}
-	f.svc = NewService(f.store,
+	f.settings = &fakeSettings{cfg: db.ContainerLogSettings{RetentionMonths: 12}}
+	f.audit = &fakeAudit{}
+	f.svc = NewService(f.store, f.settings, f.audit,
 		fakeInstances{inst: &db.RunningInstance{ID: instanceID, ProfileID: profileID, PrimaryNodeID: node1}},
 		fakeProfiles{p: &db.Profile{ID: profileID, Name: "tiny"}},
 		f.disp, log.New(io.Discard, "", 0))

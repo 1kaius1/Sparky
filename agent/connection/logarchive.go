@@ -76,7 +76,6 @@ func (c *Conn) archiveInstance(ctx context.Context, conn *websocket.Conn, instan
 		c.logger.Printf("agent connection: compress log for instance %s: %v", instanceID, err)
 		return archiveFailed
 	}
-	sum := sha256.Sum256(gz)
 
 	uploadID, err := newUploadID()
 	if err != nil {
@@ -90,51 +89,10 @@ func (c *Conn) archiveInstance(ctx context.Context, conn *websocket.Conn, instan
 	ackCh := c.registerArchiveWait(uploadID)
 	defer c.unregisterArchiveWait(uploadID)
 
-	meta := &agentproto.ContainerLogMeta{
-		InstanceID:     instanceID,
-		ContainerID:    captured.ContainerID,
-		ContainerName:  captured.ContainerName,
-		Reason:         reason,
-		State:          captured.State,
-		ExitCode:       captured.ExitCode,
-		OOMKilled:      captured.OOMKilled,
-		LinesRequested: archiveLogLines,
-		LinesKept:      captured.LinesKept,
-		Truncated:      captured.Truncated,
-		SizeBytes:      int64(len(captured.Log)),
-	}
-	if !captured.StartedAt.IsZero() {
-		t := captured.StartedAt
-		meta.StartedAt = &t
-	}
-	if !captured.FinishedAt.IsZero() {
-		t := captured.FinishedAt
-		meta.FinishedAt = &t
-	}
-
-	for seq, off := 0, 0; ; seq++ {
-		end := off + agentproto.ContainerLogChunkSize
-		if end > len(gz) {
-			end = len(gz)
-		}
-		chunk := agentproto.ContainerLogChunk{UploadID: uploadID, Seq: seq, Data: gz[off:end]}
-		if seq == 0 {
-			chunk.Meta = meta
-		}
-		last := end == len(gz)
-		if last {
-			chunk.Final = true
-			chunk.TotalBytes = int64(len(gz))
-			chunk.SHA256 = hex.EncodeToString(sum[:])
-		}
-		if err := c.trySend(ctx, conn, agentproto.TypeContainerLogChunk, "", chunk); err != nil {
-			c.logger.Printf("agent connection: upload log for instance %s: %v", instanceID, err)
-			return archiveFailed
-		}
-		if last {
-			break
-		}
-		off = end
+	meta := logMeta(instanceID, reason, archiveLogLines, captured)
+	if err := c.sendLogChunks(ctx, conn, uploadID, "", meta, gz); err != nil {
+		c.logger.Printf("agent connection: upload log for instance %s: %v", instanceID, err)
+		return archiveFailed
 	}
 
 	timer := time.NewTimer(c.archiveAckTimeout)
@@ -151,6 +109,112 @@ func (c *Conn) archiveInstance(ctx context.Context, conn *websocket.Conn, instan
 		return archiveFailed
 	case <-ctx.Done():
 		return archiveFailed
+	}
+}
+
+// logMeta describes a capture for the central app.
+func logMeta(instanceID, reason string, linesRequested int, captured runtime.Capture) *agentproto.ContainerLogMeta {
+	meta := &agentproto.ContainerLogMeta{
+		InstanceID:     instanceID,
+		ContainerID:    captured.ContainerID,
+		ContainerName:  captured.ContainerName,
+		Reason:         reason,
+		State:          captured.State,
+		ExitCode:       captured.ExitCode,
+		OOMKilled:      captured.OOMKilled,
+		LinesRequested: linesRequested,
+		LinesKept:      captured.LinesKept,
+		Truncated:      captured.Truncated,
+		SizeBytes:      int64(len(captured.Log)),
+	}
+	if !captured.StartedAt.IsZero() {
+		t := captured.StartedAt
+		meta.StartedAt = &t
+	}
+	if !captured.FinishedAt.IsZero() {
+		t := captured.FinishedAt
+		meta.FinishedAt = &t
+	}
+	return meta
+}
+
+// sendLogChunks sends gz as an ordered series of container_log_chunk
+// messages of at most agentproto.ContainerLogChunkSize bytes each: Meta on the
+// first, the total size and SHA-256 on the last. fetchID is set only when the
+// series answers a fetch_logs request. It returns the first send error.
+func (c *Conn) sendLogChunks(ctx context.Context, conn *websocket.Conn, uploadID, fetchID string, meta *agentproto.ContainerLogMeta, gz []byte) error {
+	sum := sha256.Sum256(gz)
+	for seq, off := 0, 0; ; seq++ {
+		end := off + agentproto.ContainerLogChunkSize
+		if end > len(gz) {
+			end = len(gz)
+		}
+		chunk := agentproto.ContainerLogChunk{UploadID: uploadID, FetchID: fetchID, Seq: seq, Data: gz[off:end]}
+		if seq == 0 {
+			chunk.Meta = meta
+		}
+		last := end == len(gz)
+		if last {
+			chunk.Final = true
+			chunk.TotalBytes = int64(len(gz))
+			chunk.SHA256 = hex.EncodeToString(sum[:])
+		}
+		if err := c.trySend(ctx, conn, agentproto.TypeContainerLogChunk, "", chunk); err != nil {
+			return err
+		}
+		if last {
+			return nil
+		}
+		off = end
+	}
+}
+
+// Bounds on a live log request's line count: the central app's own limits are
+// the same, but the agent does not trust the wire.
+const (
+	defaultLiveLogLines = 500
+	maxLiveLogLines     = 5000
+)
+
+// runFetchLogs answers a fetch_logs request: read the instance's current
+// output and send it back as a chunk series tagged with the request's id.
+// Nothing is stored, removed or waited on. An instance that cannot be read
+// (its container is gone, the daemon is unreachable) is answered with a single
+// error chunk so the person waiting is told promptly instead of timing out.
+func (c *Conn) runFetchLogs(ctx context.Context, conn *websocket.Conn, req agentproto.FetchLogs) {
+	reply := func(errMsg string) {
+		chunk := agentproto.ContainerLogChunk{UploadID: req.FetchID, FetchID: req.FetchID, Seq: 0, Final: true, Error: errMsg}
+		if err := c.trySend(ctx, conn, agentproto.TypeContainerLogChunk, "", chunk); err != nil {
+			c.logger.Printf("agent connection: answer fetch_logs %s: %v", req.FetchID, err)
+		}
+	}
+
+	lines := req.Lines
+	if lines <= 0 {
+		lines = defaultLiveLogLines
+	}
+	if lines > maxLiveLogLines {
+		lines = maxLiveLogLines
+	}
+
+	captured, err := c.runtime.Capture(ctx, req.InstanceID, lines)
+	if errors.Is(err, runtime.ErrNothingToCapture) {
+		reply("this instance has no container or process on the node any more")
+		return
+	}
+	if err != nil {
+		c.logger.Printf("agent connection: fetch logs for instance %s: %v", req.InstanceID, err)
+		reply("the log could not be read from the node")
+		return
+	}
+	gz, err := gzipBytes([]byte(captured.Log))
+	if err != nil {
+		c.logger.Printf("agent connection: compress live log for instance %s: %v", req.InstanceID, err)
+		reply("the log could not be prepared")
+		return
+	}
+	if err := c.sendLogChunks(ctx, conn, req.FetchID, req.FetchID, logMeta(req.InstanceID, "live", lines, captured), gz); err != nil {
+		c.logger.Printf("agent connection: send live log for instance %s: %v", req.InstanceID, err)
 	}
 }
 

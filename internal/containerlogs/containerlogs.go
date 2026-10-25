@@ -73,6 +73,19 @@ type archiveStore interface {
 	List(ctx context.Context, limit int) ([]*db.ContainerLogArchive, error)
 	FindByID(ctx context.Context, id string) (*db.ContainerLogArchive, []byte, error)
 	LatestByInstanceIDs(ctx context.Context, instanceIDs []string) (map[string]string, error)
+	DeleteOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+}
+
+// settingsStore is the subset of *db.ContainerLogSettingsRepository this
+// package needs: the retention period.
+type settingsStore interface {
+	Get(ctx context.Context) (*db.ContainerLogSettings, error)
+	Update(ctx context.Context, retentionMonths int, updatedBy *string) error
+}
+
+// auditRecorder is the subset of *audit.Recorder this package needs.
+type auditRecorder interface {
+	Record(ctx context.Context, actorID *string, isSuperAdminAction bool, action, objectType, objectID string, detail map[string]any) error
 }
 
 // instanceLookup is the subset of *db.RunningInstanceRepository used to
@@ -87,8 +100,10 @@ type profileLookup interface {
 	FindByID(ctx context.Context, id string) (*db.Profile, error)
 }
 
-// dispatcher sends the confirmation back to the agent.
+// dispatcher sends the confirmation back to the agent, and a live log request
+// out to it.
 type dispatcher interface {
+	Connected(nodeID string) bool
 	Send(ctx context.Context, nodeID string, env agentproto.Envelope) error
 }
 
@@ -96,6 +111,7 @@ type dispatcher interface {
 type upload struct {
 	nodeID   string
 	uploadID string
+	fetchID  string // set when the chunks answer a live log request, not an archive
 	meta     agentproto.ContainerLogMeta
 	next     int
 	buf      bytes.Buffer
@@ -105,6 +121,8 @@ type upload struct {
 // Service reassembles, stores and serves archived container logs.
 type Service struct {
 	store     archiveStore
+	settings  settingsStore
+	audit     auditRecorder
 	instances instanceLookup
 	profiles  profileLookup
 	dispatch  dispatcher
@@ -117,15 +135,21 @@ type Service struct {
 	// maxUncompressed is MaxUncompressedBytes, likewise.
 	maxUncompressed int64
 
+	// liveTimeout is how long a live log request waits for the node to
+	// answer; a field so tests can shorten it.
+	liveTimeout time.Duration
+
 	mu      sync.Mutex
 	uploads map[string]*upload
+	live    map[string]*liveFetch
 }
 
 // NewService constructs a Service.
-func NewService(store archiveStore, instances instanceLookup, profiles profileLookup, dispatch dispatcher, logger *log.Logger) *Service {
+func NewService(store archiveStore, settings settingsStore, audit auditRecorder, instances instanceLookup, profiles profileLookup, dispatch dispatcher, logger *log.Logger) *Service {
 	return &Service{
-		store: store, instances: instances, profiles: profiles, dispatch: dispatch, logger: logger,
-		now: time.Now, maxCompressed: MaxCompressedBytes, maxUncompressed: MaxUncompressedBytes, uploads: make(map[string]*upload),
+		store: store, settings: settings, audit: audit, instances: instances, profiles: profiles, dispatch: dispatch, logger: logger,
+		now: time.Now, maxCompressed: MaxCompressedBytes, maxUncompressed: MaxUncompressedBytes, liveTimeout: defaultLiveTimeout,
+		uploads: make(map[string]*upload), live: make(map[string]*liveFetch),
 	}
 }
 
@@ -154,6 +178,22 @@ func (s *Service) HandleChunk(nodeID string, env agentproto.Envelope) {
 	s.mu.Lock()
 	s.sweepLocked()
 
+	// A chunk that answers a live log request is only accepted from the node
+	// the request was sent to, and only while someone is still waiting for it.
+	if chunk.FetchID != "" {
+		f := s.live[chunk.FetchID]
+		if f == nil || f.nodeID != nodeID || chunk.UploadID != chunk.FetchID {
+			s.mu.Unlock()
+			s.logger.Printf("containerlogs: ignoring a live log chunk from node %s that nobody is waiting for", nodeID)
+			return
+		}
+		if chunk.Error != "" {
+			s.mu.Unlock()
+			s.deliverLive(chunk.FetchID, nodeID, liveResult{err: &AgentError{Message: clip(chunk.Error, 300)}})
+			return
+		}
+	}
+
 	u := s.uploads[key]
 	var reject string
 	switch {
@@ -166,7 +206,7 @@ func (s *Service) HandleChunk(nodeID string, env agentproto.Envelope) {
 		case s.countForNodeLocked(nodeID) >= maxUploadsPerNode:
 			reject = "too many uploads in progress"
 		default:
-			u = &upload{nodeID: nodeID, uploadID: chunk.UploadID, meta: *chunk.Meta}
+			u = &upload{nodeID: nodeID, uploadID: chunk.UploadID, fetchID: chunk.FetchID, meta: *chunk.Meta}
 			s.uploads[key] = u
 		}
 	case u == nil:
@@ -184,6 +224,10 @@ func (s *Service) HandleChunk(nodeID string, env agentproto.Envelope) {
 		delete(s.uploads, key)
 		s.mu.Unlock()
 		s.logger.Printf("containerlogs: rejecting upload %s from node %s: %s", chunk.UploadID, nodeID, reject)
+		if chunk.FetchID != "" {
+			s.deliverLive(chunk.FetchID, nodeID, liveResult{err: &AgentError{Message: "the node's reply was not valid: " + reject}})
+			return
+		}
 		go s.ack(nodeID, chunk.UploadID, false, reject)
 		return
 	}
@@ -198,6 +242,10 @@ func (s *Service) HandleChunk(nodeID string, env agentproto.Envelope) {
 	delete(s.uploads, key)
 	s.mu.Unlock()
 
+	if u.fetchID != "" {
+		go s.finishLive(u, chunk.TotalBytes, chunk.SHA256)
+		return
+	}
 	go s.finish(u, chunk.TotalBytes, chunk.SHA256)
 }
 

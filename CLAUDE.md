@@ -663,7 +663,8 @@ web/static/
   active instance shows how its last run ended, with a link to the saved log for
   Developer and above) and Container logs
   (Developer and above - archived container output, which can contain prompt
-  content; `rbac.CanViewInstanceLogs`), Engines group -
+  content; `rbac.CanViewInstanceLogs`; the same floor gates the live log link on
+  Profiles and Dashboard), Engines group -
   Inventory (Read-only) and Transfers (Read-only view / Admin+ provision),
   Metrics (Read-only), Users & permissions (Admin), Audit log (Admin), Settings
   (Admin). Models' flat transfer history (`GET /transfers`) is reachable from

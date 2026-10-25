@@ -7,7 +7,9 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
+	"github.com/1kaius1/Sparky/internal/containerlogs"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/rbac"
 	"gopkg.in/yaml.v3"
@@ -48,6 +50,12 @@ type settingsPageData struct {
 	AvailablePresets      []themePresetOption
 	ThemeError            string
 	ThemeSuccess          bool
+
+	ContainerLogRetentionMonths int
+	ContainerLogUpdatedBy       string
+	ContainerLogUpdatedAt       string
+	ContainerLogError           string
+	ContainerLogSuccess         bool
 }
 
 // resolveUserName resolves userID to a display name via FindByID,
@@ -135,7 +143,63 @@ func (a *API) renderSettingsPage(w http.ResponseWriter, r *http.Request, actor r
 	data.DefaultThemeUpdatedAt = themeSettings.UpdatedAt.Format("2006-01-02 15:04:05 MST")
 	data.AvailablePresets = themePresetOptions()
 
+	logSettings, err := a.containerLogs.Settings(ctx, actor)
+	if err != nil {
+		a.logger.Printf("httpapi: get container log settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data.ContainerLogRetentionMonths = logSettings.RetentionMonths
+	data.ContainerLogUpdatedBy = a.resolveUserName(ctx, logSettings.UpdatedBy)
+	data.ContainerLogUpdatedAt = logSettings.UpdatedAt.Format("2006-01-02 15:04:05 MST")
+
 	a.render(w, r, "settings", "Settings", data)
+}
+
+// handleUpdateContainerLogRetention sets how long archived container logs are
+// kept - see containerlogs.Service.UpdateRetention. A value outside 1 to 24
+// redisplays the page with the reason, never a 500.
+func (a *API) handleUpdateContainerLogRetention(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		// RequireSession already guarantees this - defensive only.
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for container log retention update: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		a.renderSettingsPage(w, r, actor, settingsPageData{ContainerLogError: "invalid form submission"})
+		return
+	}
+	months, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("retention_months")))
+	if err != nil {
+		a.renderSettingsPage(w, r, actor, settingsPageData{ContainerLogError: "retention must be a whole number of months"})
+		return
+	}
+
+	err = a.containerLogs.UpdateRetention(ctx, actor, months)
+	switch {
+	case errors.Is(err, rbac.ErrNotPermitted):
+		a.renderForbidden(w, r, actor.Tier)
+		return
+	case errors.Is(err, containerlogs.ErrInvalidRetention):
+		a.renderSettingsPage(w, r, actor, settingsPageData{ContainerLogError: err.Error()})
+		return
+	case err != nil:
+		a.logger.Printf("httpapi: update container log retention: %v", err)
+		a.renderSettingsPage(w, r, actor, settingsPageData{ContainerLogError: "failed to update retention"})
+		return
+	}
+
+	a.renderSettingsPage(w, r, actor, settingsPageData{ContainerLogSuccess: true})
 }
 
 // handleUpdateDefaultTheme sets the system-wide default theme to a plain
