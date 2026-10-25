@@ -52,6 +52,7 @@ type fakeDockerClient struct {
 
 	// The container id or name each call was addressed with.
 	stopRefs, removeRefs, inspectRefs, logsRefs []string
+	startRefs                                   []string
 }
 
 func (f *fakeDockerClient) ContainerCreate(ctx context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
@@ -59,7 +60,8 @@ func (f *fakeDockerClient) ContainerCreate(ctx context.Context, options client.C
 	return f.createFunc(ctx, options)
 }
 
-func (f *fakeDockerClient) ContainerStart(_ context.Context, _ string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
+func (f *fakeDockerClient) ContainerStart(_ context.Context, ref string, _ client.ContainerStartOptions) (client.ContainerStartResult, error) {
+	f.startRefs = append(f.startRefs, ref)
 	return client.ContainerStartResult{}, f.startErr
 }
 
@@ -218,40 +220,6 @@ func TestStart_StartFails(t *testing.T) {
 	_, err := b.Start(context.Background(), runtime.Spec{Image: "example/image:latest"})
 	if err == nil {
 		t.Fatal("Start() succeeded despite a start failure")
-	}
-}
-
-func TestStart_SetsCDIDeviceRequest(t *testing.T) {
-	var captured client.ContainerCreateOptions
-	fake := &fakeDockerClient{
-		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
-			captured = options
-			return client.ContainerCreateResult{ID: "container-1"}, nil
-		},
-	}
-	b := &Backend{cli: fake}
-
-	_, err := b.Start(context.Background(), runtime.Spec{
-		Image:              "example/engine:latest",
-		GPUDeviceMechanism: runtime.GPUDeviceMechanismCDI,
-		CDIDevices:         []string{"nvidia.com/gpu=all"},
-	})
-	if err != nil {
-		t.Fatalf("Start() error: %v", err)
-	}
-
-	if captured.HostConfig == nil {
-		t.Fatal("HostConfig is nil")
-	}
-	reqs := captured.HostConfig.DeviceRequests
-	if len(reqs) != 1 {
-		t.Fatalf("DeviceRequests = %v, want exactly 1 entry", reqs)
-	}
-	if reqs[0].Driver != cdiDriver {
-		t.Errorf("Driver = %q, want %q", reqs[0].Driver, cdiDriver)
-	}
-	if len(reqs[0].DeviceIDs) != 1 || reqs[0].DeviceIDs[0] != "nvidia.com/gpu=all" {
-		t.Errorf("DeviceIDs = %v, want [nvidia.com/gpu=all]", reqs[0].DeviceIDs)
 	}
 }
 
@@ -812,5 +780,110 @@ func TestLogs_ContainerLogsError(t *testing.T) {
 	_, err := b.Logs(context.Background(), "instance-1", 100)
 	if err == nil {
 		t.Fatal("Logs() succeeded despite a ContainerLogs failure")
+	}
+}
+
+func inspectWith(hc *container.HostConfig) *fakeDockerClient {
+	return &fakeDockerClient{inspectResult: client.ContainerInspectResult{Container: container.InspectResponse{HostConfig: hc}}}
+}
+
+// Podman resolves a CDI name into concrete devices, so devices present is the
+// proof; none means the daemon dropped the request (found against a real
+// daemon).
+func TestVerifyGPU_CDI(t *testing.T) {
+	ok := inspectWith(&container.HostConfig{Resources: container.Resources{Devices: []container.DeviceMapping{{PathOnHost: "/dev/nvidia0", PathInContainer: "/dev/nvidia0"}}}})
+	if err := (&Backend{cli: ok}).VerifyGPU(context.Background(), "i1", runtime.GPUDeviceMechanismCDI); err != nil {
+		t.Errorf("VerifyGPU() with devices = %v, want nil", err)
+	}
+
+	none := inspectWith(&container.HostConfig{})
+	err := (&Backend{cli: none}).VerifyGPU(context.Background(), "i1", runtime.GPUDeviceMechanismCDI)
+	if !errors.Is(err, runtime.ErrNoGPU) {
+		t.Errorf("VerifyGPU() with no devices = %v, want ErrNoGPU", err)
+	}
+}
+
+// Docker records the request itself.
+func TestVerifyGPU_Nvidia(t *testing.T) {
+	for name, hc := range map[string]*container.HostConfig{
+		"driver nvidia":    {Resources: container.Resources{DeviceRequests: []container.DeviceRequest{{Driver: "nvidia", Count: -1}}}},
+		"gpu capability":   {Resources: container.Resources{DeviceRequests: []container.DeviceRequest{{Capabilities: [][]string{{"gpu"}}}}}},
+		"gpu among others": {Resources: container.Resources{DeviceRequests: []container.DeviceRequest{{Capabilities: [][]string{{"compute", "gpu"}}}}}},
+	} {
+		if err := (&Backend{cli: inspectWith(hc)}).VerifyGPU(context.Background(), "i1", runtime.GPUDeviceMechanismNvidia); err != nil {
+			t.Errorf("%s: VerifyGPU() = %v, want nil", name, err)
+		}
+	}
+	for name, hc := range map[string]*container.HostConfig{
+		"no requests":       {},
+		"unrelated request": {Resources: container.Resources{DeviceRequests: []container.DeviceRequest{{Driver: "other", Capabilities: [][]string{{"tpu"}}}}}},
+	} {
+		err := (&Backend{cli: inspectWith(hc)}).VerifyGPU(context.Background(), "i1", runtime.GPUDeviceMechanismNvidia)
+		if !errors.Is(err, runtime.ErrNoGPU) {
+			t.Errorf("%s: VerifyGPU() = %v, want ErrNoGPU", name, err)
+		}
+	}
+}
+
+// Anything short of a verdict must not look like one.
+func TestVerifyGPU_NotAVerdict(t *testing.T) {
+	if err := (&Backend{cli: inspectWith(nil)}).VerifyGPU(context.Background(), "i1", runtime.GPUDeviceMechanismCDI); err == nil || errors.Is(err, runtime.ErrNoGPU) {
+		t.Errorf("VerifyGPU() with no host config = %v, want a non-verdict error", err)
+	}
+	failing := &fakeDockerClient{inspectErr: errors.New("daemon unreachable")}
+	if err := (&Backend{cli: failing}).VerifyGPU(context.Background(), "i1", runtime.GPUDeviceMechanismCDI); err == nil || errors.Is(err, runtime.ErrNoGPU) {
+		t.Errorf("VerifyGPU() with a failed inspect = %v, want a non-verdict error", err)
+	}
+	if err := (&Backend{cli: failing}).VerifyGPU(context.Background(), "i1", ""); err != nil {
+		t.Errorf("VerifyGPU() with no GPU requested = %v, want nil without asking the daemon", err)
+	}
+}
+
+// A probe is not an engine container: it must carry the probe label and not
+// the managed one, on both create paths.
+func TestStart_ProbeIsLabelledAsAProbeNotManaged(t *testing.T) {
+	var compat client.ContainerCreateOptions
+	fake := &fakeDockerClient{createFunc: func(_ context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+		compat = o
+		return client.ContainerCreateResult{ID: "c1"}, nil
+	}}
+	b := &Backend{cli: fake}
+	if _, err := b.Start(context.Background(), runtime.Spec{InstanceID: "gpucheck-1", Image: "x", Probe: true}); err != nil {
+		t.Fatal(err)
+	}
+	if l := compat.Config.Labels; l[labelProbe] != "true" || l[labelInstanceID] != "gpucheck-1" {
+		t.Errorf("compat labels = %v, want the probe and instance labels", l)
+	} else if _, managed := l[labelManaged]; managed {
+		t.Errorf("a probe carries the managed label: %v", l)
+	}
+
+	pod := &fakeLibpod{id: "p1"}
+	b = &Backend{cli: compatMustNotCreate(t), libpod: pod}
+	spec := cdiSpec()
+	spec.Probe = true
+	if _, err := b.Start(context.Background(), spec); err != nil {
+		t.Fatal(err)
+	}
+	if l := pod.reqs[0].Labels; l[labelProbe] != "true" {
+		t.Errorf("native labels = %v, want the probe label", l)
+	} else if _, managed := l[labelManaged]; managed {
+		t.Errorf("a probe carries the managed label on the native path: %v", l)
+	}
+}
+
+// And a normal launch is still managed and not a probe.
+func TestStart_NormalLaunchIsManagedNotAProbe(t *testing.T) {
+	var got client.ContainerCreateOptions
+	fake := &fakeDockerClient{createFunc: func(_ context.Context, o client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+		got = o
+		return client.ContainerCreateResult{ID: "c1"}, nil
+	}}
+	if _, err := (&Backend{cli: fake}).Start(context.Background(), runtime.Spec{InstanceID: "i1", Image: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	if l := got.Config.Labels; l[labelManaged] != "true" {
+		t.Errorf("labels = %v, want managed", l)
+	} else if _, probe := l[labelProbe]; probe {
+		t.Errorf("a normal launch carries the probe label: %v", l)
 	}
 }

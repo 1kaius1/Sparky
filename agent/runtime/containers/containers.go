@@ -24,13 +24,6 @@ import (
 	"github.com/1kaius1/Sparky/agent/runtime"
 )
 
-// cdiDriver is the device driver name the daemon registers for CDI device
-// injection - confirmed against moby/moby's own daemon/cdi.go
-// (RegisterCDIDriver registers it under this exact name), not guessed from
-// CLI documentation. See the CDI caveat in this package's doc comment on
-// Backend for a real gap found testing this against Podman.
-const cdiDriver = "cdi"
-
 // nvidiaDriver is the device driver name for Docker's native GPU
 // passthrough mechanism - the same one `docker run --gpus all` uses.
 // Confirmed against real production Docker/DGX Spark hardware, not
@@ -52,6 +45,12 @@ const (
 	// later launch of the same profile can find, archive and remove the
 	// containers this one left behind (replace-on-launch).
 	labelProfileID = "sparky.profile_id"
+
+	// labelProbe marks a diagnostic container (agent/gpucheck) in place of
+	// labelManaged, so nothing that sweeps managed containers can take it
+	// for an engine container. It still carries labelInstanceID, which is
+	// how the probe's own Logs and Stop find it.
+	labelProbe = "sparky.probe"
 )
 
 // InstanceContainerName returns the legacy deterministic container name
@@ -110,29 +109,30 @@ type dockerClient interface {
 // This is the fleet's actual mechanism for every Spark node: Spark ships
 // Docker deliberately, never Podman (2026-08-19 Decisions Log entry).
 //
-// Podman CDI caveat (GPUDeviceMechanismCDI, DeviceRequests{Driver: "cdi"}),
-// found by testing against a real local Podman 4.9.3 daemon, not assumed:
-// Podman's own CLI resolves CDI-qualified device names correctly
-// (confirmed via `podman run --device nvidia.com/gpu=all`, which fails
-// with a proper "unresolvable CDI devices" error - no CDI spec exists on a
-// GPU-less test host, which is the expected failure). But going through
-// the Docker-Engine-API-compatible socket this package actually uses,
-// neither of the two mechanisms Docker's own API supports -
-// HostConfig.DeviceRequests with Driver "cdi" (confirmed correct against
-// moby/moby's daemon source) nor HostConfig.Devices with a CDI name as
-// PathOnHost - triggered any CDI resolution: DeviceRequests was silently
-// accepted and dropped (no error, but no device either - confirmed via
-// `podman inspect`, which does not even have a DeviceRequests field to
-// report), and Devices was treated as a literal host path and failed a
-// plain stat(). This package implements the documented, correct Docker
-// API contract (DeviceRequests) regardless - the best available attempt
-// for Podman's compat API - but CDI passthrough through that API on
-// Podman needs verification against the actual target Podman version, per
-// ARCHITECTURE.md's existing manual test checklist item for this. Non-GPU
-// container lifecycle (create, pull-if-missing, start, inspect, stop,
-// remove) is fully verified against real Podman and unaffected by this gap.
+// Podman (GPUDeviceMechanismCDI) cannot take its GPU through this Docker
+// Engine API, found by testing against a real RTX 4090 host with a valid CDI
+// spec and a working `podman run --device nvidia.com/gpu=all`, on Podman
+// 4.9.3: HostConfig.DeviceRequests with Driver "cdi" (correct for real Docker,
+// per moby/moby's daemon/cdi.go) is silently accepted and dropped - the
+// container starts with no GPU and no error, and `podman inspect` shows no
+// devices - and HostConfig.Devices with the CDI name as PathOnHost is treated
+// as a literal path and fails a stat(). (An earlier note here, written on a
+// host with no GPU and no CDI spec, reached the same conclusion without being
+// able to prove it.) Podman's native API does resolve the CDI name, so a
+// container that needs one is created through that API instead (libpod.go) and
+// then driven through this one like any other. Rootless and rootful sockets
+// behave alike. Not verified: any Podman other than 4.9.3.
+//
+// Docker (GPUDeviceMechanismNvidia, DeviceRequests{Driver: "nvidia"}) is
+// unaffected - confirmed working against real production Docker/DGX Spark
+// hardware (PLANNING.md's 2026-08-17 Decisions Log entry), the fleet's actual
+// mechanism for every Spark node (2026-08-19 entry).
 type Backend struct {
 	cli dockerClient
+	// libpod creates containers that need a CDI GPU, which Podman's
+	// Docker-compatible API cannot - see libpod.go. Nil in tests that never
+	// request one.
+	libpod libpodCreator
 }
 
 // New constructs a Backend. It respects the standard DOCKER_HOST env var if
@@ -143,7 +143,7 @@ func New() (*Backend, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create docker client: %w", err)
 	}
-	return &Backend{cli: cli}, nil
+	return &Backend{cli: cli, libpod: newLibpodClient(cli.DaemonHost())}, nil
 }
 
 // Close releases the underlying client connection.
@@ -169,16 +169,10 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 				Capabilities: [][]string{{"gpu"}},
 			},
 		}
-	case runtime.GPUDeviceMechanismCDI:
-		if len(spec.CDIDevices) > 0 {
-			hostConfig.DeviceRequests = []container.DeviceRequest{
-				{
-					Driver:    cdiDriver,
-					DeviceIDs: spec.CDIDevices,
-				},
-			}
-		}
 	}
+	// A CDI GPU is requested through Podman's native API instead - see
+	// libpod.go for why the compat API cannot carry it.
+	useLibpod := spec.GPUDeviceMechanism == runtime.GPUDeviceMechanismCDI && len(spec.CDIDevices) > 0
 	if len(spec.Mounts) > 0 {
 		hostConfig.Binds = spec.Mounts
 	}
@@ -189,7 +183,12 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 		hostConfig.IpcMode = container.IpcMode(spec.IPCMode)
 	}
 
-	labels := map[string]string{labelInstanceID: spec.InstanceID, labelManaged: "true"}
+	labels := map[string]string{labelInstanceID: spec.InstanceID}
+	if spec.Probe {
+		labels[labelProbe] = "true"
+	} else {
+		labels[labelManaged] = "true"
+	}
 	if validProfileID.MatchString(spec.ProfileID) {
 		labels[labelProfileID] = spec.ProfileID
 	}
@@ -214,22 +213,37 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 		HostConfig: &hostConfig,
 	}
 
-	created, err := b.cli.ContainerCreate(ctx, createOpts)
+	create := func() (string, error) {
+		if useLibpod {
+			if b.libpod == nil {
+				return "", errors.New("podman GPU passthrough is not available on this backend")
+			}
+			req, err := buildLibpodRequest(spec, createOpts.Name, labels)
+			if err != nil {
+				return "", err
+			}
+			return b.libpod.createContainer(ctx, req)
+		}
+		res, err := b.cli.ContainerCreate(ctx, createOpts)
+		return res.ID, err
+	}
+
+	id, err := create()
 	if cerrdefs.IsNotFound(err) {
 		if pullErr := b.pullImage(ctx, spec.Image); pullErr != nil {
 			return "", fmt.Errorf("pull image %s: %w", spec.Image, pullErr)
 		}
-		created, err = b.cli.ContainerCreate(ctx, createOpts)
+		id, err = create()
 	}
 	if err != nil {
 		return "", fmt.Errorf("create container: %w", err)
 	}
 
-	if _, err := b.cli.ContainerStart(ctx, created.ID, client.ContainerStartOptions{}); err != nil {
-		return "", fmt.Errorf("start container %s: %w", created.ID, err)
+	if _, err := b.cli.ContainerStart(ctx, id, client.ContainerStartOptions{}); err != nil {
+		return "", fmt.Errorf("start container %s: %w", id, err)
 	}
 
-	return created.ID, nil
+	return id, nil
 }
 
 // pullImage pulls image and blocks until the pull completes or fails.
@@ -398,4 +412,64 @@ func (b *Backend) Logs(ctx context.Context, instanceID string, tailLines int) (s
 		return "", fmt.Errorf("read logs for container %s: %w", ref, err)
 	}
 	return out.String(), nil
+}
+
+// VerifyGPU checks, from what the daemon reports about the created container,
+// that the GPU the mechanism asks for was actually applied - see
+// runtime.GPUVerifier for why this exists. It reads the container's own
+// inspect data rather than starting anything, so it costs one API call.
+//
+// What counts as applied differs by runtime, because the daemons report it
+// differently: Podman resolves a CDI name into concrete devices, which show
+// up in HostConfig.Devices (found against a real daemon: seven devices for
+// nvidia.com/gpu=all, none at all when the request was dropped), while Docker
+// records the request itself in HostConfig.DeviceRequests. Docker's side was
+// run against a real daemon on a DGX Spark (Docker 29.2.1): a container
+// created through this backend passed it. A container started with the docker
+// CLI's own --gpus all reports an empty Driver there, which is why a "gpu"
+// capability is accepted as well as the "nvidia" driver.
+func (b *Backend) VerifyGPU(ctx context.Context, instanceID string, mechanism runtime.GPUDeviceMechanism) error {
+	if mechanism == "" {
+		return nil
+	}
+	ref, err := b.resolve(ctx, instanceID)
+	if err != nil {
+		return err
+	}
+	res, err := b.cli.ContainerInspect(ctx, ref, client.ContainerInspectOptions{})
+	if err != nil {
+		return fmt.Errorf("inspect container %s: %w", ref, err)
+	}
+	hc := res.Container.HostConfig
+	if hc == nil {
+		return fmt.Errorf("the daemon reported no host configuration for container %s, so its GPU cannot be confirmed", ref)
+	}
+
+	switch mechanism {
+	case runtime.GPUDeviceMechanismCDI:
+		if len(hc.Devices) == 0 {
+			return fmt.Errorf("%w: the container has no devices - the daemon accepted the CDI GPU request but injected nothing", runtime.ErrNoGPU)
+		}
+	case runtime.GPUDeviceMechanismNvidia:
+		for _, req := range hc.DeviceRequests {
+			if req.Driver == nvidiaDriver || hasCapability(req.Capabilities, "gpu") {
+				return nil
+			}
+		}
+		return fmt.Errorf("%w: the container has no GPU device request - the daemon dropped it", runtime.ErrNoGPU)
+	default:
+		return fmt.Errorf("unknown GPU mechanism %q", mechanism)
+	}
+	return nil
+}
+
+func hasCapability(caps [][]string, want string) bool {
+	for _, and := range caps {
+		for _, c := range and {
+			if c == want {
+				return true
+			}
+		}
+	}
+	return false
 }

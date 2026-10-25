@@ -63,9 +63,14 @@ type fakeRuntimeBackend struct {
 	forProfileCalls []string
 	// events records the order Halt/Capture/Remove/Start were called in, as
 	// "halt:<id>", "capture:<id>", "remove:<id>", "start:<id>".
-	events        []string
-	shutdownErr   error
-	shutdownCalls int
+	events []string
+
+	// verifyGPUErr is what VerifyGPU returns; verifyGPUMechanisms records the
+	// mechanism it was asked about.
+	verifyGPUErr        error
+	verifyGPUMechanisms []agentruntime.GPUDeviceMechanism
+	shutdownErr         error
+	shutdownCalls       int
 
 	isRunningCalls  []string
 	isRunningResult bool
@@ -156,6 +161,14 @@ func (f *fakeRuntimeBackend) Remove(_ context.Context, instanceID string) error 
 	f.events = append(f.events, "remove:"+instanceID)
 	f.mu.Unlock()
 	return f.removeErr
+}
+
+func (f *fakeRuntimeBackend) VerifyGPU(_ context.Context, instanceID string, mechanism agentruntime.GPUDeviceMechanism) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, "verify:"+instanceID)
+	f.verifyGPUMechanisms = append(f.verifyGPUMechanisms, mechanism)
+	return f.verifyGPUErr
 }
 
 func (f *fakeRuntimeBackend) Shutdown(_ context.Context) error {

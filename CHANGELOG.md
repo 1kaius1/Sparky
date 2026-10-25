@@ -26,6 +26,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `fetch_logs`, so the live page times out for its nodes until it is upgraded.
   This is the first retention enforcement in the project; the audit log's own
   retention setting is displayed on the Settings page but is still not enforced.
+- Agent: GPU passthrough is now verified instead of trusted, for Docker and
+  Podman nodes. After every container start the agent checks what the daemon
+  says the container actually received (injected devices on Podman, the GPU
+  device request on Docker) and, on a definite "no GPU" verdict, fails the
+  launch at once with a message naming the cause, instead of letting the
+  engine fail minutes later with an error that never says why; the failed
+  container is cleaned up like any other failed launch. A check that merely
+  could not be made never fails a launch. New `sparky-agent check-gpu`
+  command (new package `agent/gpucheck`): starts a short container with exactly
+  the GPU request a model launch sends, runs `nvidia-smi -L` in it, and prints
+  what it saw, with a hint for the causes it recognizes (unusable CDI spec,
+  missing Docker NVIDIA runtime, unpullable image, inaccessible socket). Runs
+  as the service account from `secrets.env` before the node is fully
+  configured; exit 0 ok or not applicable, 1 failed, 2 configuration problem.
+  The probe container is labelled `sparky.probe`, not `sparky.managed`. New
+  optional `SPARKY_GPU_CHECK_IMAGE`. `sparky-agent setup` prints the command as
+  a next step. Agent only: no protocol, server or schema change. The Docker
+  branch of the launch check and `check-gpu` were run against a real Docker
+  daemon on a DGX Spark (Docker 29.2.1, DGX OS 7.5.0) and passed; a full
+  profile launch through the packaged agent and the Docker error-text hints
+  have not been exercised. `VERSION` bumped to `0.2.12`.
 - Failed launches and replace-on-launch (container lifecycle): a launch that
   fails to start, or starts and never becomes ready, no longer leaves a
   container behind. It is reported failed as before, then the container is
@@ -80,6 +101,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   from a new agent is simply ignored by an older server, which logs it.
 
 ### Fixed
+- Agent: a Podman node now actually gets its GPU. The agent asked Podman for a
+  CDI GPU through the Docker-compatible API, which silently drops the request,
+  so every container on a `podman` node started with no GPU and no error
+  (verified on rootless Podman 4.9.3 with a valid CDI spec on an RTX 4090: the
+  container saw no GPU and `podman inspect` listed no devices). A container
+  that needs a CDI GPU is now created through Podman's native API, which
+  resolves the CDI name exactly as `podman run --device nvidia.com/gpu=all`
+  does; start, logs, stop, remove, list and pull still use the compat API, and
+  Docker nodes are unchanged. The same create now omits the shm size when the
+  IPC namespace is `host`, because Podman refuses that combination (a vLLM
+  profile with `shm_size_gb` could not launch on Podman at all). New gated
+  test `agent/runtime/containers/realdaemon_test.go` (build tag
+  `realdaemon`) proves this against a real daemon and GPU.
+  Note: `nvidia-ctk` 1.20.1 generates a CDI spec (`/var/run/cdi/nvidia.yaml`,
+  `cdiVersion` 0.7.0, with an `additionalGids` field) that Podman 4.9.3
+  rejects at debug level only; Podman then falls back to a spec in `/etc/cdi`.
+  Verified on both the rootless and the rootful (system socket) Podman 4.9.3
+  daemon. Not verified: a Podman other than 4.9.3, the packaged agent as
+  `serviceloop`, Rocky/SELinux. The agent must be upgraded.
+- Packaging: `VERSION` bumped to `0.2.11` so builds carrying the Podman GPU
+  fix register as newer than the `0.2.10` packages.
 - Agent: health reporting now resumes for an instance that was already running
   when the agent restarted. The agent only checked instances it had loaded
   itself in the current process, so after any agent upgrade or crash-restart
@@ -145,8 +187,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
-- Packaging: `VERSION` bumped to `0.2.11` so builds carrying the live log view
-  and log retention register as newer than the `0.2.10` packages. Both
+- Packaging: `VERSION` bumped to `0.2.13` so builds carrying the live log view
+  and log retention register as newer than the `0.2.12` packages. Both
   packages move together because they share one `VERSION`.
 - Packaging: `VERSION` bumped to `0.2.10` so builds carrying failed-launch
   cleanup and replace-on-launch register as newer than the `0.2.9` packages.

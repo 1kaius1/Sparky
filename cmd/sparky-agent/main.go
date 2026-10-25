@@ -46,6 +46,10 @@ func main() {
 		case "peer-serve":
 			runPeerServe(os.Args[2:])
 			return
+		case "check-gpu":
+			// Like scan-models, run by hand without secrets.env's variables
+			// in the shell - see runCheckGPU.
+			os.Exit(runCheckGPU(os.Args[2:]))
 		case "scan-models":
 			// Run by hand without secrets.env's variables in the shell -
 			// see runScanModels.

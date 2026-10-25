@@ -13,6 +13,7 @@ package connection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"math/rand"
@@ -933,33 +934,11 @@ func buildEngineLaunchArgs(runtimeBackend, engineType, image, modelPath string, 
 	return append(args, extra...)
 }
 
-// gpuPassthrough resolves which GPU device mechanism (if any) a load_instance
-// on this node's runtime_backend should request, and what CDIDevices/Env
-// additions go with it - a pure function, same testability reasoning as
-// buildEngineLaunchArgs. Docker and Podman need genuinely different
-// mechanisms through the same Engine API - see
-// runtime.GPUDeviceMechanismNvidia/GPUDeviceMechanismCDI's own doc
-// comments for the empirical findings behind each. Bare-metal (or any
-// other/unset backend) requests no GPU device at all: a bare-metal
-// process already has direct GPU access, with no passthrough boundary to
-// cross.
-//
-// NVIDIA_VISIBLE_DEVICES=all is set alongside the nvidia mechanism for
-// parity with the one piece of real evidence available (the real launch
-// script this mechanism is confirmed against sets it explicitly alongside
-// --gpus all) - whether it's still required alongside the modern
-// DeviceRequests API, or purely redundant, could not be confirmed in this
-// environment; see PLANNING.md Known Issues rather than silently resolving
-// it either way.
+// gpuPassthrough is the GPU request for this node's runtime backend - see
+// runtime.GPURequest, which the per-launch GPU guard and the GPU diagnostic
+// (agent/gpucheck) share so all three send the identical request.
 func gpuPassthrough(runtimeBackend string) (mechanism runtime.GPUDeviceMechanism, cdiDevices []string, env []string) {
-	switch runtimeBackend {
-	case "docker":
-		return runtime.GPUDeviceMechanismNvidia, nil, []string{"NVIDIA_VISIBLE_DEVICES=all"}
-	case "podman":
-		return runtime.GPUDeviceMechanismCDI, []string{"nvidia.com/gpu=all"}, nil
-	default:
-		return "", nil, nil
-	}
+	return runtime.GPURequest(runtimeBackend)
 }
 
 // runLoad starts a Running instance - one goroutine per load/unload
@@ -1027,6 +1006,16 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		return
 	}
 
+	// A daemon can accept a GPU request and silently drop it; the engine then
+	// fails minutes later with an error that never says why. Check now, while
+	// the cause is still unambiguous.
+	if err := c.verifyGPUApplied(ctx, load.InstanceID, gpuMechanism); err != nil {
+		c.logger.Printf("agent connection: instance %s has no GPU: %v", load.InstanceID, err)
+		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
+		c.cleanUpFailedLaunch(ctx, conn, load.InstanceID)
+		return
+	}
+
 	if err := c.waitForReady(ctx, load.InstanceID, load.EngineType, load.Port, modelPath); err != nil {
 		msg := err.Error()
 		if logs, logErr := c.runtime.Logs(ctx, load.InstanceID, logsTailLines); logErr == nil && logs != "" {
@@ -1043,6 +1032,33 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 
 	c.trackActiveInstance(load.InstanceID, load.Port, modelPath, load.EngineType)
 	c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusRunning, load.Port, "")
+}
+
+// verifyGPUApplied is the per-launch GPU guard: after a container has started,
+// confirm the GPU it asked for is really there (runtime.GPUVerifier). It fails
+// only on a definite "no GPU" verdict. A backend that cannot verify (bare-metal
+// has no passthrough boundary), or a check that could not be made (the daemon
+// went away between start and inspect), lets the launch proceed - the readiness
+// check still catches a broken launch, just later.
+func (c *Conn) verifyGPUApplied(ctx context.Context, instanceID string, mechanism runtime.GPUDeviceMechanism) error {
+	if mechanism == "" {
+		return nil
+	}
+	verifier, ok := c.runtime.(runtime.GPUVerifier)
+	if !ok {
+		return nil
+	}
+	err := verifier.VerifyGPU(ctx, instanceID, mechanism)
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, runtime.ErrNoGPU) {
+		c.logger.Printf("agent connection: could not verify the GPU of instance %s: %v", instanceID, err)
+		return nil
+	}
+	return fmt.Errorf("%w. The container was started without a GPU, so no model can run on it. "+
+		"Run `sparky-agent check-gpu` on this node (as the service account) to diagnose GPU passthrough for the %s runtime",
+		err, c.cfg.RuntimeBackend)
 }
 
 // runUnload stops a Running instance, identified by InstanceID - each
