@@ -537,6 +537,28 @@ table.data-table:not(.panel .data-table) {
   padding: 12px 20px 0;
 }
 
+/* Who is signed in, above My account - so windows signed in as different
+   people can be told apart. A long name is cut with an ellipsis rather than
+   widening the sidebar; the full name is in the title tooltip. */
+.sidebar-user {
+  margin: 4px 0 8px;
+}
+
+.sidebar-user-label {
+  display: block;
+  font-size: 11px;
+  color: var(--color-sidebar-text);
+}
+
+.sidebar-user-name {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--color-sidebar-text-active);
+}
+
 .logout-link {
   display: block;
   text-align: center;

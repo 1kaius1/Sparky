@@ -221,6 +221,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- The sidebar now shows who is signed in: a "Signed in as" line with the
+  person's display name (the same one the Users & permissions page lists),
+  above the My account link, so windows signed in as different people can be
+  told apart. The break-glass SuperAdmin, which is not a user, shows as
+  "Break-glass administrator". A long name is cut with an ellipsis (the full
+  name is in the tooltip), the name is HTML-escaped, and if it cannot be
+  looked up the line is simply left out. It is read when a full page loads, as
+  the sidebar is never re-rendered by a section change, so a display name
+  changed on the Account page shows after the next full reload. Server only;
+  no schema or API change.
+- Packaging: `VERSION` bumped to `0.2.15` so builds carrying the signed-in line
+  register as newer than the `0.2.14` packages. Both packages move together
+  because they share one `VERSION`.
 - Packaging: `VERSION` bumped to `0.2.13` so builds carrying the live log view
   and log retention register as newer than the `0.2.12` packages. Both
   packages move together because they share one `VERSION`.

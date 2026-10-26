@@ -100,6 +100,12 @@
           <span class="sse-status-dot" aria-hidden="true"></span>
           <span class="sse-status-label">Connecting</span>
         </div>
+        {{if .CurrentUser}}
+        <div class="sidebar-user" title="Signed in as {{.CurrentUser}}">
+          <span class="sidebar-user-label">Signed in as</span>
+          <span class="sidebar-user-name">{{.CurrentUser}}</span>
+        </div>
+        {{end}}
         <a href="/account" hx-get="/account" hx-target="#main-content" hx-push-url="true"
            class="{{if eq .ActiveSection "account"}}active{{end}}">My account</a>
         <a class="logout-link" hx-post="/logout" hx-swap="none">Logout</a>

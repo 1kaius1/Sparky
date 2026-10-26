@@ -28,8 +28,12 @@ type pageData struct {
 	// UnreadAlerts is the sidebar Alerts badge's number, set on a full page
 	// load only; the badge refreshes itself after that (sse.js).
 	UnreadAlerts int
-	Theme        themeViewModel
-	Data         any
+
+	// CurrentUser is who the sidebar says is signed in, so several windows
+	// signed in as different people can be told apart. Empty hides the line.
+	CurrentUser string
+	Theme       themeViewModel
+	Data        any
 }
 
 // themeSettingsReader is the subset of *db.ThemeSettingsRepository this
@@ -172,6 +176,7 @@ func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string,
 		pd.ShowAdminNav = a.canViewAdminNav(r.Context())
 		pd.ShowLogsNav = a.canViewLogsNav(r.Context())
 		pd.UnreadAlerts = a.alertUnreadCount(r.Context())
+		pd.CurrentUser = a.currentUserLabel(r.Context())
 		pd.Theme = a.resolveTheme(r.Context())
 	}
 
@@ -216,6 +221,32 @@ func (a *API) canViewLogsNav(ctx context.Context) bool {
 		return false
 	}
 	return rbac.CanViewInstanceLogs(actor)
+}
+
+// breakGlassUserLabel is what the sidebar shows for the break-glass
+// SuperAdmin, which is not a Users row and so has no display name of its own.
+const breakGlassUserLabel = "Break-glass administrator"
+
+// currentUserLabel is the name the sidebar shows for the signed-in viewer:
+// their display name (the same one the Users & permissions page lists), or
+// breakGlassUserLabel for the SuperAdmin. Any failure to resolve it hides the
+// line rather than failing the page render - same "display nicety, not a
+// security boundary" stance as canViewAdminNav. Escaping is the template's
+// job: a display name comes from AD or from the person themselves.
+func (a *API) currentUserLabel(ctx context.Context) string {
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		return ""
+	}
+	if identity.IsSuperAdmin {
+		return breakGlassUserLabel
+	}
+	user, err := a.users.FindByID(ctx, identity.UserID)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve current user for sidebar: %v", err)
+		return ""
+	}
+	return user.DisplayName
 }
 
 // resolveTheme determines the current viewer's effective theme - a full
