@@ -1,0 +1,94 @@
+{{define "stale_scan"}}
+{{if .Error}}
+<p class="form-error">{{.Error}}</p>
+{{else}}
+{{$lines := .Lines}}
+{{if not .Nodes}}<p>No node runs containers, so there is nothing to clean up.</p>{{end}}
+{{range .Nodes}}
+{{$node := .}}
+<h2>{{.Name}} <span class="status status-{{.StatusClass}}">{{.Status}}</span></h2>
+{{if .Error}}<p class="form-error">{{.Error}}</p>{{end}}
+{{if eq .Status "done"}}
+{{if .Truncated}}<p class="form-error">This node holds more containers than it can list at once; only the oldest were returned. Clean these up and scan again.</p>{{end}}
+
+<h3>Stale ({{len .Stale}})</h3>
+{{if .Stale}}
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Container</th>
+      <th>Profile</th>
+      <th>State</th>
+      <th>Stopped</th>
+      <th>Remove, keeping the log's last</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Stale}}
+    <tr id="stale-{{.InstanceID}}">
+      <td>{{.Container}}</td>
+      <td>{{if .Profile}}{{.Profile}}{{else}}-{{end}}</td>
+      <td>{{.State}}{{if .Exit}}, {{.Exit}}{{end}}</td>
+      <td>{{if .Stopped}}{{.Stopped}}{{else}}-{{end}}</td>
+      <td>
+        <form class="row-actions" hx-post="/containers/cleanup/remove" hx-target="closest tr" hx-swap="outerHTML" hx-confirm="Remove the container {{.Container}} from {{$node.Name}}? Its log is saved first.">
+          <input type="hidden" name="node_id" value="{{.NodeID}}">
+          <input type="hidden" name="instance_id" value="{{.InstanceID}}">
+          <select name="lines" aria-label="Log lines to keep for {{.Container}}">
+            {{range $lines}}<option value="{{.Value}}"{{if .Selected}} selected{{end}}>{{.Label}}</option>{{end}}
+          </select>
+          <button type="submit">Remove</button>
+        </form>
+      </td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{else}}
+<p>Nothing is stale on this node.</p>
+{{end}}
+
+{{if .Recent}}
+<h3>Stopped too recently to be stale ({{len .Recent}})</h3>
+<p><small>Lower the minimum age in Settings to remove these sooner.</small></p>
+<table class="data-table">
+  <thead>
+    <tr><th>Container</th><th>Profile</th><th>State</th><th>Stopped</th></tr>
+  </thead>
+  <tbody>
+    {{range .Recent}}
+    <tr>
+      <td>{{.Container}}</td>
+      <td>{{if .Profile}}{{.Profile}}{{else}}-{{end}}</td>
+      <td>{{.State}}{{if .Exit}}, {{.Exit}}{{end}}</td>
+      <td>{{if .Stopped}}{{.Stopped}}{{else}}not known{{end}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+
+{{if .Orphans}}
+<h3>Running, but Sparky has no record of them ({{len .Orphans}})</h3>
+<p><small>These are never removed here. Check them on the node and stop them yourself if they are not needed.</small></p>
+<table class="data-table">
+  <thead>
+    <tr><th>Container</th><th>Instance</th><th>State</th></tr>
+  </thead>
+  <tbody>
+    {{range .Orphans}}
+    <tr>
+      <td>{{.Container}}</td>
+      <td>{{.InstanceID}}</td>
+      <td>{{.State}}</td>
+    </tr>
+    {{end}}
+  </tbody>
+</table>
+{{end}}
+
+<p><small>{{.Live}} in use or belonging to a running instance (not touched){{if .Other}}, {{.Other}} in a state this page does not act on{{end}}.</small></p>
+{{end}}
+{{end}}
+{{end}}
+{{end}}

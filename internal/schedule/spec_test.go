@@ -71,6 +71,29 @@ func TestSpecValidate(t *testing.T) {
 	}
 }
 
+func TestSpecDescribe(t *testing.T) {
+	cases := map[string]struct {
+		spec Spec
+		want string
+	}{
+		"one day one time":   {Spec{Kind: KindWeekly, Weekdays: []int{1}, Times: []string{"02:00"}}, "Mondays at 02:00"},
+		"two days two times": {Spec{Kind: KindWeekly, Weekdays: []int{3, 1}, Times: []string{"14:30", "02:00"}}, "Mondays and Wednesdays at 02:00 and 14:30"},
+		"three days":         {Spec{Kind: KindWeekly, Weekdays: []int{0, 6, 3}, Times: []string{"23:59"}}, "Sundays, Wednesdays and Saturdays at 23:59"},
+		"every day":          {Spec{Kind: KindEveryDays, EveryDays: 1}, "Every day, starting when it was saved"},
+		"every 3 days":       {Spec{Kind: KindEveryDays, EveryDays: 3}, "Every 3 days, starting when it was saved"},
+		"invalid":            {Spec{Kind: KindWeekly}, "no valid schedule"},
+		"empty":              {Spec{}, "no valid schedule"},
+	}
+	for name, c := range cases {
+		if got := c.spec.Describe(); got != c.want {
+			t.Errorf("%s: %q, want %q", name, got, c.want)
+		}
+	}
+	if WeekdayName(0) != "Sunday" || WeekdayName(6) != "Saturday" || WeekdayName(7) != "" || WeekdayName(-1) != "" {
+		t.Error("WeekdayName is wrong at its edges")
+	}
+}
+
 func TestSpecNormalizedSortsWithoutTouchingTheOriginal(t *testing.T) {
 	s := Spec{Kind: KindWeekly, Weekdays: []int{5, 1, 3}, Times: []string{"14:30", "02:00"}}
 	n := s.Normalized()

@@ -42,6 +42,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/rbac"
 	"github.com/1kaius1/Sparky/internal/schedule"
 	"github.com/1kaius1/Sparky/internal/settings"
+	"github.com/1kaius1/Sparky/internal/stalecontainers"
 	"github.com/1kaius1/Sparky/internal/transfers"
 )
 
@@ -173,6 +174,12 @@ func main() {
 	// removing a container (the container_log_chunk handling in onMessage
 	// below) and backs the Container logs pages.
 	containerLogService := containerlogs.NewService(db.NewContainerLogArchiveRepository(pool), db.NewContainerLogSettingsRepository(pool), auditRecorder, instanceRepo, profileRepo, agentRegistry, logger)
+	// staleContainerService finds the containers left behind by ended
+	// instances, reports them as alerts and, in Prune mode or on the Container
+	// cleanup page, removes them after their logs are archived. It asks and
+	// instructs the agents through agentRegistry; their answers arrive in
+	// onMessage below.
+	staleContainerService := stalecontainers.NewService(db.NewStaleContainerSettingsRepository(pool), nodeRepo, instanceRepo, profileRepo, agentRegistry, alertService, auditRecorder, scheduleService, logger)
 	// transferService additionally gets nodeService (SSH identity and
 	// interface resolution) and inventoryService (source-presence check) for
 	// peer_node transfers.
@@ -251,6 +258,11 @@ func main() {
 		case agentproto.TypeContainerLogChunk:
 			// No SSE publish: the Container logs page loads on demand.
 			containerLogService.HandleChunk(nodeID, env)
+		case agentproto.TypeListContainersResult:
+			// No SSE publish: the cleanup page loads its scan on demand.
+			staleContainerService.HandleListContainersResult(nodeID, env)
+		case agentproto.TypeRemoveContainerResult:
+			staleContainerService.HandleRemoveContainerResult(nodeID, env)
 		case agentproto.TypeEngineTransferProgress:
 			engineProvisionService.HandleEngineTransferProgress(nodeID, env)
 			eventsBroker.Publish(events.Event{Type: string(env.Type)})
@@ -281,7 +293,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, groupService, scheduleService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, groupService, scheduleService, staleContainerService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
@@ -297,6 +309,9 @@ func main() {
 	defer stopRetention()
 	go containerLogService.RunRetention(retentionCtx)
 	go alertService.RunRetention(retentionCtx)
+	// The scheduler runs stale container monitoring when its schedule says it
+	// is due (and does nothing while the mode is None); it stops with the process.
+	go schedule.NewRunner(scheduleService, logger).Run(retentionCtx, staleContainerService.Job())
 
 	serveErr := make(chan error, 1)
 	go func() {

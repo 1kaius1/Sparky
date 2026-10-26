@@ -70,6 +70,7 @@ var (
 type store interface {
 	Raise(ctx context.Context, in db.NewAlert) (*db.RaiseResult, error)
 	ResolveByDedupeKey(ctx context.Context, dedupeKey string) ([]string, error)
+	ResolveByKeyPrefixExcept(ctx context.Context, prefix string, keep []string) ([]string, error)
 	ResolveByUser(ctx context.Context, id string, resolvedBy *string) (bool, error)
 	Reopen(ctx context.Context, id string) error
 	FindVisible(ctx context.Context, viewer db.AlertViewer, id string) (*db.AlertView, error)
@@ -140,7 +141,10 @@ type RaiseParams struct {
 	Audiences []db.AlertAudience
 }
 
-func (p RaiseParams) validate() error {
+// Validate reports whether Raise would accept p. It is exported so a producer's
+// tests can hold a fake to the same rules as the real service, instead of
+// passing on an alert the inbox would refuse.
+func (p RaiseParams) Validate() error {
 	if !kindPattern.MatchString(p.Kind) {
 		return fmt.Errorf("%w: kind must be a lowercase slug", ErrInvalidAlert)
 	}
@@ -202,7 +206,7 @@ func optional(s string) *string {
 // are told to refresh only when something a viewer would notice changed: a
 // new alert, or one that got more severe.
 func (s *Service) Raise(ctx context.Context, p RaiseParams) (*db.RaiseResult, error) {
-	if err := p.validate(); err != nil {
+	if err := p.Validate(); err != nil {
 		return nil, err
 	}
 	res, err := s.store.Raise(ctx, db.NewAlert{
@@ -226,6 +230,27 @@ func (s *Service) ResolveCondition(ctx context.Context, dedupeKey string) (int, 
 	ids, err := s.store.ResolveByDedupeKey(ctx, dedupeKey)
 	if err != nil {
 		return 0, fmt.Errorf("resolve alert condition: %w", err)
+	}
+	if len(ids) > 0 {
+		s.changed()
+	}
+	return len(ids), nil
+}
+
+// ResolveConditionsExcept closes every open alert whose dedupe key starts with
+// prefix and is not one of keep, because the thing each names is gone, and
+// returns how many it closed. For a producer that raises one alert per thing
+// (a container) and cannot enumerate the ones it raised earlier. Not audited,
+// like ResolveCondition.
+func (s *Service) ResolveConditionsExcept(ctx context.Context, prefix string, keep []string) (int, error) {
+	if prefix == "" {
+		// An empty prefix would match every alert; refuse it rather than
+		// close the whole inbox on a producer's bug.
+		return 0, fmt.Errorf("%w: a key prefix is required", ErrInvalidAlert)
+	}
+	ids, err := s.store.ResolveByKeyPrefixExcept(ctx, prefix, keep)
+	if err != nil {
+		return 0, fmt.Errorf("resolve alert conditions: %w", err)
 	}
 	if len(ids) > 0 {
 		s.changed()

@@ -152,11 +152,17 @@ func alertRowOf(it *alerts.Item, selected string) alertRow {
 	}
 }
 
-// alertObjectLink names where an alert's object can be seen. Only an
-// instance has a page today; an unknown type simply has no link.
+// alertObjectLink names where an alert's object can be seen. An instance and
+// a node's stale containers have pages; an unknown type simply has no link.
 func alertObjectLink(objectType *string) (linkURL, label string) {
-	if objectType != nil && *objectType == "running_instance" {
+	if objectType == nil {
+		return "", ""
+	}
+	switch *objectType {
+	case "running_instance":
 		return "/dashboard", "View the Dashboard"
+	case "stale_containers":
+		return "/containers/cleanup", "Open Container cleanup"
 	}
 	return "", ""
 }

@@ -86,7 +86,7 @@ type themeViewModel struct {
 // base+one-page per entry keeps each page's "content" definition private
 // to its own set.
 func loadPageTemplates() (map[string]*template.Template, error) {
-	pages := []string{"dashboard", "nodes", "inventory", "profiles", "transfers", "engine_inventory", "engine_transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "node_edit", "node_comment_edit", "profile_form", "provision_engine", "initiate_transfer", "scan_models", "container_logs", "container_log", "instance_logs", "forbidden", "create_local_account", "account", "alerts", "groups", "group"}
+	pages := []string{"dashboard", "nodes", "inventory", "profiles", "transfers", "engine_inventory", "engine_transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "node_edit", "node_comment_edit", "profile_form", "provision_engine", "initiate_transfer", "scan_models", "container_logs", "container_log", "instance_logs", "forbidden", "create_local_account", "account", "alerts", "groups", "group", "container_cleanup"}
 	result := make(map[string]*template.Template, len(pages)+1)
 	for _, name := range pages {
 		t, err := template.ParseFS(web.FS, "templates/layouts/base.html", "templates/pages/"+name+".html")
@@ -123,7 +123,7 @@ func loadPageTemplates() (map[string]*template.Template, error) {
 // name via renderPartial. Fragments are standalone - no base layout - and
 // each file defines a template named after itself.
 func loadPartialTemplates() (map[string]*template.Template, error) {
-	names := []string{"estimate_size", "peer_options", "connectivity", "profile_inventory_options", "scan_results", "alerts_badge", "ad_group_results"}
+	names := []string{"estimate_size", "peer_options", "connectivity", "profile_inventory_options", "scan_results", "alerts_badge", "ad_group_results", "stale_scan", "stale_row_result"}
 	result := make(map[string]*template.Template, len(names))
 	for _, name := range names {
 		t, err := template.ParseFS(web.FS, "templates/partials/"+name+".html")

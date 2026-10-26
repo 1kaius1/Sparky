@@ -17,6 +17,7 @@ import (
 	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -115,6 +116,51 @@ func (s Spec) Validate() error {
 	default:
 		return fmt.Errorf("%w: unknown schedule kind %q", ErrInvalidSpec, s.Kind)
 	}
+}
+
+var weekdayNames = [...]string{"Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+
+// WeekdayName returns the English name of a weekday numbered as time.Weekday
+// (0 is Sunday), or "" for a number outside 0 to 6.
+func WeekdayName(d int) string {
+	if d < 0 || d > 6 {
+		return ""
+	}
+	return weekdayNames[d]
+}
+
+// Describe writes the schedule as a sentence for a person: "Mondays and
+// Wednesdays at 02:00 and 14:30" or "Every 2 days, starting when it was saved".
+// An invalid Spec describes as "no valid schedule".
+func (s Spec) Describe() string {
+	if s.Validate() != nil {
+		return "no valid schedule"
+	}
+	n := s.Normalized()
+	switch n.Kind {
+	case KindEveryDays:
+		if n.EveryDays == 1 {
+			return "Every day, starting when it was saved"
+		}
+		return fmt.Sprintf("Every %d days, starting when it was saved", n.EveryDays)
+	default:
+		days := make([]string, len(n.Weekdays))
+		for i, d := range n.Weekdays {
+			days[i] = WeekdayName(d) + "s"
+		}
+		return joinAnd(days) + " at " + joinAnd(n.Times)
+	}
+}
+
+// joinAnd writes items as "a", "a and b" or "a, b and c".
+func joinAnd(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
 }
 
 // Normalized returns a copy with Weekdays and Times sorted, so equal

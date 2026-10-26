@@ -171,6 +171,102 @@
 </section>
 
 <section class="panel">
+  <h2>Stale container monitoring</h2>
+  {{if .Data.StaleError}}
+  <div class="form-error">{{.Data.StaleError}}</div>
+  {{end}}
+  {{if .Data.StaleSuccess}}
+  <div class="form-success">Stale container monitoring updated.</div>
+  {{end}}
+  <p>When an instance ends, its container can be left behind on the node. This finds them on a schedule. <strong>None</strong> does nothing. <strong>Report</strong> raises an alert to the Admins listing them. <strong>Prune</strong> removes them, saving each container's log first. A container that is running, whose instance is still running, or that stopped less than the minimum age ago is never touched, and one whose log cannot be saved is kept. The <a href="/containers/cleanup" hx-get="/containers/cleanup" hx-target="#main-content" hx-push-url="true">Container cleanup</a> page lists them at any time and removes them one at a time.</p>
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <td>Mode</td>
+        <td>{{.Data.Stale.Mode}}</td>
+      </tr>
+      <tr>
+        <td>Schedule</td>
+        <td>{{if .Data.Stale.Description}}{{.Data.Stale.Description}}{{else}}-{{end}}{{if .Data.Stale.Timezone}} ({{.Data.Stale.Timezone}}){{end}}</td>
+      </tr>
+      <tr>
+        <td>Next scan</td>
+        <td>{{if .Data.Stale.NextRun}}{{.Data.Stale.NextRun}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last scan</td>
+        <td>
+          {{if .Data.Stale.LastRun}}
+          {{.Data.Stale.LastRun.StartedAt}} ({{.Data.Stale.LastRun.Mode}}): {{.Data.Stale.LastRun.NodesScanned}} node{{if ne .Data.Stale.LastRun.NodesScanned 1}}s{{end}} scanned{{if .Data.Stale.LastRun.NodesSkipped}}, {{.Data.Stale.LastRun.NodesSkipped}} not reachable{{end}};
+          {{.Data.Stale.LastRun.Stale}} stale, {{.Data.Stale.LastRun.Recent}} too recent, {{.Data.Stale.LastRun.Orphans}} running with no record{{if .Data.Stale.LastRun.IsPrune}};
+          {{.Data.Stale.LastRun.Removed}} removed, {{.Data.Stale.LastRun.Kept}} kept, {{.Data.Stale.LastRun.Failed}} failed{{end}}
+          {{else}}-{{end}}
+        </td>
+      </tr>
+      <tr>
+        <td>Minimum age</td>
+        <td>{{.Data.Stale.MinAgeHours}} hours</td>
+      </tr>
+      <tr>
+        <td>Log lines kept by Prune</td>
+        <td>{{if .Data.Stale.ArchiveAll}}all{{else}}{{.Data.Stale.ArchiveLines}}{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated by</td>
+        <td>{{if .Data.Stale.UpdatedBy}}{{.Data.Stale.UpdatedBy}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated at</td>
+        <td>{{.Data.Stale.UpdatedAt}}</td>
+      </tr>
+    </tbody>
+  </table>
+  <form method="post" action="/settings/stale-containers">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+
+    <fieldset class="settings-fieldset">
+      <legend>Mode</legend>
+      <div class="option-row">
+        <label><input type="radio" name="stale_mode" value="none"{{if eq .Data.Stale.Mode "none"}} checked{{end}}> None</label>
+        <label><input type="radio" name="stale_mode" value="report"{{if eq .Data.Stale.Mode "report"}} checked{{end}}> Report</label>
+        <label><input type="radio" name="stale_mode" value="prune"{{if eq .Data.Stale.Mode "prune"}} checked{{end}}> Prune</label>
+      </div>
+      <p><label><input type="checkbox" name="confirm_prune" value="yes"> I understand that Prune removes stale containers automatically, without anyone watching (needed each time Prune is switched on)</label></p>
+    </fieldset>
+
+    <fieldset class="settings-fieldset">
+      <legend>Schedule (in the time zone above)</legend>
+      <p><label><input type="radio" name="schedule_kind" value="weekly"{{if eq .Data.Stale.ScheduleKind "weekly"}} checked{{end}}> On these days, at these times</label></p>
+      <div class="option-row">
+        {{range .Data.Stale.Weekdays}}
+        <label><input type="checkbox" name="weekdays" value="{{.Value}}"{{if .Checked}} checked{{end}}> {{.Name}}</label>
+        {{end}}
+      </div>
+      <p>
+        <label for="stale_times">Times of day, 24-hour, separated by commas (for example 02:00, 14:30)</label><br>
+        <input type="text" id="stale_times" name="times" value="{{.Data.Stale.Times}}" maxlength="200">
+      </p>
+      <p><label><input type="radio" name="schedule_kind" value="every_days"{{if eq .Data.Stale.ScheduleKind "every_days"}} checked{{end}}> Every N days, starting when these settings are saved</label></p>
+      <p>
+        <label for="stale_every_days">N (1 to 365)</label><br>
+        <input type="number" id="stale_every_days" name="every_days" min="1" max="365" value="{{.Data.Stale.EveryDays}}">
+      </p>
+    </fieldset>
+
+    <p>
+      <label for="stale_min_age">Minimum age before a stopped container counts as stale (hours, 0 to 720)</label><br>
+      <input type="number" id="stale_min_age" name="min_age_hours" min="0" max="720" value="{{.Data.Stale.MinAgeHours}}" required>
+    </p>
+    <p>
+      <label for="stale_lines">Log lines Prune saves from each container before removing it</label><br>
+      <input type="number" id="stale_lines" name="archive_lines" min="1" max="100000" value="{{.Data.Stale.ArchiveLines}}">
+      <label><input type="checkbox" name="archive_all" value="yes"{{if .Data.Stale.ArchiveAll}} checked{{end}}> All of it</label>
+    </p>
+    <p><button type="submit">Save</button></p>
+  </form>
+</section>
+
+<section class="panel">
   <h2>Default theme</h2>
   {{if .Data.ThemeError}}
   <div class="form-error">{{.Data.ThemeError}}</div>

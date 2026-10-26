@@ -78,6 +78,10 @@ type settingsPageData struct {
 	ScheduleUpdatedAt string
 	ScheduleError     string
 	ScheduleSuccess   bool
+
+	Stale        *staleSettingsView
+	StaleError   string
+	StaleSuccess bool
 }
 
 // resolveUserName resolves userID to a display name via FindByID,
@@ -200,6 +204,14 @@ func (a *API) renderSettingsPage(w http.ResponseWriter, r *http.Request, actor r
 	if loc, err := schedule.ParseTimezone(scheduleSettings.Timezone); err == nil {
 		data.ScheduleLocalTime = time.Now().In(loc).Format("2006-01-02 15:04 MST")
 	}
+
+	staleView, err := a.staleContainers.Settings(ctx, actor)
+	if err != nil {
+		a.logger.Printf("httpapi: get stale container settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data.Stale = a.staleSettingsViewOf(ctx, staleView)
 
 	a.render(w, r, "settings", "Settings", data)
 }

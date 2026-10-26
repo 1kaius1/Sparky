@@ -58,6 +58,12 @@
                    class="{{if or (eq .ActiveSection "container_logs") (eq .ActiveSection "container_log")}}active{{end}}">Container logs</a>
               </li>
               {{end}}
+              {{if .ShowAdminNav}}
+              <li>
+                <a href="/containers/cleanup" hx-get="/containers/cleanup" hx-target="#main-content" hx-push-url="true"
+                   class="{{if eq .ActiveSection "container_cleanup"}}active{{end}}">Container cleanup</a>
+              </li>
+              {{end}}
             </ul>
           </details>
         </li>

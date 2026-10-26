@@ -35,9 +35,14 @@ type fakeStore struct {
 	raiseResult *db.RaiseResult
 	raised      []db.NewAlert
 	resolveKeys map[string][]string // dedupe key -> ids it closes
-	markAllIDs  []string
-	deleted     int64
-	cutoff      time.Time
+	// resolvePrefix is what ResolveByKeyPrefixExcept closes; prefixAsked and
+	// keepAsked record its arguments.
+	resolvePrefix []string
+	prefixAsked   string
+	keepAsked     []string
+	markAllIDs    []string
+	deleted       int64
+	cutoff        time.Time
 
 	calls []string
 	err   error // returned by every call when set
@@ -73,6 +78,12 @@ func (f *fakeStore) Raise(_ context.Context, in db.NewAlert) (*db.RaiseResult, e
 func (f *fakeStore) ResolveByDedupeKey(_ context.Context, k string) ([]string, error) {
 	f.calls = append(f.calls, "ResolveByDedupeKey")
 	return f.resolveKeys[k], f.err
+}
+
+func (f *fakeStore) ResolveByKeyPrefixExcept(_ context.Context, prefix string, keep []string) ([]string, error) {
+	f.calls = append(f.calls, "ResolveByKeyPrefixExcept")
+	f.prefixAsked, f.keepAsked = prefix, keep
+	return f.resolvePrefix, f.err
 }
 
 func (f *fakeStore) ResolveByUser(_ context.Context, id string, _ *string) (bool, error) {
@@ -370,6 +381,40 @@ func TestResolveCondition(t *testing.T) {
 	}
 	h.store.err = errors.New("db down")
 	if _, err := h.svc.ResolveCondition(context.Background(), "k"); err == nil {
+		t.Error("a store error was swallowed")
+	}
+}
+
+func TestResolveConditionsExcept(t *testing.T) {
+	h := newHarness()
+	ctx := context.Background()
+
+	// An empty prefix would match every alert in the inbox; it is refused
+	// before it reaches the store.
+	if _, err := h.svc.ResolveConditionsExcept(ctx, "", nil); !errors.Is(err, ErrInvalidAlert) {
+		t.Errorf("empty prefix: %v, want ErrInvalidAlert", err)
+	}
+	if len(h.store.calls) != 0 {
+		t.Errorf("an empty prefix reached the store: %v", h.store.calls)
+	}
+
+	if n, err := h.svc.ResolveConditionsExcept(ctx, "kept:node-1:", []string{"kept:node-1:a"}); err != nil || n != 0 || h.pub.n != 0 {
+		t.Errorf("nothing to close: n=%d err=%v events=%d", n, err, h.pub.n)
+	}
+	if h.store.prefixAsked != "kept:node-1:" || len(h.store.keepAsked) != 1 || h.store.keepAsked[0] != "kept:node-1:a" {
+		t.Errorf("store asked prefix %q keep %v", h.store.prefixAsked, h.store.keepAsked)
+	}
+
+	h.store.resolvePrefix = []string{alertA, alertB}
+	if n, err := h.svc.ResolveConditionsExcept(ctx, "kept:node-1:", nil); err != nil || n != 2 || h.pub.n != 1 {
+		t.Errorf("two closed: n=%d err=%v events=%d (one refresh event, not one per alert)", n, err, h.pub.n)
+	}
+	if len(h.aud.entries) != 0 {
+		t.Error("an automatic resolve was audited")
+	}
+
+	h.store.err = errors.New("db down")
+	if _, err := h.svc.ResolveConditionsExcept(ctx, "kept:node-1:", nil); err == nil {
 		t.Error("a store error was swallowed")
 	}
 }

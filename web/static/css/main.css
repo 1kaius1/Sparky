@@ -670,6 +670,35 @@ table.data-table:not(.panel .data-table) {
   margin-bottom: 16px;
 }
 
+/* Stale container monitoring (Settings) and the Container cleanup page: a row
+   of related checkboxes or radios, and the small controls in a table row. */
+.option-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  margin: 4px 0 12px;
+}
+
+.option-row label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.settings-fieldset {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  margin: 0 0 16px;
+  padding: 8px 12px 4px;
+}
+
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
 .login-method-picker {
   margin-bottom: 16px;
 }
