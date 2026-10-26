@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/1kaius1/Sparky/internal/agentproto"
+	"github.com/1kaius1/Sparky/internal/alerts"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/engines"
 	"github.com/1kaius1/Sparky/internal/rbac"
@@ -54,6 +55,15 @@ type auditRecorder interface {
 	Record(ctx context.Context, actorID *string, isSuperAdminAction bool, action, objectType, objectID string, detail map[string]any) error
 }
 
+// alertRaiser is the subset of *alerts.Service this package needs to tell
+// people an instance died and, when it stops being dead, to close that alert.
+// Neither call is audited (PLANNING.md, 2026-10-26): the alert row is the
+// record, and the unload that clears a dead instance is audited already.
+type alertRaiser interface {
+	Raise(ctx context.Context, p alerts.RaiseParams) (*db.RaiseResult, error)
+	ResolveCondition(ctx context.Context, dedupeKey string) (int, error)
+}
+
 // Service is Running instances' orchestration layer: check the rule,
 // validate the input, resolve the profile's engine adapter into a launch
 // spec, confirm the target node is reachable, then persist, dispatch, and
@@ -68,15 +78,17 @@ type Service struct {
 	adapters  adapterRegistry
 	dispatch  dispatcher
 	audit     auditRecorder
+	alerts    alertRaiser
 	logger    *log.Logger
 }
 
 // NewService constructs a Service. logger is used only by
 // HandleInstanceResult, which - as an agentconn.OnMessageFunc - has no
 // return value to propagate an error through, same reasoning as
-// internal/transfers.Service's logger dependency.
-func NewService(profiles profileLookup, instances instanceStore, adapters adapterRegistry, dispatch dispatcher, audit auditRecorder, logger *log.Logger) *Service {
-	return &Service{profiles: profiles, instances: instances, adapters: adapters, dispatch: dispatch, audit: audit, logger: logger}
+// internal/transfers.Service's logger dependency. alertsSvc receives the
+// "instance is dead" alert HandleInstanceHealth raises.
+func NewService(profiles profileLookup, instances instanceStore, adapters adapterRegistry, dispatch dispatcher, audit auditRecorder, alertsSvc alertRaiser, logger *log.Logger) *Service {
+	return &Service{profiles: profiles, instances: instances, adapters: adapters, dispatch: dispatch, audit: audit, alerts: alertsSvc, logger: logger}
 }
 
 // LoadInstance starts a new running instance of params.ProfileID's model,
@@ -353,8 +365,85 @@ func (s *Service) HandleInstanceHealth(nodeID string, env agentproto.Envelope) {
 	// agentconn's readLoop, off the tail of the WebSocket read, not any
 	// HTTP request - same reasoning as HandleInstanceResult below.
 	ctx := context.Background()
+
+	// Whether the instance was already dead must be read before the update
+	// below overwrites it: an alert is raised when an instance becomes dead,
+	// not on each of the minute-by-minute reports that follow while it stays
+	// that way.
+	alreadyDead := false
+	if status == db.InstanceHealthDead {
+		if inst, err := s.instances.FindByID(ctx, health.InstanceID); err != nil {
+			s.logger.Printf("lifecycle: look up running instance %s before its dead report: %v", health.InstanceID, err)
+		} else {
+			alreadyDead = inst.HealthStatus == db.InstanceHealthDead
+		}
+	}
+
 	if err := s.instances.UpdateHealth(ctx, health.InstanceID, status, health.CheckedAt, detail); err != nil {
 		s.logger.Printf("lifecycle: update health for running instance %s: %v", health.InstanceID, err)
+		return
+	}
+
+	if status != db.InstanceHealthDead {
+		// Back from the dead (the container was restarted behind Sparky's
+		// back): the condition cleared. Closing finds nothing to do for an
+		// instance that never died, which is the usual case.
+		s.resolveInstanceDeadAlert(ctx, health.InstanceID)
+		return
+	}
+	if !alreadyDead {
+		s.raiseInstanceDeadAlert(ctx, health.InstanceID)
+	}
+}
+
+// instanceDeadAlertKey is the dedupe key tying an instance to its "dead"
+// alert, so the alert can be closed when the instance recovers or is unloaded.
+func instanceDeadAlertKey(instanceID string) string {
+	return "instance_dead:" + instanceID
+}
+
+// raiseInstanceDeadAlert tells the person who started a dead instance, and
+// every Admin, that it is no longer running although Sparky expects it to
+// be. A failure is logged and never stops health handling: the Dashboard
+// still shows the instance as dead.
+func (s *Service) raiseInstanceDeadAlert(ctx context.Context, instanceID string) {
+	inst, err := s.instances.FindByID(ctx, instanceID)
+	if err != nil {
+		s.logger.Printf("lifecycle: look up running instance %s for its dead alert: %v", instanceID, err)
+		return
+	}
+	name := "An instance"
+	if profile, err := s.profiles.FindByID(ctx, inst.ProfileID); err != nil {
+		s.logger.Printf("lifecycle: look up profile %s for the dead alert of instance %s: %v", inst.ProfileID, instanceID, err)
+	} else if profile != nil {
+		name = profile.Name
+	}
+
+	audiences := []db.AlertAudience{{Type: db.AlertAudienceTier, MinTier: db.TierAdmin}}
+	if inst.StartedBy != nil {
+		audiences = append(audiences, db.AlertAudience{Type: db.AlertAudienceUser, UserID: *inst.StartedBy})
+	}
+	_, err = s.alerts.Raise(ctx, alerts.RaiseParams{
+		Kind:     "instance_dead",
+		Severity: db.AlertSeverityCritical,
+		Title:    name + " is no longer running",
+		Body: "Its container or process exited or was removed while Sparky still expects it to be running. " +
+			"The Dashboard and the Profiles page show it as dead. Unload it to clear it; the saved log " +
+			"(Container logs, Developer and above) then shows why it stopped.",
+		ObjectType: "running_instance",
+		ObjectID:   instanceID,
+		DedupeKey:  instanceDeadAlertKey(instanceID),
+		Audiences:  audiences,
+	})
+	if err != nil {
+		s.logger.Printf("lifecycle: raise dead alert for running instance %s: %v", instanceID, err)
+	}
+}
+
+// resolveInstanceDeadAlert closes the instance's dead alert, if one is open.
+func (s *Service) resolveInstanceDeadAlert(ctx context.Context, instanceID string) {
+	if _, err := s.alerts.ResolveCondition(ctx, instanceDeadAlertKey(instanceID)); err != nil {
+		s.logger.Printf("lifecycle: close dead alert for running instance %s: %v", instanceID, err)
 	}
 }
 
@@ -396,6 +485,13 @@ func (s *Service) HandleInstanceResult(nodeID string, env agentproto.Envelope) {
 	ctx := context.Background()
 	if err := s.instances.SetStatus(ctx, result.InstanceID, status, actualPort, errMsg); err != nil {
 		s.logger.Printf("lifecycle: set status for running instance %s: %v", result.InstanceID, err)
+		return
+	}
+
+	// An instance that is stopped or failed is no longer "dead but expected
+	// to run": the unload that clears a dead instance ends here.
+	if status == db.RunningInstanceStatusStopped || status == db.RunningInstanceStatusFailed {
+		s.resolveInstanceDeadAlert(ctx, result.InstanceID)
 	}
 }
 

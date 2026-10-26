@@ -56,6 +56,7 @@ type API struct {
 	engineInventory      engineInventoryLister
 	inventory            inventoryLister
 	containerLogs        containerLogViewer
+	alerts               alertManager
 	sizeEstimator        sizeEstimator
 	templates            map[string]*template.Template
 	partials             map[string]*template.Template
@@ -135,7 +136,10 @@ type API struct {
 // manage_model_store override - see SCHEMA.md Permission overrides) - a
 // distinct interface from transfers, same "same value, multiple interfaces"
 // pattern as registrar/nodes; containerLogsSvc backs the Container logs pages via
-// containerlogs.Service.List/Read, gated by rbac.CanViewInstanceLogs; logger is used for
+// containerlogs.Service.List/Read, gated by rbac.CanViewInstanceLogs; alertsSvc backs the
+// Alerts inbox, its sidebar badge and the retention setting via internal/alerts.Service -
+// every alert is scoped to the viewer inside the service, so the routes need only a
+// session; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
@@ -158,7 +162,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, alertsSvc alertManager, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -212,6 +216,7 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		engineInventory:        engineInventorySvc,
 		inventory:              inventorySvc,
 		containerLogs:          containerLogsSvc,
+		alerts:                 alertsSvc,
 		sizeEstimator:          sizeEstimatorSvc,
 		templates:              templates,
 		partials:               partials,
@@ -372,6 +377,21 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession).Get("/logs", a.handleContainerLogs)
 	r.With(a.RequireSession).Get("/logs/{id}", a.handleContainerLog)
 	r.With(a.RequireSession).Get("/logs/{id}/download", a.handleContainerLogDownload)
+	// The Alerts inbox. Every route needs a session and nothing more: what a
+	// viewer may see or act on is decided per alert inside alerts.Service
+	// (an alert not addressed to them is simply not found), and every POST
+	// is audited there, except the listing and the badge, which are reads.
+	// The pane's automatic mark-read is a POST, never a GET with a side
+	// effect, so RequireCSRF covers it. The bulk form is size-capped ahead
+	// of RequireCSRF for the same reason as the theme upload below.
+	r.With(a.RequireSession).Get("/alerts", a.handleAlerts)
+	r.With(a.RequireSession).Get("/alerts/badge", a.handleAlertsBadge)
+	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/mark-all-read", a.handleAlertsMarkAllRead)
+	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/bulk", a.handleAlertsBulk)
+	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/{id}/read", a.handleAlertRead())
+	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/{id}/unread", a.handleAlertUnread())
+	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/{id}/dismiss", a.handleAlertDismiss())
+	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/{id}/resolve", a.handleAlertResolve())
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	// The initiate form's own RBAC gate (rbac.CanManageModelStore) is
 	// checked directly in both handlers - GET to decide whether to show
@@ -441,6 +461,9 @@ func (a *API) Router() http.Handler {
 	// How long saved container logs are kept - the RBAC gate (Admin) is
 	// inside containerlogs.Service.UpdateRetention.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/container-logs", a.handleUpdateContainerLogRetention)
+	// How long alerts are kept - the RBAC gate (Admin) is inside
+	// alerts.Service.UpdateRetention.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/alerts", a.handleUpdateAlertRetention)
 	// limitBody runs ahead of RequireCSRF, not just inside the handler -
 	// RequireCSRF itself must parse the multipart body to find the
 	// csrf_token field (see its own doc comment), so the hard size cap has

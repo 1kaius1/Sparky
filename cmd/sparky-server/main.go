@@ -18,6 +18,7 @@ import (
 
 	"github.com/1kaius1/Sparky/internal/agentconn"
 	"github.com/1kaius1/Sparky/internal/agentproto"
+	"github.com/1kaius1/Sparky/internal/alerts"
 	"github.com/1kaius1/Sparky/internal/audit"
 	"github.com/1kaius1/Sparky/internal/auth"
 	"github.com/1kaius1/Sparky/internal/config"
@@ -135,7 +136,17 @@ func main() {
 	// ListInstances read and, as of Dashboard UI Phase 11, the Load/Unload
 	// controls' own writes (LoadInstance/UnloadInstance) - same
 	// twice-passed-value reasoning as nodeService/profileService above.
-	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, logger)
+	// eventsBroker fans out a live signal to every open GET /events (SSE)
+	// connection - see internal/events' own doc comment. Fed by the
+	// onMessage dispatch closure below and by alertService, consumed by
+	// internal/httpapi's handleEvents. Created this early because
+	// alertService, which lifecycleService raises its alerts through, needs it.
+	eventsBroker := events.NewBroker()
+	// alertService is the in-app alert inbox: lifecycleService raises an alert
+	// when an instance dies, and the Alerts pages read, dismiss and resolve
+	// them. It also owns the Settings page's alert retention.
+	alertService := alerts.NewService(db.NewAlertRepository(pool), db.NewAlertSettingsRepository(pool), auditRecorder, eventsBroker, logger)
+	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, alertService, logger)
 	// containerLogService stores the container logs agents archive before
 	// removing a container (the container_log_chunk handling in onMessage
 	// below) and backs the Container logs pages.
@@ -186,12 +197,6 @@ func main() {
 	// HandleTelemetry - the first time this Service actually ingests a
 	// real telemetry reading end to end, not just serves the page.
 	metricsService := metrics.NewService(db.NewMetricsRepository(pool), db.NewGPUMetricsRepository(pool), instanceRepo, logger)
-
-	// eventsBroker fans out a live signal to every open GET /events (SSE)
-	// connection - see internal/events' own doc comment. Fed by the
-	// onMessage dispatch closure below, consumed by internal/httpapi's
-	// handleEvents.
-	eventsBroker := events.NewBroker()
 
 	// onMessage is the OnMessage-consolidation slice PLANNING.md's
 	// Dashboard UI Phase 11 names as the hard prerequisite for both the
@@ -254,7 +259,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
@@ -264,11 +269,12 @@ func main() {
 		Handler: api.Router(),
 	}
 
-	// The retention job deletes saved container logs older than the Settings
-	// page's retention period; it stops with the process.
+	// The retention jobs delete saved container logs and alerts older than the
+	// Settings page's retention periods; they stop with the process.
 	retentionCtx, stopRetention := context.WithCancel(context.Background())
 	defer stopRetention()
 	go containerLogService.RunRetention(retentionCtx)
+	go alertService.RunRetention(retentionCtx)
 
 	serveErr := make(chan error, 1)
 	go func() {

@@ -97,6 +97,41 @@
 </section>
 
 <section class="panel">
+  <h2>Alerts</h2>
+  {{if .Data.AlertError}}
+  <div class="form-error">{{.Data.AlertError}}</div>
+  {{end}}
+  {{if .Data.AlertSuccess}}
+  <div class="form-success">Alert retention updated.</div>
+  {{end}}
+  <p>Alerts are kept for this long after they were last raised, then deleted once a day.</p>
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <td>Retention (months)</td>
+        <td>{{.Data.AlertRetentionMonths}}</td>
+      </tr>
+      <tr>
+        <td>Last updated by</td>
+        <td>{{if .Data.AlertUpdatedBy}}{{.Data.AlertUpdatedBy}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated at</td>
+        <td>{{.Data.AlertUpdatedAt}}</td>
+      </tr>
+    </tbody>
+  </table>
+  <form method="post" action="/settings/alerts">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="alert_retention_months">Keep alerts for (months, 1 to 24)</label><br>
+      <input type="number" id="alert_retention_months" name="retention_months" min="1" max="24" value="{{.Data.AlertRetentionMonths}}" required>
+    </p>
+    <p><button type="submit">Save retention</button></p>
+  </form>
+</section>
+
+<section class="panel">
   <h2>Default theme</h2>
   {{if .Data.ThemeError}}
   <div class="form-error">{{.Data.ThemeError}}</div>

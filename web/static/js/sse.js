@@ -148,10 +148,37 @@
     }
   }
 
+  // badgeTimer debounces the sidebar Alerts badge refetch, a separate timer
+  // from the page-refresh ones above for the same reason liveUpdateTimer is:
+  // one action must never cancel or starve another.
+  var badgeTimer = null;
+
+  // refreshAlertsBadge refetches the unread-alerts count into the sidebar
+  // badge (#alerts-badge, rendered by base.html and never re-rendered by a
+  // partial swap). alerts_changed carries no user, so every open browser
+  // asks for its own count; the server answers from the session. Unlike a
+  // page refetch it needs no topic marker - the sidebar is on every page.
+  function refreshAlertsBadge() {
+    if (badgeTimer !== null) {
+      return;
+    }
+    badgeTimer = window.setTimeout(function () {
+      badgeTimer = null;
+      if (!document.getElementById("alerts-badge")) {
+        return;
+      }
+      htmx.ajax("GET", "/alerts/badge", { target: "#alerts-badge", swap: "outerHTML" });
+    }, refreshDebounceMs);
+  }
+
   document.addEventListener("DOMContentLoaded", function () {
     var source = new EventSource("/events");
     source.addEventListener("open", function () {
       setConnectionStatus("live", "Live");
+      // Same gap-closing reasoning as the page refetch below: an alert raised
+      // between the page render and this connection opening produced an
+      // event nobody heard.
+      refreshAlertsBadge();
       // The page was rendered by the server some time before this
       // connection opened (a full load renders first, connects after), and
       // again after any reconnect. Whatever happened in that gap produced an
@@ -191,6 +218,13 @@
     source.addEventListener("instance_result", refreshIfRelevant("instance_result"));
     source.addEventListener("instance_health", refreshIfRelevant("instance_health"));
     source.addEventListener("node_status", refreshIfRelevant("node_status"));
+    // alerts_changed updates the sidebar badge on every page, and refetches
+    // the page too when it is the Alerts inbox (which declares the topic).
+    var refreshInbox = refreshIfRelevant("alerts_changed");
+    source.addEventListener("alerts_changed", function () {
+      refreshAlertsBadge();
+      refreshInbox();
+    });
     // A telemetry tick drives whichever pages have an in-place updater
     // (Metrics charts, Dashboard load strips) rather than a full-page
     // refetch - see PLANNING.md's Decisions Log for why those pages
