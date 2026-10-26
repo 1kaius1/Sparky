@@ -251,6 +251,23 @@ Container log archives above are kept.
 
 ---
 
+## Schedule settings
+
+Singleton settings row (migration `000044_create_schedule_settings`), editable on the
+Settings page (Admin only), seeded at migration time like the other settings rows. It
+holds the one time zone every schedule is read in. A schedule itself (weekdays and times
+of day, or every N days) is stored on whatever owns it - stale container monitoring's own
+settings row, later scheduled model loads - and is an opaque `jsonb` value validated in Go
+(`internal/schedule`), the same split as Model profiles' `engine_params`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `timezone` | text | An IANA zone name such as `America/New_York`; defaults to `UTC` on the seeded row. A schedule written as "02:00 on Mondays" means 02:00 in this zone, and emails show times in it. Validated against the zone database by `schedule.ParseTimezone`, not in SQL (the database only refuses a blank value): the empty string and `Local` are refused even though Go would accept them, so a schedule never depends on the host's own zone. The server embeds the zone database, so a host with no `/usr/share/zoneinfo` still works. A change applies to the next run; nothing already run is repeated. Audited as `updated_schedule_timezone` |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row, and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
+
+---
+
 ## Alerts
 
 The in-app alert inbox (migration `000041_create_alerts`; design in `PLANNING.md`'s

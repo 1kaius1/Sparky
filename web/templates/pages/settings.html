@@ -132,6 +132,45 @@
 </section>
 
 <section class="panel">
+  <h2>Schedule time zone</h2>
+  {{if .Data.ScheduleError}}
+  <div class="form-error">{{.Data.ScheduleError}}</div>
+  {{end}}
+  {{if .Data.ScheduleSuccess}}
+  <div class="form-success">Time zone updated.</div>
+  {{end}}
+  <p>Every schedule in Sparky is read in this one time zone, and times in emails will be shown in it. A change applies to the next scheduled run; nothing already run is repeated.</p>
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <td>Time zone</td>
+        <td>{{.Data.ScheduleTimezone}}</td>
+      </tr>
+      <tr>
+        <td>The time there now</td>
+        <td>{{if .Data.ScheduleLocalTime}}{{.Data.ScheduleLocalTime}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated by</td>
+        <td>{{if .Data.ScheduleUpdatedBy}}{{.Data.ScheduleUpdatedBy}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated at</td>
+        <td>{{.Data.ScheduleUpdatedAt}}</td>
+      </tr>
+    </tbody>
+  </table>
+  <form method="post" action="/settings/schedule">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="timezone">Time zone (an IANA name such as America/New_York, Europe/London or UTC)</label><br>
+      <input type="text" id="timezone" name="timezone" maxlength="64" value="{{.Data.ScheduleTimezone}}" required>
+    </p>
+    <p><button type="submit">Save time zone</button></p>
+  </form>
+</section>
+
+<section class="panel">
   <h2>Default theme</h2>
   {{if .Data.ThemeError}}
   <div class="form-error">{{.Data.ThemeError}}</div>

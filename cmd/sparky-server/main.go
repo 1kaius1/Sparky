@@ -13,6 +13,10 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	// Embeds the IANA zone database in the binary, so the Settings page's time
+	// zone works on a host or container image with no /usr/share/zoneinfo.
+	// Standard library, about 450 KB, no new module dependency.
+	_ "time/tzdata"
 
 	"github.com/joho/godotenv"
 
@@ -36,6 +40,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/nodes"
 	"github.com/1kaius1/Sparky/internal/profiles"
 	"github.com/1kaius1/Sparky/internal/rbac"
+	"github.com/1kaius1/Sparky/internal/schedule"
 	"github.com/1kaius1/Sparky/internal/settings"
 	"github.com/1kaius1/Sparky/internal/transfers"
 )
@@ -160,6 +165,9 @@ func main() {
 	if loginService != nil {
 		loginService.WithMembershipRefresher(groupService)
 	}
+	// scheduleService holds the one global time zone every schedule is read in
+	// (the Settings page sets it), and is the zone source for the scheduler.
+	scheduleService := schedule.NewService(db.NewScheduleSettingsRepository(pool), auditRecorder)
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, alertService, logger)
 	// containerLogService stores the container logs agents archive before
 	// removing a container (the container_log_chunk handling in onMessage
@@ -273,7 +281,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, groupService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, groupService, scheduleService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
