@@ -8,6 +8,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Alerts: an in-app inbox for things that need a person's attention. A new
+  **Alerts** entry at the top of the sidebar shows an unread count that
+  refreshes live, and opens an inbox with Unread / All / Resolved tabs, a list
+  with the open alert beside it, unread alerts in bold, and mark read, mark
+  unread and dismiss (each also for several selected alerts at once) and "mark
+  all read" actions. Marking an alert unread closes it, because an open unread
+  alert marks itself read. An alert is
+  addressed to users and tiers (a tier means that tier and above); each person
+  sees only the alerts addressed to them, and an alert they may not see is
+  simply not found. Read and dismissed state is per person; **dismiss** hides
+  an alert for you only, **resolve** closes it for everyone and is allowed to
+  an Admin or to the one person an alert is addressed to alone. A repeat of an
+  open condition updates one alert (a count) instead of adding another, and a
+  repeat at a higher severity makes it unread again. Opening an alert marks it
+  read through a CSRF-protected POST, never a GET. The first producer: when an
+  instance becomes dead, an alert goes to the person who started it and to
+  every Admin, and closes itself when the instance recovers or is unloaded.
+  Every person's action on an alert is audited (`read_alert`,
+  `marked_alert_unread`, `dismissed_alert`, `resolved_alert`,
+  `marked_all_alerts_read` as one entry with a count); listing alerts and the
+  unread count are views and are not. An alert raised by the system, and its
+  automatic close, are deliberately not audited (the alert is the record). The
+  Settings page gains an **Alerts** section where an Admin sets how long alerts
+  are kept (1 to 24 months, default 12, audited as `updated_alert_retention`);
+  a daily job, started a minute after the server starts, deletes older ones and
+  records each run that deleted something as `expired_alerts` by the system.
+  New migration `000041_create_alerts`; SCHEMA.md, ARCHITECTURE.md and
+  CLAUDE.md updated. The break-glass SuperAdmin is not a user, so it sees
+  Admin-tier alerts but has no read state: its unread count is always 0 and
+  read, unread and dismiss do nothing. Server only: no agent or protocol
+  change. Run the migration with the server (`migrate -path migrations/
+  -database "$DATABASE_URL" up`). `VERSION` bumped to `0.2.14`. This is PR 1 of
+  the series recorded in PLANNING.md (2026-10-26); email delivery, application
+  groups as an audience, and stale container monitoring come later.
 - Live container logs and log retention: a **Logs** link on the Profiles page
   (for an active instance) and on the Dashboard's running instances (Developer
   and above) opens that instance's current output, read from its node on
@@ -196,7 +230,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   looked up the line is simply left out. It is read when a full page loads, as
   the sidebar is never re-rendered by a section change, so a display name
   changed on the Account page shows after the next full reload. Server only;
-  no schema or API change, and no `VERSION` change here (see the pull request).
+  no schema or API change.
+- Packaging: `VERSION` bumped to `0.2.15` so builds carrying the signed-in line
+  register as newer than the `0.2.14` packages. Both packages move together
+  because they share one `VERSION`.
 - Packaging: `VERSION` bumped to `0.2.13` so builds carrying the live log view
   and log retention register as newer than the `0.2.12` packages. Both
   packages move together because they share one `VERSION`.

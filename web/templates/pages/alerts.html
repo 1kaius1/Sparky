@@ -1,0 +1,89 @@
+{{define "content"}}
+<div data-sse-topics="alerts_changed" hidden></div>
+<h1>Alerts</h1>
+
+<p>Things that need someone's attention. Opening an alert marks it read. Dismiss hides one for you only; resolve closes it for everyone.</p>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+
+<ul class="alert-tabs">
+  {{range .Data.Tabs}}
+  <li>
+    <a href="/alerts?view={{.View}}" hx-get="/alerts?view={{.View}}" hx-target="#main-content" hx-push-url="true"
+       class="{{if .Active}}active{{end}}">{{.Label}}</a>
+  </li>
+  {{end}}
+</ul>
+
+<div class="alerts-layout">
+  <section class="alerts-list">
+    {{if .Data.Rows}}
+    <form id="alerts-bulk" hx-post="/alerts/bulk" hx-swap="none">
+      <input type="hidden" name="view" value="{{.Data.View}}">
+      <div class="alerts-toolbar">
+        <button type="submit" name="action" value="read">Mark selected read</button>
+        <button type="submit" name="action" value="unread">Mark selected unread</button>        <button type="submit" name="action" value="dismiss">Dismiss selected</button>
+        {{if .Data.CanMarkAllRead}}
+        <button type="button" hx-post="/alerts/mark-all-read" hx-vals='{"view": "{{.Data.View}}"}' hx-swap="none">Mark all read</button>
+        {{end}}
+      </div>
+      <ul class="alert-rows">
+        {{range .Data.Rows}}
+        <li class="alert-row{{if not .Read}} unread{{end}}{{if .Selected}} selected{{end}}">
+          <input type="checkbox" name="ids" value="{{.ID}}" aria-label="Select alert: {{.Title}}">
+          {{/* hx-swap is inherited by child elements, so without its own hx-swap this link would pick up the form's "none" and fetch the alert but never show it. */}}
+          <a class="alert-row-link" href="/alerts?view={{$.Data.View}}&amp;selected={{.ID}}"
+             hx-get="/alerts?view={{$.Data.View}}&amp;selected={{.ID}}" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="true">
+            <span class="status {{.SeverityClass}}">{{.SeverityLabel}}</span>
+            <span class="alert-title">{{.Title}}</span>
+            {{if gt .Occurrences 1}}<span class="alert-count">x{{.Occurrences}}</span>{{end}}
+            {{if .Resolved}}<span class="status status-online">Resolved</span>{{end}}
+            <span class="alert-when">{{.When}}</span>
+          </a>
+        </li>
+        {{end}}
+      </ul>
+    </form>
+    {{else}}
+    <p class="empty">{{if eq .Data.View "unread"}}Nothing unread.{{else if eq .Data.View "resolved"}}No resolved alerts.{{else}}No alerts.{{end}}</p>
+    {{end}}
+  </section>
+
+  <section class="alerts-detail">
+    {{with .Data.Detail}}
+    {{if not .Read}}
+    <div hidden hx-post="/alerts/{{.ID}}/read" hx-trigger="load" hx-swap="none"></div>
+    {{end}}
+    <h2>{{.Title}}</h2>
+    <p>
+      <span class="status {{.SeverityClass}}">{{.SeverityLabel}}</span>
+      {{if .Resolved}}<span class="status status-online">Resolved</span>{{end}}
+    </p>
+    <p class="alert-body">{{.Body}}</p>
+    <table class="data-table">
+      <tbody>
+        <tr><td>First raised</td><td>{{.FirstRaised}}</td></tr>
+        <tr><td>Last raised</td><td>{{.LastRaised}}{{if gt .Occurrences 1}} ({{.Occurrences}} times){{end}}</td></tr>
+      </tbody>
+    </table>
+    {{if .ResolvedNote}}<p>{{.ResolvedNote}}</p>{{end}}
+    {{if .ObjectURL}}
+    <p><a href="{{.ObjectURL}}" hx-get="{{.ObjectURL}}" hx-target="#main-content" hx-push-url="true">{{.ObjectLabel}}</a></p>
+    {{end}}
+    <div class="alert-actions">
+      {{if .Read}}
+      <button type="button" hx-post="/alerts/{{.ID}}/unread" hx-vals='{"view": "{{$.Data.View}}"}' hx-swap="none">Mark unread</button>
+      {{end}}
+      <button type="button" hx-post="/alerts/{{.ID}}/dismiss" hx-vals='{"view": "{{$.Data.View}}"}' hx-swap="none">Dismiss</button>
+      {{if .CanResolve}}
+      <button type="button" hx-post="/alerts/{{.ID}}/resolve" hx-vals='{"view": "{{$.Data.View}}"}' hx-swap="none">Resolve for everyone</button>
+      {{end}}
+    </div>
+    {{else}}
+    <p class="empty">Select an alert to read it.</p>
+    {{end}}
+  </section>
+</div>
+{{end}}

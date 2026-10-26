@@ -240,7 +240,7 @@ func testProfile() *db.Profile {
 }
 
 func newTestService(profile *db.Profile, instances *fakeInstanceStore, adapters *fakeAdapterRegistry, dispatch *fakeDispatcher, audit *fakeAuditRecorder) *Service {
-	return NewService(&fakeProfileLookup{profile: profile}, instances, adapters, dispatch, audit, testLogger())
+	return NewService(&fakeProfileLookup{profile: profile}, instances, adapters, dispatch, audit, &fakeAlertRaiser{}, testLogger())
 }
 
 func TestService_LoadInstance_PermittedByDeveloper(t *testing.T) {
@@ -494,7 +494,7 @@ func TestService_LoadInstance_InvalidParams(t *testing.T) {
 
 func TestService_LoadInstance_ProfileNotFound(t *testing.T) {
 	profiles := &fakeProfileLookup{err: db.ErrProfileNotFound}
-	svc := NewService(profiles, &fakeInstanceStore{}, &fakeAdapterRegistry{adapter: fakeAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(profiles, &fakeInstanceStore{}, &fakeAdapterRegistry{adapter: fakeAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "missing"})
@@ -642,7 +642,7 @@ func TestService_UnloadInstance_Success(t *testing.T) {
 	instances := &fakeInstanceStore{findByIDResult: runningInstance()}
 	dispatch := &fakeDispatcher{connected: true}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
 
 	got, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
@@ -686,7 +686,7 @@ func TestService_UnloadInstance_DispatchFails(t *testing.T) {
 	instances := &fakeInstanceStore{findByIDResult: runningInstance()}
 	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
 
 	_, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
@@ -723,7 +723,7 @@ func TestService_UnloadInstance_DispatchFails_SetStatusAlsoFails(t *testing.T) {
 	}
 	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
 	audit := &fakeAuditRecorder{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, audit, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
 
 	_, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
@@ -737,7 +737,7 @@ func TestService_UnloadInstance_DispatchFails_SetStatusAlsoFails(t *testing.T) {
 
 func TestService_UnloadInstance_NotPermitted(t *testing.T) {
 	instances := &fakeInstanceStore{findByIDResult: runningInstance()}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{Tier: db.TierReadOnly, UserID: "user-1"}
 
 	_, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
@@ -751,7 +751,7 @@ func TestService_UnloadInstance_NotPermitted(t *testing.T) {
 
 func TestService_UnloadInstance_NotFound(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.UnloadInstance(context.Background(), actor, "missing")
@@ -765,7 +765,7 @@ func TestService_UnloadInstance_NotRunning(t *testing.T) {
 	inst.Status = db.RunningInstanceStatusStopped
 	instances := &fakeInstanceStore{findByIDResult: inst}
 	dispatch := &fakeDispatcher{connected: true}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
@@ -780,7 +780,7 @@ func TestService_UnloadInstance_NotRunning(t *testing.T) {
 func TestService_UnloadInstance_TargetNodeOffline(t *testing.T) {
 	instances := &fakeInstanceStore{findByIDResult: runningInstance()}
 	dispatch := &fakeDispatcher{connected: false}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 	actor := rbac.Actor{IsSuperAdmin: true}
 
 	_, err := svc.UnloadInstance(context.Background(), actor, "instance-1")
@@ -803,7 +803,7 @@ func newInstanceResultEnvelope(t *testing.T, result agentproto.InstanceResult) a
 
 func TestService_HandleInstanceResult_Running_SetsActualPort(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := newInstanceResultEnvelope(t, agentproto.InstanceResult{InstanceID: "instance-1", Status: agentproto.InstanceStatusRunning, ActualPort: 8000})
 	svc.HandleInstanceResult("node-1", env)
@@ -822,7 +822,7 @@ func TestService_HandleInstanceResult_Running_SetsActualPort(t *testing.T) {
 
 func TestService_HandleInstanceResult_Failed_SetsErrorMessage(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := newInstanceResultEnvelope(t, agentproto.InstanceResult{InstanceID: "instance-1", Status: agentproto.InstanceStatusFailed, ErrorMessage: "image pull failed"})
 	svc.HandleInstanceResult("node-1", env)
@@ -844,7 +844,7 @@ func TestService_HandleInstanceResult_Failed_SetsErrorMessage(t *testing.T) {
 
 func TestService_HandleInstanceResult_Stopped(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := newInstanceResultEnvelope(t, agentproto.InstanceResult{InstanceID: "instance-1", Status: agentproto.InstanceStatusStopped})
 	svc.HandleInstanceResult("node-1", env)
@@ -856,7 +856,7 @@ func TestService_HandleInstanceResult_Stopped(t *testing.T) {
 
 func TestService_HandleInstanceResult_IgnoresOtherMessageTypes(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env, err := agentproto.NewEnvelope(agentproto.TypeHeartbeat, "", agentproto.Heartbeat{})
 	if err != nil {
@@ -871,7 +871,7 @@ func TestService_HandleInstanceResult_IgnoresOtherMessageTypes(t *testing.T) {
 
 func TestService_HandleInstanceResult_MalformedPayload_Ignored(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := agentproto.Envelope{Type: agentproto.TypeInstanceResult, Payload: []byte(`{"instance_id": 123}`)}
 	svc.HandleInstanceResult("node-1", env)
@@ -883,7 +883,7 @@ func TestService_HandleInstanceResult_MalformedPayload_Ignored(t *testing.T) {
 
 func TestService_HandleInstanceResult_UnknownStatus_Ignored(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := newInstanceResultEnvelope(t, agentproto.InstanceResult{InstanceID: "instance-1", Status: "unknown_status"})
 	svc.HandleInstanceResult("node-1", env)
@@ -904,7 +904,7 @@ func newInstanceHealthEnvelope(t *testing.T, health agentproto.InstanceHealth) a
 
 func TestService_HandleInstanceHealth_Healthy_WithDetail(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	checkedAt := time.Now().Truncate(time.Second)
 	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{
@@ -935,7 +935,7 @@ func TestService_HandleInstanceHealth_Healthy_WithDetail(t *testing.T) {
 
 func TestService_HandleInstanceHealth_Unhealthy_NoDetail(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{InstanceID: "instance-1", Status: agentproto.InstanceHealthStatusUnhealthy, CheckedAt: time.Now()})
 	svc.HandleInstanceHealth("node-1", env)
@@ -954,7 +954,7 @@ func TestService_HandleInstanceHealth_Unhealthy_NoDetail(t *testing.T) {
 
 func TestService_HandleInstanceHealth_Dead_RecordsDeadAndLeavesLifecycleStatusAlone(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{InstanceID: "instance-1", Status: agentproto.InstanceHealthStatusDead, CheckedAt: time.Now()})
 	svc.HandleInstanceHealth("node-1", env)
@@ -974,7 +974,7 @@ func TestService_HandleInstanceHealth_Dead_RecordsDeadAndLeavesLifecycleStatusAl
 
 func TestService_HandleInstanceHealth_IgnoresOtherMessageTypes(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env, err := agentproto.NewEnvelope(agentproto.TypeHeartbeat, "", agentproto.Heartbeat{})
 	if err != nil {
@@ -989,7 +989,7 @@ func TestService_HandleInstanceHealth_IgnoresOtherMessageTypes(t *testing.T) {
 
 func TestService_HandleInstanceHealth_MalformedPayload_Ignored(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := agentproto.Envelope{Type: agentproto.TypeInstanceHealth, Payload: []byte(`{"instance_id": 123}`)}
 	svc.HandleInstanceHealth("node-1", env)
@@ -1001,7 +1001,7 @@ func TestService_HandleInstanceHealth_MalformedPayload_Ignored(t *testing.T) {
 
 func TestService_HandleInstanceHealth_UnknownStatus_Ignored(t *testing.T) {
 	instances := &fakeInstanceStore{}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	env := newInstanceHealthEnvelope(t, agentproto.InstanceHealth{InstanceID: "instance-1", Status: "unknown_status"})
 	svc.HandleInstanceHealth("node-1", env)
@@ -1017,7 +1017,7 @@ func TestService_ReconcileNode_DispatchesCheckInstancePerRunningRow(t *testing.T
 		{ID: "instance-2", Status: db.RunningInstanceStatusRunning},
 	}}
 	dispatch := &fakeDispatcher{connected: true}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	svc.ReconcileNode(context.Background(), "node-1")
 
@@ -1068,7 +1068,7 @@ func TestService_ReconcileNode_CarriesPortAndEngineType(t *testing.T) {
 	}}
 	dispatch := &fakeDispatcher{connected: true}
 	profiles := &fakeProfileLookup{profile: &db.Profile{ID: "profile-1", EngineType: db.ProfileEngineVLLM}}
-	svc := NewService(profiles, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(profiles, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	svc.ReconcileNode(context.Background(), "node-1")
 
@@ -1086,7 +1086,7 @@ func TestService_ReconcileNode_ProfileLookupFails_StillChecksLiveness(t *testing
 		{ID: "instance-1", ProfileID: "profile-1", Status: db.RunningInstanceStatusRunning, ActualPort: &port},
 	}}
 	dispatch := &fakeDispatcher{connected: true}
-	svc := NewService(&fakeProfileLookup{err: errors.New("db down")}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{err: errors.New("db down")}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	svc.ReconcileNode(context.Background(), "node-1")
 
@@ -1105,7 +1105,7 @@ func TestService_ReconcileNode_NoRecordedPort_SendsNone(t *testing.T) {
 	}}
 	dispatch := &fakeDispatcher{connected: true}
 	profiles := &fakeProfileLookup{profile: &db.Profile{EngineType: db.ProfileEngineLlamaCPP}}
-	svc := NewService(profiles, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(profiles, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	svc.ReconcileNode(context.Background(), "node-1")
 
@@ -1117,7 +1117,7 @@ func TestService_ReconcileNode_NoRecordedPort_SendsNone(t *testing.T) {
 func TestService_ReconcileNode_NoneRunning_NoDispatch(t *testing.T) {
 	instances := &fakeInstanceStore{runningByNodeResult: nil}
 	dispatch := &fakeDispatcher{connected: true}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	svc.ReconcileNode(context.Background(), "node-1")
 
@@ -1129,7 +1129,7 @@ func TestService_ReconcileNode_NoneRunning_NoDispatch(t *testing.T) {
 func TestService_ReconcileNode_ListError_NoDispatch(t *testing.T) {
 	instances := &fakeInstanceStore{runningByNodeErr: errors.New("database unreachable")}
 	dispatch := &fakeDispatcher{connected: true}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	svc.ReconcileNode(context.Background(), "node-1")
 
@@ -1144,7 +1144,7 @@ func TestService_ReconcileNode_DispatchFailure_ContinuesToNextInstance(t *testin
 		{ID: "instance-2", Status: db.RunningInstanceStatusRunning},
 	}}
 	dispatch := &fakeDispatcher{connected: true, sendErr: errors.New("connection reset")}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, dispatch, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	// Must not panic or stop early despite every Send failing.
 	svc.ReconcileNode(context.Background(), "node-1")
@@ -1162,7 +1162,7 @@ func contains(ss []string, s string) bool {
 func TestService_ListInstances(t *testing.T) {
 	want := []*db.RunningInstance{{ID: "instance-1"}, {ID: "instance-2"}}
 	instances := &fakeInstanceStore{listResult: want}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	got, err := svc.ListInstances(context.Background())
 	if err != nil {
@@ -1175,7 +1175,7 @@ func TestService_ListInstances(t *testing.T) {
 
 func TestService_ListInstances_StoreError(t *testing.T) {
 	instances := &fakeInstanceStore{listErr: errors.New("database unreachable")}
-	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, testLogger())
+	svc := NewService(&fakeProfileLookup{}, instances, &fakeAdapterRegistry{}, &fakeDispatcher{}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, testLogger())
 
 	if _, err := svc.ListInstances(context.Background()); err == nil {
 		t.Fatal("ListInstances() succeeded despite a store failure")
@@ -1294,7 +1294,7 @@ func TestService_LoadInstance_LogsWhenServedModelNameParamIsIgnored(t *testing.T
 	profile := testProfile()
 	profile.Name = "my-profile"
 	profile.EngineParams = json.RawMessage(`{"max_model_len":4096,"served_model_name":"old-name"}`)
-	svc := NewService(&fakeProfileLookup{profile: profile}, &fakeInstanceStore{nextID: "instance-1"}, &fakeAdapterRegistry{adapter: &recordingAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, log.New(&buf, "", 0))
+	svc := NewService(&fakeProfileLookup{profile: profile}, &fakeInstanceStore{nextID: "instance-1"}, &fakeAdapterRegistry{adapter: &recordingAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, log.New(&buf, "", 0))
 
 	if _, err := svc.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"}); err != nil {
 		t.Fatalf("LoadInstance() error: %v", err)
@@ -1306,7 +1306,7 @@ func TestService_LoadInstance_LogsWhenServedModelNameParamIsIgnored(t *testing.T
 	// And no noise when the key is absent.
 	buf.Reset()
 	profile.EngineParams = json.RawMessage(`{"max_model_len":4096}`)
-	svc2 := NewService(&fakeProfileLookup{profile: profile}, &fakeInstanceStore{nextID: "instance-2"}, &fakeAdapterRegistry{adapter: &recordingAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, log.New(&buf, "", 0))
+	svc2 := NewService(&fakeProfileLookup{profile: profile}, &fakeInstanceStore{nextID: "instance-2"}, &fakeAdapterRegistry{adapter: &recordingAdapter{}}, &fakeDispatcher{connected: true}, &fakeAuditRecorder{}, &fakeAlertRaiser{}, log.New(&buf, "", 0))
 	if _, err := svc2.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"}); err != nil {
 		t.Fatal(err)
 	}

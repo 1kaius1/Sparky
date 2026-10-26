@@ -133,6 +133,26 @@ a {
   background: var(--color-sidebar-active-bg);
 }
 
+/* Unread-alerts count beside the Alerts link. It is always in the markup (so
+   the live refresh can swap it by id) and hidden when there is nothing unread;
+   the failed-status colour is the locked status palette, never customized. */
+.nav-badge {
+  display: inline-block;
+  min-width: 18px;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: var(--color-status-failed);
+  color: #ffffff;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+}
+
+.nav-badge[hidden] {
+  display: none;
+}
+
 .sidebar-group summary {
   padding: 10px 20px;
   color: var(--color-sidebar-text);
@@ -268,6 +288,121 @@ table.data-table:not(.panel .data-table) {
 .log-link {
   margin-left: 0.4rem;
   font-size: 0.8rem;
+}
+
+/* Alerts inbox: filter tabs, a list beside the open alert (stacked on a
+   narrow screen), unread rows in bold like a mail client. */
+.alert-tabs {
+  display: flex;
+  gap: 4px;
+  list-style: none;
+  margin: 0 0 16px;
+  padding: 0;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.alert-tabs a {
+  display: block;
+  padding: 8px 16px;
+  border-bottom: 2px solid transparent;
+  text-decoration: none;
+  color: var(--color-text-muted);
+}
+
+.alert-tabs a.active {
+  color: var(--color-text);
+  border-bottom-color: var(--color-primary);
+}
+
+.alerts-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 24px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .alerts-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+.alerts-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.alert-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-surface);
+}
+
+.alert-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.alert-row:last-child {
+  border-bottom: none;
+}
+
+.alert-row.unread .alert-title {
+  font-weight: 700;
+}
+
+.alert-row.selected {
+  background: var(--color-sidebar-active-bg);
+}
+
+.alert-row-link {
+  display: flex;
+  flex: 1;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  text-decoration: none;
+  color: var(--color-text);
+}
+
+.alert-title {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.alert-count,
+.alert-when {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.alerts-detail {
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+}
+
+.alert-body {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.alert-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 16px;
 }
 
 /* Container log viewer: the log text, wide lines scroll sideways instead of

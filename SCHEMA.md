@@ -251,6 +251,90 @@ Container log archives above are kept.
 
 ---
 
+## Alerts
+
+The in-app alert inbox (migration `000041_create_alerts`; design in `PLANNING.md`'s
+2026-10-26 Decisions Log entries). An alert is a durable, addressable notice that
+something needs a person's attention. Producers inside the server raise one with
+`internal/alerts.Service.Raise` and close it with `ResolveCondition` when the
+condition clears; people read, dismiss and resolve alerts on the Alerts page. Three
+tables below, plus Alert settings.
+
+### Alerts
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `kind` | text | A lowercase slug naming what sort of alert this is (`instance_dead` today). Not an enum, so a new producer needs no migration |
+| `severity` | enum | `info` / `warning` / `critical`, declared in ascending order so comparisons follow it |
+| `title` / `body` | text | Up to 200 and 2000 characters, enforced by the service. Plain text, HTML-escaped when shown |
+| `object_type` / `object_id` | text, nullable | The thing the alert is about (e.g. `running_instance` and its id), so the inbox can link to it. Not a foreign key: the object may be deleted before the alert expires |
+| `dedupe_key` | text, nullable | Makes a recurring condition one alert. A partial unique index allows at most one *unresolved* alert per key, so a repeat updates that row (one more `occurrences`, the latest title and body, any new audiences added) instead of adding another; a repeat after the alert was resolved is a new row. A repeat at a higher severity also makes the alert unread again for everyone. `NULL` is never deduplicated |
+| `first_raised_at` / `last_raised_at` | timestamptz | `last_raised_at` is what retention expires on |
+| `occurrences` | integer | Starts at 1; positive |
+| `resolved_at` | timestamptz, nullable | Set when the alert is closed for everyone |
+| `resolution` | enum, nullable | `cleared` (the condition that raised it went away) or `user` (a person closed it). Set exactly when `resolved_at` is (a CHECK constraint) |
+| `resolved_by` | uuid, nullable, FK -> Users.id | The person who resolved it. Null for `cleared`, and when the break-glass SuperAdmin resolved it - same reasoning as Nodes' `registered_by` |
+
+### Alert audiences
+
+Who an alert is addressed to. An alert has one or more rows; a viewer sees it when any
+row matches them. Rows are removed with their alert.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `alert_id` | uuid, FK -> Alerts.id, `ON DELETE CASCADE` | |
+| `audience_type` | enum | `user` / `tier`. An application-group type is added when application groups are built (`PLANNING.md`, 2026-10-26) |
+| `user_id` | uuid, nullable, FK -> Users.id | Set for `user` rows only |
+| `min_tier` | `user_tier`, nullable | Set for `tier` rows only; means this tier and above, matching "Developer and above" everywhere else (`user_tier` is declared in ascending order, so `<=` works in SQL). A CHECK constraint refuses a row whose shape does not match its type |
+
+The break-glass SuperAdmin is not a Users row: it matches tier audiences as Admin and
+no user audience.
+
+### Alert user state
+
+Per-user read and dismissed state, created lazily on the first read or dismiss; a
+missing row means unread and not dismissed. Dismissing hides an alert for that user
+only, in every view; resolving (on Alerts) closes it for everyone.
+
+| Field | Type | Notes |
+|---|---|---|
+| `alert_id` | uuid, FK -> Alerts.id, `ON DELETE CASCADE` | Part of the composite primary key |
+| `user_id` | uuid, FK -> Users.id, `ON DELETE CASCADE` | Part of the composite primary key |
+| `read_at` | timestamptz, nullable | Null means unread |
+| `dismissed_at` | timestamptz, nullable | |
+
+The break-glass SuperAdmin has no row here: it has no read state, so its unread count
+is always 0 and its read, unread and dismiss actions are quiet no-ops.
+
+The sidebar badge counts alerts that are open (unresolved) and unread for the viewer.
+The inbox's Unread tab is the same set; All is every alert not dismissed, open or
+resolved; Resolved is the resolved ones.
+
+### Alert settings
+
+Singleton settings row, editable on the Settings page (Admin only), same
+seeded-at-migration-time reasoning as Container log settings above.
+
+| Field | Type | Notes |
+|---|---|---|
+| `retention_months` | integer | 1 to 24 (enforced by a CHECK constraint), mirroring the audit log's range. Defaults to 12 on the seeded row. A job in `internal/alerts` runs a minute after the server starts and then daily, deleting alerts whose `last_raised_at` is older than this many months (audiences and per-user state go with them); a run that deletes anything is recorded in the audit log as `expired_alerts` by the system (see Audit log) |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row, and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
+
+Audited user actions on alerts (object type `alert`, object id the alert's id unless
+noted): `read_alert` (only the unread-to-read transition), `marked_alert_unread`,
+`dismissed_alert`, `resolved_alert`, `marked_all_alerts_read` (one entry carrying a
+`count`, object id the all-zero uuid), `updated_alert_retention` (object type
+`alert_settings`). Listing alerts and the unread badge are reads and not audited. A
+system-raised alert and its automatic resolve are not audited either: the alert row is
+the record, and the event that caused it is usually audited already - an explicit,
+maintainer-approved exception to "every state change is audited" (`PLANNING.md`,
+2026-10-26).
+
+---
+
 ## Running instance nodes
 
 The *actual* node topology for a specific running instance - may be a subset of
@@ -398,7 +482,7 @@ see `ARCHITECTURE.md` Audit Log section for the full policy.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | uuid, PK | |
-| `actor_id` | uuid, nullable, FK -> Users.id | Null actor with an `is_superadmin` flag set represents the break-glass account. Null actor with the flag unset represents the system itself - a scheduled job with no person behind it (today only the container log expiry, `expired_container_logs`) |
+| `actor_id` | uuid, nullable, FK -> Users.id | Null actor with an `is_superadmin` flag set represents the break-glass account. Null actor with the flag unset represents the system itself - a scheduled job with no person behind it (today the container log expiry, `expired_container_logs`, and the alert expiry, `expired_alerts`) |
 | `is_superadmin_action` | boolean | |
 | `action` | text | Past-tense verb, e.g. `loaded_model`, `elevated_user`, `deleted_model_copy` |
 | `object_type` / `object_id` | text, uuid | What was affected |
