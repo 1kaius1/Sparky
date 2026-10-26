@@ -56,6 +56,12 @@ type settingsPageData struct {
 	ContainerLogUpdatedAt       string
 	ContainerLogError           string
 	ContainerLogSuccess         bool
+
+	AlertRetentionMonths int
+	AlertUpdatedBy       string
+	AlertUpdatedAt       string
+	AlertError           string
+	AlertSuccess         bool
 }
 
 // resolveUserName resolves userID to a display name via FindByID,
@@ -152,6 +158,16 @@ func (a *API) renderSettingsPage(w http.ResponseWriter, r *http.Request, actor r
 	data.ContainerLogRetentionMonths = logSettings.RetentionMonths
 	data.ContainerLogUpdatedBy = a.resolveUserName(ctx, logSettings.UpdatedBy)
 	data.ContainerLogUpdatedAt = logSettings.UpdatedAt.Format("2006-01-02 15:04:05 MST")
+
+	alertSettings, err := a.alerts.Settings(ctx, actor)
+	if err != nil {
+		a.logger.Printf("httpapi: get alert settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data.AlertRetentionMonths = alertSettings.RetentionMonths
+	data.AlertUpdatedBy = a.resolveUserName(ctx, alertSettings.UpdatedBy)
+	data.AlertUpdatedAt = alertSettings.UpdatedAt.Format("2006-01-02 15:04:05 MST")
 
 	a.render(w, r, "settings", "Settings", data)
 }

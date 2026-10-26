@@ -150,6 +150,19 @@ Cross-cutting, not a service other components call directly. Wraps every
 state-changing handler and writes to Audit log (`SCHEMA.md`) - including SuperAdmin
 actions, which bypass the RBAC check but never bypass the audit write.
 
+#### Alerts
+`internal/alerts`: the in-app inbox for things that need a person's attention - see
+`SCHEMA.md` Alerts. Producers inside the server call `Raise` when a condition appears
+(today only `lifecycle` does: an instance that goes Dead) and `ResolveCondition` when
+it clears; a repeat of an open condition updates one alert rather than adding another
+(its dedupe key). Each alert is addressed to users and tiers; read and dismissed state
+is per user, resolving closes it for everyone. The package owns who may see and act on
+what - an alert not addressed to a viewer is simply not found - and the audit of
+those actions, so the HTTP handlers stay thin. `internal/events` carries only a signal
+with no history, so it cannot hold alerts; the service publishes `alerts_changed` on it
+and each open browser refetches its own unread count for the sidebar badge (events name
+no user). A daily job expires old alerts per the Settings page's retention.
+
 #### Node & Fabric Registry
 CRUD for Nodes and Fabric groups. Fabric group membership is an explicit, manually
 declared Admin action (the app cannot sense physical cabling) - see `SCHEMA.md`
@@ -709,6 +722,16 @@ exact column layout.
 Not recorded: read/view actions (dashboard polling, listing resources). This was a
 deliberate scope decision - logging every dashboard refresh would drown out
 meaningful signal for no real accountability benefit.
+
+Alerts follow the same line, with the maintainer's decisions of 2026-10-26: listing
+the inbox and the sidebar unread count are views and not recorded - like seeing a
+mail's subject line without opening it. Opening an alert marks it read, which is a
+state change and is recorded (`read_alert`, only on the unread-to-read transition),
+as are marking it unread, dismissing it, resolving it and "mark all read" (one entry
+with a count). Two exceptions are deliberate: an alert raised by the system, and its
+automatic resolve when the condition clears, are not recorded (the alert row is the
+record, and the triggering event is usually audited already). And, once the auditor
+access work lands, opening or exporting the Audit log page will itself be recorded.
 
 Retention: configurable, up to 24 months of local storage in Postgres (see
 `SCHEMA.md` Audit settings).

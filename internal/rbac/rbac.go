@@ -239,3 +239,16 @@ func CanLaunchInstances(actor Actor) bool {
 		return false
 	}
 }
+
+// CanResolveAnyAlert reports whether actor may close an alert for everyone
+// who can see it, whatever its audience - see SCHEMA.md Alerts. Admin and
+// SuperAdmin only. A person an alert is addressed to alone may also resolve
+// it; that case depends on the alert's audience, so internal/alerts decides
+// it, not this pure tier check. Dismissing (hiding an alert for oneself) has
+// no floor at all.
+func CanResolveAnyAlert(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}

@@ -29,6 +29,10 @@
       <div class="sidebar-brand">Sparky</div>
       <ul class="sidebar-nav">
         <li>
+          <a href="/alerts" hx-get="/alerts" hx-target="#main-content" hx-push-url="true"
+             class="{{if eq .ActiveSection "alerts"}}active{{end}}">Alerts <span id="alerts-badge" class="nav-badge"{{if not .UnreadAlerts}} hidden{{end}} aria-label="Unread alerts: {{.UnreadAlerts}}">{{.UnreadAlerts}}</span></a>
+        </li>
+        <li>
           <a href="/dashboard" hx-get="/dashboard" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "dashboard"}}active{{end}}">Dashboard</a>
         </li>

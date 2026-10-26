@@ -177,6 +177,7 @@ sparky/
   - lifecycle/            # Load/unload orchestration, Green/Blue/Red eligibility, reduced-capacity flow
   - inventory/            # Node model inventory read/delete - cross-node grouping for the Inventory page
   - containerlogs/        # Container logs agents archive before removing a container: chunk reassembly, storage, Developer-floor viewing
+  - alerts/               # In-app alert inbox: raise/resolve for server-side producers, per-user read/dismiss, audience scoping, retention
   - transfers/            # Download + peer-to-peer rsync replication orchestration, cancellation
   - modelsource/           # Download size estimation (Hugging Face)
   - metrics/              # Telemetry ingestion, retention/downsample, NFS/S3 export
@@ -652,7 +653,10 @@ web/static/
   (e.g. Models, Engines below) - zero JS, no framework, defaults to `open`
   unconditionally rather than being computed from the active section. See
   `ARCHITECTURE.md` Component Breakdown
-- Sidebar sections and their minimum visible tier (fill in as built): Dashboard
+- Sidebar sections and their minimum visible tier (fill in as built): Alerts
+  (Read-only - the first entry, with an unread badge; each viewer sees only the
+  alerts addressed to them, scoped inside `internal/alerts`, and Admin sets the
+  retention on Settings), Dashboard
   (Read-only), Nodes (Read-only view / Admin edit, plus PowerDev may edit the
   free-text comment field only - `rbac.CanEditNodeComment`), Models group - Inventory
   (Read-only view / Admin+grant initiate, cancel, and delete - see SCHEMA.md
