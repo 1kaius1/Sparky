@@ -42,6 +42,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   -database "$DATABASE_URL" up`). `VERSION` bumped to `0.2.14`. This is PR 1 of
   the series recorded in PLANNING.md (2026-10-26); email delivery, application
   groups as an audience, and stale container monitoring come later.
+- Application groups: a new **Groups** page (PowerDev and above) where you name
+  a group of people and map it to one or more AD groups, for example
+  "Data Analytics" = Team-Alpha plus Team-Bravo. You search the directory by
+  name (at least 3 characters, at most 25 shown, nothing is listed unprompted),
+  and the group you pick is confirmed to exist in AD before it is saved. A
+  person is a member when they belong to any mapped AD group, nested groups
+  included, and the group page shows which one they came in through. When an
+  AD group is mapped, the people who have already signed in to Sparky are added
+  at once; everyone else is added the next time they sign in. Membership is
+  refreshed at sign-in and at the hourly session recheck, so it can lag a
+  change in AD by up to an hour; a directory that cannot be reached never
+  blocks a sign-in. Local-only accounts have no AD groups, so an Admin adds
+  them to a group by hand (PowerDev cannot; an AD account cannot be added by
+  hand). Deleting a group asks for confirmation and removes it from any alert
+  audience that named it. An alert can now be addressed to an application
+  group; nothing in the application does that yet, so this is groundwork for
+  later steps. Every change is audited (`created_app_group`,
+  `renamed_app_group`, `deleted_app_group`, `mapped_ad_group`,
+  `unmapped_ad_group`, `added_group_member`, `removed_group_member`);
+  searching and viewing are not. New migrations `000042_add_alert_audience_group_type`
+  and `000043_create_app_groups`; run them with the server (`migrate -path
+  migrations/ -database "$DATABASE_URL" up`). SCHEMA.md, ARCHITECTURE.md,
+  CLAUDE.md and PLANNING.md updated; `VERSION` bumped to `0.2.16`. Server only:
+  no agent or protocol change. This is PR 2 of the series recorded in
+  PLANNING.md (2026-10-26). Tested against a stand-in LDAP server, not a real
+  Active Directory - please try mapping and sign-in on your own directory.
 - Live container logs and log retention: a **Logs** link on the Profiles page
   (for an active instance) and on the Dashboard's running instances (Developer
   and above) opens that instance's current output, read from its node on

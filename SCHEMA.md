@@ -285,9 +285,10 @@ row matches them. Rows are removed with their alert.
 |---|---|---|
 | `id` | uuid, PK | |
 | `alert_id` | uuid, FK -> Alerts.id, `ON DELETE CASCADE` | |
-| `audience_type` | enum | `user` / `tier`. An application-group type is added when application groups are built (`PLANNING.md`, 2026-10-26) |
+| `audience_type` | enum | `user` / `tier` / `group` (the `group` value was added by migration `000042`; see Application groups below) |
 | `user_id` | uuid, nullable, FK -> Users.id | Set for `user` rows only |
-| `min_tier` | `user_tier`, nullable | Set for `tier` rows only; means this tier and above, matching "Developer and above" everywhere else (`user_tier` is declared in ascending order, so `<=` works in SQL). A CHECK constraint refuses a row whose shape does not match its type |
+| `min_tier` | `user_tier`, nullable | Set for `tier` rows only; means this tier and above, matching "Developer and above" everywhere else (`user_tier` is declared in ascending order, so `<=` works in SQL) |
+| `app_group_id` | uuid, nullable, FK -> App groups.id, `ON DELETE CASCADE` | Set for `group` rows only: the alert is visible to every member of that application group. Deleting the group removes this audience row; an alert left with no audience is seen by nobody and ages out with retention. A CHECK constraint refuses a row whose shape does not match its type, and a partial unique index allows one `group` row per alert and group |
 
 The break-glass SuperAdmin is not a Users row: it matches tier audiences as Admin and
 no user audience.
@@ -332,6 +333,83 @@ system-raised alert and its automatic resolve are not audited either: the alert 
 the record, and the event that caused it is usually audited already - an explicit,
 maintainer-approved exception to "every state change is audited" (`PLANNING.md`,
 2026-10-26).
+
+---
+
+## Application groups
+
+Named groups of people, used first as an alert audience and later for team-shared
+scheduled loads (migration `000043_create_app_groups`; design in `PLANNING.md`'s
+2026-10-26 Decisions Log entries). A person is a member of a group when they belong to
+any AD group the application group is mapped to, or, for a local-only account, when an
+Admin added them by hand. The logic lives in `internal/groups`; directory queries in
+`internal/auth` (`GroupDirectory`). Four tables.
+
+### App groups
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `name` | text | 1 to 64 characters (CHECK). Unique ignoring case (a unique index on `lower(name)`), so "Data Analytics" and "data analytics" cannot both exist |
+| `created_by` / `created_at` | uuid, nullable FK -> Users.id / timestamptz | Null `created_by` when the break-glass SuperAdmin acted - same reasoning as Nodes' `registered_by` |
+| `updated_by` / `updated_at` | uuid, nullable FK -> Users.id / timestamptz | Last rename |
+
+### App group AD groups
+
+Which AD groups an application group is mapped to. Many-to-many: one application group
+may map several AD groups, and one AD group may be mapped by several application
+groups.
+
+| Field | Type | Notes |
+|---|---|---|
+| `app_group_id` | uuid, FK -> App groups.id, `ON DELETE CASCADE` | |
+| `ad_group_dn` | text | The distinguishedName the directory itself returned when the mapping was made, never a value the browser posted. Compared case-insensitively everywhere (unique index and joins use `lower()`), as AD does |
+| `ad_group_name` | text | The group's common name, kept for display |
+| `added_by` / `added_at` | uuid, nullable FK -> Users.id / timestamptz | |
+
+Unique on `(app_group_id, lower(ad_group_dn))`.
+
+### App group local members
+
+Manual membership, for local-only accounts, which have no AD groups. Only an Admin or
+the SuperAdmin may add or remove a row. An AD-backed account is refused here
+(`internal/groups` checks it, since the rule needs the Users table): its membership
+comes from AD alone, so a hand-added row could never be undone by the directory.
+
+| Field | Type | Notes |
+|---|---|---|
+| `app_group_id` | uuid, FK -> App groups.id, `ON DELETE CASCADE` | Part of the composite primary key |
+| `user_id` | uuid, FK -> Users.id, `ON DELETE CASCADE` | Part of the composite primary key |
+| `added_by` / `added_at` | uuid, nullable FK -> Users.id / timestamptz | |
+
+### User AD group membership
+
+A cache of which *mapped* AD groups each AD user is in, so a membership question never
+costs a directory query. It holds only groups some application group is mapped to, never
+everything a person belongs to, so it stays small and stores no more directory data than
+the feature needs. Membership is the nested-group-aware check (matching rule
+`1.2.840.113556.1.4.1941`) the login gate already uses.
+
+| Field | Type | Notes |
+|---|---|---|
+| `user_id` | uuid, FK -> Users.id, `ON DELETE CASCADE` | |
+| `ad_group_dn` | text | Unique per user ignoring case |
+| `checked_at` | timestamptz | When the directory last confirmed it |
+
+Refreshed for one user at sign-in and at the hourly session recheck (`AUTH_RECHECK_INTERVAL_SECONDS`),
+and for everyone already known when an AD group is first mapped (a one-time backfill, so
+the group is not empty until each person next signs in). Unmapping drops the rows no
+mapping needs any more. Accepted limits: a person who left an AD group keeps the cached
+membership until their next recheck; a person who has never signed in has no user row and
+cannot be a member; and a directory that cannot be reached leaves the cache as it was
+and never blocks a sign-in.
+
+Audited actions (object type `app_group`, object id the group's id): `created_app_group`,
+`renamed_app_group`, `deleted_app_group`, `mapped_ad_group`, `unmapped_ad_group`,
+`added_group_member`, `removed_group_member`. Searching the directory and viewing a group
+are reads and are not audited. Creating, renaming, deleting, mapping and unmapping are
+open to PowerDev and above (`rbac.CanManageGroups`); adding or removing a local account
+by hand is Admin and above (`rbac.CanManageGroupLocalMembers`).
 
 ---
 

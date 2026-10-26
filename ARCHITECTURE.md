@@ -163,6 +163,25 @@ with no history, so it cannot hold alerts; the service publishes `alerts_changed
 and each open browser refetches its own unread count for the sidebar badge (events name
 no user). A daily job expires old alerts per the Settings page's retention.
 
+#### Application groups
+`internal/groups`: named groups of people, mapped to one or more AD groups - see
+`SCHEMA.md` Application groups. A creator searches the directory by name (service
+account, 3-character minimum, results capped, nothing listed unprompted) and the chosen
+group is re-read from the directory before it is saved, so the stored distinguishedName
+is the directory's own and never what a browser posted. Membership is never queried
+live: the service keeps a small cache of which *mapped* AD groups each AD user is in
+(`user_ad_group_membership`), refreshed at sign-in and at the hourly session recheck
+(`httpapi`'s `recheckAccessGroup` and `LoginService` call `RefreshUser` through a narrow
+interface, so `httpapi` does not import `groups`), and filled once for everyone
+already known when a group is mapped. A directory failure is logged and leaves the cache as
+it was: it never blocks a sign-in or a recheck, the same fail-open posture as the existing
+gate recheck. The directory side is `auth.GroupDirectory` (search, verify one group,
+list a group's members, and which of a batch of groups a user is in), implemented by the
+LDAP provider; a deployment with no AD configured passes none, the search is hidden and only
+manual membership of local accounts works. Application groups are an alert audience
+(`internal/alerts`, `internal/db`'s visibility query), and the foundation for team-shared
+scheduled loads later.
+
 #### Node & Fabric Registry
 CRUD for Nodes and Fabric groups. Fabric group membership is an explicit, manually
 declared Admin action (the app cannot sense physical cabling) - see `SCHEMA.md`
