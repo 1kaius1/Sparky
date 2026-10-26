@@ -12,7 +12,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   **Alerts** entry at the top of the sidebar shows an unread count that
   refreshes live, and opens an inbox with Unread / All / Resolved tabs, a list
   with the open alert beside it, unread alerts in bold, and mark read, mark
-  unread, dismiss, select-many and "mark all read" actions. An alert is
+  unread and dismiss (each also for several selected alerts at once) and "mark
+  all read" actions. Marking an alert unread closes it, because an open unread
+  alert marks itself read. An alert is
   addressed to users and tiers (a tier means that tier and above); each person
   sees only the alerts addressed to them, and an alert they may not see is
   simply not found. Read and dismissed state is per person; **dismiss** hides
