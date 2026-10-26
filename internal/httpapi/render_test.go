@@ -5,6 +5,7 @@ package httpapi
 import (
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 
@@ -82,6 +83,94 @@ func TestSidebarAdminNav_ShownForSuperAdmin(t *testing.T) {
 		if !strings.Contains(body, `href="`+want+`"`) {
 			t.Errorf("SuperAdmin session's sidebar should link to %s: %s", want, body)
 		}
+	}
+}
+
+// sidebarUserLine returns the text of the sidebar's signed-in line, or "" when
+// it is absent, so the tests below can assert on it directly.
+func sidebarUserLine(body string) string {
+	re := regexp.MustCompile(`(?s)<div class="sidebar-user"[^>]*>.*?<span class="sidebar-user-name">(.*?)</span>`)
+	m := re.FindStringSubmatch(body)
+	if m == nil {
+		return ""
+	}
+	return m[1]
+}
+
+// TestSidebarCurrentUser_ShowsEachViewersOwnNameAboveMyAccount is the point of
+// the feature: windows signed in as different people can be told apart.
+func TestSidebarCurrentUser_ShowsEachViewersOwnNameAboveMyAccount(t *testing.T) {
+	users := newFakeUserLister()
+	users.byID["u-dev"] = &db.User{ID: "u-dev", Tier: db.TierDeveloper, DisplayName: "Dev One"}
+	users.byID["u-admin"] = &db.User{ID: "u-admin", Tier: db.TierAdmin, DisplayName: "Admin"}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, &fakeAuditLister{})
+
+	for id, want := range map[string]string{"u-dev": "Dev One", "u-admin": "Admin"} {
+		rec := httptest.NewRecorder()
+		api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/dashboard", id))
+		body := rec.Body.String()
+		if got := sidebarUserLine(body); got != want {
+			t.Errorf("viewer %s: sidebar shows %q, want %q", id, got, want)
+		}
+		if !strings.Contains(body, "Signed in as") {
+			t.Errorf("viewer %s: the caption is missing", id)
+		}
+		// Above the My account link, as asked.
+		if strings.Index(body, `class="sidebar-user"`) > strings.Index(body, `href="/account"`) {
+			t.Errorf("viewer %s: the name is not above the My account link", id)
+		}
+	}
+}
+
+func TestSidebarCurrentUser_IsEscaped(t *testing.T) {
+	users := newFakeUserLister()
+	users.byID["u-1"] = &db.User{ID: "u-1", Tier: db.TierReadOnly, DisplayName: `<script>alert(1)</script> & "co"`}
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, &fakeAuditLister{})
+
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/dashboard", "u-1"))
+	body := rec.Body.String()
+	if strings.Contains(body, "<script>alert(1)</script>") {
+		t.Error("a display name was rendered as live markup")
+	}
+	if !strings.Contains(sidebarUserLine(body), "&lt;script&gt;") {
+		t.Errorf("the name is not shown escaped: %q", sidebarUserLine(body))
+	}
+}
+
+// The break-glass SuperAdmin is not a Users row, so it has no display name; it
+// is labelled instead, and no user lookup is needed to do so.
+func TestSidebarCurrentUser_SuperAdminIsLabelled(t *testing.T) {
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, newFakeUserLister(), &fakeAuditLister{})
+
+	cookieValue, err := session.Sign(testSessionSecret, session.NewSuperAdmin(sessionDuration))
+	if err != nil {
+		t.Fatalf("session.Sign() error: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/dashboard", nil)
+	req.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookieValue})
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, req)
+
+	if got := sidebarUserLine(rec.Body.String()); got != "Break-glass administrator" {
+		t.Errorf("sidebar shows %q for the SuperAdmin", got)
+	}
+}
+
+// If the name cannot be resolved the line is hidden and the page still renders,
+// like the other sidebar niceties.
+func TestSidebarCurrentUser_HiddenWhenLookupFails(t *testing.T) {
+	users := newFakeUserLister()
+	users.findErr = db.ErrUserNotFound
+	api := newTestDashboardAPIWithAdmin(t, &fakeNodeLister{}, &fakeProfileLister{}, &fakeInstanceLister{}, &fakeTransferLister{}, users, &fakeAuditLister{})
+
+	rec := httptest.NewRecorder()
+	api.Router().ServeHTTP(rec, newAuthenticatedRequest(t, http.MethodGet, "/dashboard", "ghost-user"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), `class="sidebar-user"`) {
+		t.Error("the signed-in line is shown although the user could not be resolved")
 	}
 }
 
