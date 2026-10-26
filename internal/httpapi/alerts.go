@@ -379,7 +379,7 @@ func (a *API) handleAlertsMarkAllRead(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleAlertsBulk is POST /alerts/bulk, the inbox's select-many action: mark
-// the chosen alerts read, or dismiss them. Each alert is audited on its own,
+// the chosen alerts read or unread, or dismiss them. Each alert is audited on its own,
 // exactly as if it had been acted on singly.
 func (a *API) handleAlertsBulk(w http.ResponseWriter, r *http.Request) {
 	actor, ok := a.alertActor(w, r)
@@ -404,10 +404,12 @@ func (a *API) handleAlertsBulk(w http.ResponseWriter, r *http.Request) {
 	switch strings.TrimSpace(r.PostForm.Get("action")) {
 	case "read":
 		do = a.alerts.MarkRead
+	case "unread":
+		do = a.alerts.MarkUnread
 	case "dismiss":
 		do = a.alerts.Dismiss
 	default:
-		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "action must be read or dismiss")
+		writeError(w, r, http.StatusBadRequest, "INVALID_REQUEST", "action must be read, unread or dismiss")
 		return
 	}
 

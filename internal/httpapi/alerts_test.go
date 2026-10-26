@@ -146,7 +146,7 @@ func TestAlertsInbox_ListsRowsWithReadStateSeverityAndTabs(t *testing.T) {
 		"Qwen3 is no longer running", `class="alert-row unread"`, `class="alert-row"`,
 		"Critical", "Info", "x12", "2026-10-26 02:00:00",
 		`href="/alerts?view=unread"`, `href="/alerts?view=all"`, `href="/alerts?view=resolved"`,
-		`name="ids" value="` + testAlertID + `"`, "Mark all read", "Mark selected read", "Dismiss selected",
+		`name="ids" value="` + testAlertID + `"`, "Mark all read", "Mark selected read", "Mark selected unread", "Dismiss selected",
 		`data-sse-topics="alerts_changed"`, "Select an alert to read it.",
 	} {
 		if !strings.Contains(body, want) {
@@ -421,8 +421,8 @@ func TestAlertsMarkAllRead(t *testing.T) {
 }
 
 func TestAlertsBulk(t *testing.T) {
-	t.Run("read and dismiss act on each chosen alert", func(t *testing.T) {
-		for _, action := range []string{"read", "dismiss"} {
+	t.Run("read, unread and dismiss act on each chosen alert", func(t *testing.T) {
+		for _, action := range []string{"read", "unread", "dismiss"} {
 			fake := &fakeAlerts{}
 			api, uid := alertsAPI(t, db.TierDeveloper, fake)
 			rec := postFormAs(t, api, uid, "/alerts/bulk", url.Values{"action": {action}, "ids": {testAlertID, testAlertID2}, "view": {"all"}})
