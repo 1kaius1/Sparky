@@ -57,6 +57,7 @@ type API struct {
 	inventory            inventoryLister
 	containerLogs        containerLogViewer
 	alerts               alertManager
+	groups               groupManager
 	sizeEstimator        sizeEstimator
 	templates            map[string]*template.Template
 	partials             map[string]*template.Template
@@ -139,7 +140,9 @@ type API struct {
 // containerlogs.Service.List/Read, gated by rbac.CanViewInstanceLogs; alertsSvc backs the
 // Alerts inbox, its sidebar badge and the retention setting via internal/alerts.Service -
 // every alert is scoped to the viewer inside the service, so the routes need only a
-// session; logger is used for
+// session; groupsSvc backs the Groups pages (application groups mapped to AD groups) via
+// internal/groups.Service, gated by rbac.CanManageGroups, with manual local members
+// Admin-only; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
@@ -162,7 +165,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, alertsSvc alertManager, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, alertsSvc alertManager, groupsSvc groupManager, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -217,6 +220,7 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		inventory:              inventorySvc,
 		containerLogs:          containerLogsSvc,
 		alerts:                 alertsSvc,
+		groups:                 groupsSvc,
 		sizeEstimator:          sizeEstimatorSvc,
 		templates:              templates,
 		partials:               partials,
@@ -392,6 +396,25 @@ func (a *API) Router() http.Handler {
 	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/{id}/unread", a.handleAlertUnread())
 	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/{id}/dismiss", a.handleAlertDismiss())
 	r.With(a.RequireSession, limitBody(maxAlertFormBytes), a.RequireCSRF).Post("/alerts/{id}/resolve", a.handleAlertResolve())
+	// The Groups pages (application groups mapped to AD groups). The tier floor
+	// (rbac.CanManageGroups, PowerDev) and the narrower one for manual local
+	// members (Admin) are checked inside groups.Service, like the other
+	// management pages, and every POST is audited there. The forms are classic
+	// <form method="post"> ones with the csrf_token field, so a refused one can
+	// redraw the page with its reason (the toast only ever says "something went
+	// wrong"); each is size-capped ahead of RequireCSRF. The directory search is a
+	// GET fragment: a read, so no CSRF and no audit, but behind the same session
+	// and tier, capped, and only for a typed term.
+	r.With(a.RequireSession).Get("/groups", a.handleGroups)
+	r.With(a.RequireSession, limitBody(maxGroupFormBytes), a.RequireCSRF).Post("/groups", a.handleCreateGroup)
+	r.With(a.RequireSession).Get("/groups/{id}", a.handleGroup)
+	r.With(a.RequireSession).Get("/groups/{id}/ad-search", a.handleADSearch)
+	r.With(a.RequireSession, limitBody(maxGroupFormBytes), a.RequireCSRF).Post("/groups/{id}/rename", a.handleRenameGroup())
+	r.With(a.RequireSession, limitBody(maxGroupFormBytes), a.RequireCSRF).Post("/groups/{id}/delete", a.handleDeleteGroup)
+	r.With(a.RequireSession, limitBody(maxGroupFormBytes), a.RequireCSRF).Post("/groups/{id}/ad-groups", a.handleMapADGroup())
+	r.With(a.RequireSession, limitBody(maxGroupFormBytes), a.RequireCSRF).Post("/groups/{id}/ad-groups/remove", a.handleUnmapADGroup())
+	r.With(a.RequireSession, limitBody(maxGroupFormBytes), a.RequireCSRF).Post("/groups/{id}/members", a.handleAddGroupMember())
+	r.With(a.RequireSession, limitBody(maxGroupFormBytes), a.RequireCSRF).Post("/groups/{id}/members/remove", a.handleRemoveGroupMember())
 	r.With(a.RequireSession).Get("/transfers", a.handleTransfers)
 	// The initiate form's own RBAC gate (rbac.CanManageModelStore) is
 	// checked directly in both handlers - GET to decide whether to show
@@ -622,6 +645,11 @@ func (a *API) recheckAccessGroup(w http.ResponseWriter, r *http.Request, sess *s
 		a.forceLogout(w, r, "no longer a member of the access group")
 		return nil, false
 	}
+
+	// Still a member: this is also when their application-group memberships
+	// are brought up to date. A failure is logged inside and never changes the
+	// outcome of the recheck.
+	a.loginService.RefreshMemberships(ctx, user.ID, *user.LDAPDN)
 
 	refreshed := session.Session{
 		UserID:         sess.UserID,

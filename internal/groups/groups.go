@@ -66,6 +66,11 @@ var (
 	// ErrADGroupNotFound is returned when the directory has no such group.
 	ErrADGroupNotFound = errors.New("that group was not found in the directory")
 
+	// ErrDirectory is returned when the directory could not be reached or did
+	// not answer. The wrapped text has the detail, for the log; callers show
+	// people a fixed message, never that detail.
+	ErrDirectory = errors.New("the directory could not be reached or did not answer")
+
 	// ErrAlreadyMapped is returned when the AD group is already mapped to the
 	// application group.
 	ErrAlreadyMapped = errors.New("that AD group is already mapped to this group")
@@ -392,7 +397,7 @@ func (s *Service) SearchDirectory(ctx context.Context, actor rbac.Actor, groupID
 
 	found, err := s.directory.SearchGroups(ctx, term, SearchLimit)
 	if err != nil {
-		return nil, fmt.Errorf("search the directory: %w", err)
+		return nil, fmt.Errorf("%w: search the directory: %v", ErrDirectory, err)
 	}
 	out := &SearchResult{Truncated: found.Truncated}
 	for _, g := range found.Groups {
@@ -432,7 +437,7 @@ func (s *Service) MapADGroup(ctx context.Context, actor rbac.Actor, groupID, dn 
 		return nil, ErrADGroupNotFound
 	}
 	if err != nil {
-		return nil, fmt.Errorf("look up the group in the directory: %w", err)
+		return nil, fmt.Errorf("%w: look up the group: %v", ErrDirectory, err)
 	}
 	if err := s.store.AddADMapping(ctx, groupID, found.DN, found.Name, actorID(actor)); err != nil {
 		return nil, mapStoreErr(err)

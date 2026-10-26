@@ -574,8 +574,8 @@ func TestSearchDirectory(t *testing.T) {
 		t.Errorf("an unknown group: %v", err)
 	}
 	h.dir.err = errors.New("ldap down")
-	if _, err := h.svc.SearchDirectory(ctx, power("p"), g.ID, "team"); err == nil || !strings.Contains(err.Error(), "search the directory") {
-		t.Errorf("a directory failure: %v", err)
+	if _, err := h.svc.SearchDirectory(ctx, power("p"), g.ID, "team"); !errors.Is(err, ErrDirectory) || !strings.Contains(err.Error(), "ldap down") {
+		t.Errorf("a directory failure: %v, want ErrDirectory carrying the detail for the log", err)
 	}
 
 	// No AD configured at all.
@@ -643,8 +643,8 @@ func TestMapADGroup_Refusals(t *testing.T) {
 		t.Errorf("mapping twice: %v", err)
 	}
 	h.dir.err = errors.New("ldap down")
-	if _, err := h.svc.MapADGroup(ctx, power("p"), g.ID, bravoDN); err == nil || errors.Is(err, ErrADGroupNotFound) {
-		t.Errorf("a directory failure must not be reported as 'group not found': %v", err)
+	if _, err := h.svc.MapADGroup(ctx, power("p"), g.ID, bravoDN); !errors.Is(err, ErrDirectory) || errors.Is(err, ErrADGroupNotFound) {
+		t.Errorf("a directory failure must be ErrDirectory, not 'group not found': %v", err)
 	}
 }
 

@@ -25,6 +25,10 @@ type pageData struct {
 	ShowAdminNav  bool
 	ShowLogsNav   bool
 
+	// ShowGroupsNav is whether the sidebar offers the Groups page (PowerDev
+	// and above).
+	ShowGroupsNav bool
+
 	// UnreadAlerts is the sidebar Alerts badge's number, set on a full page
 	// load only; the badge refreshes itself after that (sse.js).
 	UnreadAlerts int
@@ -82,7 +86,7 @@ type themeViewModel struct {
 // base+one-page per entry keeps each page's "content" definition private
 // to its own set.
 func loadPageTemplates() (map[string]*template.Template, error) {
-	pages := []string{"dashboard", "nodes", "inventory", "profiles", "transfers", "engine_inventory", "engine_transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "node_edit", "node_comment_edit", "profile_form", "provision_engine", "initiate_transfer", "scan_models", "container_logs", "container_log", "instance_logs", "forbidden", "create_local_account", "account", "alerts"}
+	pages := []string{"dashboard", "nodes", "inventory", "profiles", "transfers", "engine_inventory", "engine_transfers", "metrics", "audit", "users", "settings", "register_node", "node_registered", "node_edit", "node_comment_edit", "profile_form", "provision_engine", "initiate_transfer", "scan_models", "container_logs", "container_log", "instance_logs", "forbidden", "create_local_account", "account", "alerts", "groups", "group"}
 	result := make(map[string]*template.Template, len(pages)+1)
 	for _, name := range pages {
 		t, err := template.ParseFS(web.FS, "templates/layouts/base.html", "templates/pages/"+name+".html")
@@ -119,7 +123,7 @@ func loadPageTemplates() (map[string]*template.Template, error) {
 // name via renderPartial. Fragments are standalone - no base layout - and
 // each file defines a template named after itself.
 func loadPartialTemplates() (map[string]*template.Template, error) {
-	names := []string{"estimate_size", "peer_options", "connectivity", "profile_inventory_options", "scan_results", "alerts_badge"}
+	names := []string{"estimate_size", "peer_options", "connectivity", "profile_inventory_options", "scan_results", "alerts_badge", "ad_group_results"}
 	result := make(map[string]*template.Template, len(names))
 	for _, name := range names {
 		t, err := template.ParseFS(web.FS, "templates/partials/"+name+".html")
@@ -155,6 +159,12 @@ func (a *API) renderPartial(w http.ResponseWriter, name string, data any) {
 // "clicking a section swaps only the main pane... the sidebar... never
 // reload[s]."
 func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string, data any) {
+	a.renderStatus(w, r, http.StatusOK, page, title, data)
+}
+
+// renderStatus is render with an explicit status code, for a page that has to
+// show a failed form (400, 404, 409) rather than pretend it worked.
+func (a *API) renderStatus(w http.ResponseWriter, r *http.Request, status int, page, title string, data any) {
 	t, ok := a.templates[page]
 	if !ok {
 		a.logger.Printf("httpapi: no template registered for page %q", page)
@@ -175,12 +185,14 @@ func (a *API) render(w http.ResponseWriter, r *http.Request, page, title string,
 		// once per full page load, not on every section change.
 		pd.ShowAdminNav = a.canViewAdminNav(r.Context())
 		pd.ShowLogsNav = a.canViewLogsNav(r.Context())
+		pd.ShowGroupsNav = a.canViewGroupsNav(r.Context())
 		pd.UnreadAlerts = a.alertUnreadCount(r.Context())
 		pd.CurrentUser = a.currentUserLabel(r.Context())
 		pd.Theme = a.resolveTheme(r.Context())
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(status)
 	if err := t.ExecuteTemplate(w, name, pd); err != nil {
 		a.logger.Printf("httpapi: render %s: %v", page, err)
 	}
@@ -221,6 +233,22 @@ func (a *API) canViewLogsNav(ctx context.Context) bool {
 		return false
 	}
 	return rbac.CanViewInstanceLogs(actor)
+}
+
+// canViewGroupsNav reports whether to show the Groups sidebar link, the
+// PowerDev-floor counterpart of canViewAdminNav: a display nicety whose
+// failure hides the link, with the real gate inside groups.Service.
+func (a *API) canViewGroupsNav(ctx context.Context) bool {
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		return false
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for sidebar nav: %v", err)
+		return false
+	}
+	return rbac.CanManageGroups(actor)
 }
 
 // breakGlassUserLabel is what the sidebar shows for the break-glass

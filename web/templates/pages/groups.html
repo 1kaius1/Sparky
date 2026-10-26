@@ -1,0 +1,51 @@
+{{define "content"}}
+<h1>Groups</h1>
+
+<p>An application group is a named set of people, for example "Data Analytics". It is made up of one or more AD groups, plus local accounts an Admin adds by hand. A person is a member through any AD group mapped to it, so "Data Analytics" can be Team-Alpha and Team-Bravo together.</p>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+{{if .Data.Notice}}
+<div class="form-success">{{.Data.Notice}}</div>
+{{end}}
+
+<section class="panel">
+  <h2>New group</h2>
+  <form method="post" action="/groups">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="new_group_name">Name (1 to 64 characters)</label><br>
+      <input type="text" id="new_group_name" name="name" maxlength="64" value="{{.Data.NewName}}" required>
+    </p>
+    <p><button type="submit">Create group</button></p>
+  </form>
+</section>
+
+<table class="data-table">
+  <thead>
+    <tr>
+      <th>Group</th>
+      <th>AD groups mapped</th>
+      <th>Members</th>
+      <th>Added by hand</th>
+    </tr>
+  </thead>
+  <tbody>
+    {{range .Data.Rows}}
+    <tr>
+      <td><a href="/groups/{{.ID}}" hx-get="/groups/{{.ID}}" hx-target="#main-content" hx-push-url="true">{{.Name}}</a></td>
+      <td>{{.ADGroups}}</td>
+      <td>{{.Members}}</td>
+      <td>{{.LocalMembers}}</td>
+    </tr>
+    {{else}}
+    <tr><td colspan="4" class="empty">No groups yet. Create one above, then map AD groups to it.</td></tr>
+    {{end}}
+  </tbody>
+</table>
+
+{{if not .Data.DirectoryAvailable}}
+<p>No AD directory is configured on this server, so AD groups cannot be mapped. Groups can still have local accounts added by an Admin.</p>
+{{end}}
+{{end}}

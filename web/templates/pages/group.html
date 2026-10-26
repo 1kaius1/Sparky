@@ -1,0 +1,127 @@
+{{define "content"}}
+<p><a href="/groups" hx-get="/groups" hx-target="#main-content" hx-push-url="true">All groups</a></p>
+<h1>{{.Data.Name}}</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+{{end}}
+{{if .Data.Notice}}
+<div class="form-success">{{.Data.Notice}}</div>
+{{end}}
+
+<section class="panel">
+  <h2>AD groups</h2>
+  <p>Everyone in any of these AD groups, including through nested groups, is a member. Membership is read from AD when someone signs in and at the hourly session recheck, and once when a group is mapped.</p>
+  <table class="data-table">
+    <thead>
+      <tr><th>AD group</th><th>Distinguished name</th><th></th></tr>
+    </thead>
+    <tbody>
+      {{range .Data.Mappings}}
+      <tr>
+        <td>{{.Name}}</td>
+        <td class="group-dn">{{.DN}}</td>
+        <td>
+          <form method="post" action="/groups/{{$.Data.ID}}/ad-groups/remove">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="dn" value="{{.DN}}">
+            <button type="submit">Unmap</button>
+          </form>
+        </td>
+      </tr>
+      {{else}}
+      <tr><td colspan="3" class="empty">No AD group is mapped yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  {{if .Data.DirectoryAvailable}}
+  <h3>Map an AD group</h3>
+  <p>
+    <label for="ad_group_search">Search AD groups by name (at least 3 characters)</label><br>
+    <input type="search" id="ad_group_search" name="q" autocomplete="off" maxlength="64"
+           hx-get="/groups/{{.Data.ID}}/ad-search" hx-trigger="input changed delay:400ms, search"
+           hx-target="#ad-search-results" hx-swap="innerHTML">
+  </p>
+  <div id="ad-search-results" class="ad-results" aria-live="polite"></div>
+  {{else}}
+  <p>No AD directory is configured on this server, so AD groups cannot be mapped.</p>
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2>Members ({{len .Data.Members}})</h2>
+  <p>AD members are as of their last sign-in or session recheck, or when the AD group was mapped.</p>
+  <table class="data-table">
+    <thead>
+      <tr><th>Name</th><th>Tier</th><th>Member through</th>{{if .Data.CanManageLocalMembers}}<th></th>{{end}}</tr>
+    </thead>
+    <tbody>
+      {{range .Data.Members}}
+      <tr>
+        <td>{{.Name}}{{if .Login}} <span class="group-login">({{.Login}})</span>{{end}}</td>
+        <td>{{.Tier}}</td>
+        <td>{{range $i, $v := .Via}}{{if $i}}, {{end}}{{$v}}{{end}}{{if and .Via .Manual}}, {{end}}{{if .Manual}}added by hand{{end}}</td>
+        {{if $.Data.CanManageLocalMembers}}
+        <td>
+          {{if .Manual}}
+          <form method="post" action="/groups/{{$.Data.ID}}/members/remove">
+            <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+            <input type="hidden" name="user_id" value="{{.UserID}}">
+            <button type="submit">Remove</button>
+          </form>
+          {{end}}
+        </td>
+        {{end}}
+      </tr>
+      {{else}}
+      <tr><td colspan="4" class="empty">Nobody yet.</td></tr>
+      {{end}}
+    </tbody>
+  </table>
+
+  {{if .Data.CanManageLocalMembers}}
+  <h3>Add a local account</h3>
+  {{if .Data.AddableUsers}}
+  <form method="post" action="/groups/{{.Data.ID}}/members">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="member_user_id">Local account</label><br>
+      <select id="member_user_id" name="user_id" required>
+        {{range .Data.AddableUsers}}
+        <option value="{{.ID}}">{{.Label}}</option>
+        {{end}}
+      </select>
+    </p>
+    <p><button type="submit">Add to group</button></p>
+  </form>
+  {{else}}
+  <p>Every local account is already a member, or there are none.</p>
+  {{end}}
+  {{end}}
+</section>
+
+<section class="panel">
+  <h2>Rename</h2>
+  <form method="post" action="/groups/{{.Data.ID}}/rename">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="rename_group">Name (1 to 64 characters)</label><br>
+      <input type="text" id="rename_group" name="name" maxlength="64" value="{{.Data.RenameValue}}" required>
+    </p>
+    <p><button type="submit">Rename</button></p>
+  </form>
+</section>
+
+<section class="panel">
+  <h2>Delete this group</h2>
+  <p>Deleting a group removes its AD mappings and its members added by hand, and takes it out of any alert that was addressed to it.</p>
+  <form method="post" action="/groups/{{.Data.ID}}/delete">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label><input type="checkbox" name="confirm" value="yes" required> Yes, delete this group</label>
+    </p>
+    <p><button type="submit">Delete group</button></p>
+  </form>
+</section>
+{{end}}

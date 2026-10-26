@@ -43,6 +43,33 @@ type LoginService struct {
 	identityProvider auth.IdentityProvider
 	users            userStore
 	sessionSecret    string
+
+	// memberships, when set, refreshes a person's application-group
+	// memberships after they sign in or are rechecked. Optional: the groups
+	// feature is not needed to log in.
+	memberships membershipRefresher
+}
+
+// membershipRefresher is the subset of *groups.Service LoginService needs. It
+// never returns an error: a refresh that fails is logged by the groups service
+// and must not stop anyone signing in.
+type membershipRefresher interface {
+	RefreshUser(ctx context.Context, userID, dn string)
+}
+
+// WithMembershipRefresher sets who refreshes application-group memberships on
+// login and recheck, and returns the service for chaining.
+func (s *LoginService) WithMembershipRefresher(r membershipRefresher) *LoginService {
+	s.memberships = r
+	return s
+}
+
+// RefreshMemberships refreshes one person's application-group memberships from
+// the directory, if group support is wired in. dn is their cached LDAP DN.
+func (s *LoginService) RefreshMemberships(ctx context.Context, userID, dn string) {
+	if s.memberships != nil {
+		s.memberships.RefreshUser(ctx, userID, dn)
+	}
 }
 
 // NewLoginService constructs a LoginService.
@@ -82,6 +109,11 @@ func (s *LoginService) Login(ctx context.Context, username, password string) (*d
 			return nil, "", fmt.Errorf("update last login: %w", err)
 		}
 	}
+
+	// Only after the person is let in, and never able to fail the login: a
+	// directory that cannot answer this just leaves their cached groups as they
+	// were.
+	s.RefreshMemberships(ctx, user.ID, authUser.DN)
 
 	cookieValue, err := session.Sign(s.sessionSecret, session.New(user.ID, sessionDuration))
 	if err != nil {
