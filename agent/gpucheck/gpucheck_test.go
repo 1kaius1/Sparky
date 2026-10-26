@@ -64,6 +64,9 @@ func (f *fakeBackend) Capture(context.Context, string, int) (runtime.Capture, er
 	return runtime.Capture{}, nil
 }
 func (f *fakeBackend) InstancesForProfile(context.Context, string) ([]string, error) { return nil, nil }
+func (f *fakeBackend) ListManaged(context.Context) ([]runtime.ManagedContainer, bool, error) {
+	return nil, false, nil
+}
 
 // verifier is the same backend seen as a runtime.GPUVerifier.
 type verifyingBackend struct{ *fakeBackend }

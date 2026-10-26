@@ -632,6 +632,28 @@ func (c *Conn) dispatch(ctx context.Context, conn *websocket.Conn, env agentprot
 			defer c.instanceWG.Done()
 			c.runFetchLogs(ctx, conn, req)
 		}()
+	case agentproto.TypeListContainers:
+		var req agentproto.ListContainers
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed list_containers payload: %v", err)
+			return
+		}
+		c.instanceWG.Add(1)
+		go func() {
+			defer c.instanceWG.Done()
+			c.runListContainers(ctx, conn, req)
+		}()
+	case agentproto.TypeRemoveContainer:
+		var req agentproto.RemoveContainer
+		if err := env.DecodePayload(&req); err != nil {
+			c.logger.Printf("agent connection: received malformed remove_container payload: %v", err)
+			return
+		}
+		c.instanceWG.Add(1)
+		go func() {
+			defer c.instanceWG.Done()
+			c.runRemoveContainer(ctx, conn, req)
+		}()
 	case agentproto.TypeContainerLogAck:
 		var ack agentproto.ContainerLogAck
 		if err := env.DecodePayload(&ack); err != nil {

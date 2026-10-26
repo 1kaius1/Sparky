@@ -229,6 +229,31 @@ const (
 	// confirmation request: nothing is stored and nothing is removed. An
 	// older agent ignores the type, so the page simply times out.
 	TypeFetchLogs MessageType = "fetch_logs"
+
+	// TypeListContainers is sent by the central app (stale container
+	// monitoring, or the manual cleanup page) to ask a node which Sparky
+	// containers its runtime holds, running or not. The agent only describes
+	// them: it never removes anything because of this message. Answered via
+	// TypeListContainersResult. An older agent ignores the type, so the central
+	// app's request times out and that node is reported as not scanned.
+	TypeListContainers MessageType = "list_containers"
+
+	// TypeListContainersResult is the agent's async reply to
+	// TypeListContainers.
+	TypeListContainersResult MessageType = "list_containers_result"
+
+	// TypeRemoveContainer is sent by the central app to remove one stopped
+	// container the monitoring decided is stale. The server triggers every
+	// removal; the agent never decides alone. The agent re-checks the safety
+	// rules itself before touching anything (see RemoveContainer), archives
+	// the container's log through the usual container_log_chunk series, and
+	// removes the container only once the central app confirms it stored the
+	// log. Answered via TypeRemoveContainerResult.
+	TypeRemoveContainer MessageType = "remove_container"
+
+	// TypeRemoveContainerResult is the agent's async reply to
+	// TypeRemoveContainer.
+	TypeRemoveContainerResult MessageType = "remove_container_result"
 )
 
 // Envelope is the outer shape of every message on the connection. RequestID
@@ -794,4 +819,117 @@ type FetchLogs struct {
 	FetchID    string `json:"fetch_id"`
 	InstanceID string `json:"instance_id"`
 	Lines      int    `json:"lines"`
+}
+
+// ListContainers is TypeListContainers' payload. ScanID is minted by the
+// central app and echoed back so a reply can be matched to the request that
+// asked for it.
+type ListContainers struct {
+	ScanID string `json:"scan_id"`
+}
+
+// ManagedContainer is one container a node's runtime holds that Sparky
+// started. State is the runtime's own word for it (running, exited, created,
+// dead, paused, restarting, removing) as a plain string, for the same reason
+// agentproto's other status fields are. The central app decides what is stale
+// from this plus its own records, and re-validates every field before showing
+// or acting on it.
+type ManagedContainer struct {
+	InstanceID    string `json:"instance_id"`
+	ProfileID     string `json:"profile_id,omitempty"`
+	ContainerID   string `json:"container_id,omitempty"`
+	ContainerName string `json:"container_name,omitempty"`
+	State         string `json:"state"`
+
+	// Labelled is false for a container found only by the legacy
+	// sparky-instance-<id> name an older agent gave it, with no label. The
+	// central app removes such a container only if it has exited.
+	Labelled bool `json:"labelled"`
+
+	// ExitCode is absent unless the container has exited.
+	ExitCode  *int `json:"exit_code,omitempty"`
+	OOMKilled bool `json:"oom_killed,omitempty"`
+
+	CreatedAt  *time.Time `json:"created_at,omitempty"`
+	FinishedAt *time.Time `json:"finished_at,omitempty"`
+}
+
+// ListContainersChunkSize is the most containers an agent puts in one
+// ListContainersResult. A node that has piled up stale containers can hold
+// hundreds, and the WebSocket library closes the connection on any message
+// over 32768 bytes, so the answer is a numbered series of parts. With every
+// string at the length the agent clips it to, one part stays well under that
+// limit - see the size test in agentproto_test.go.
+const ListContainersChunkSize = 30
+
+// Longest container name and id the agent sends. A longer one is clipped, so a
+// part's size is bounded whatever the runtime reports.
+const (
+	MaxContainerNameLen = 128
+	MaxContainerIDLen   = 64
+)
+
+// ListContainersResult is TypeListContainers' response payload: one part of a
+// series. Part counts from 0 and the last part has Final set; the central app
+// has the whole answer only when it has seen Final and every part before it.
+// Error non-empty (on the Final part, with no Containers) means the listing
+// itself failed (the runtime is unreachable). Truncated, on the Final part,
+// means the agent hit its cap and the listing is incomplete.
+type ListContainersResult struct {
+	ScanID     string             `json:"scan_id"`
+	Part       int                `json:"part"`
+	Final      bool               `json:"final,omitempty"`
+	Containers []ManagedContainer `json:"containers"`
+	Truncated  bool               `json:"truncated,omitempty"`
+	Error      string             `json:"error,omitempty"`
+}
+
+// RemoveContainer is TypeRemoveContainer's payload. RemoveID is minted by the
+// central app and echoed on the reply. Lines is how many trailing lines of the
+// container's log to archive before removing it; 0 means all that is held
+// (the archive's own size cap still applies).
+//
+// The agent refuses, with RemoveOutcomeRefused, unless all of these hold: the
+// instance is not one this agent is running; the container is Sparky's; its
+// state is exited, dead or created (never running, paused or restarting); and
+// a container with no label (found by its legacy name) has exited. It also
+// never forces a removal, so even a container that started in the moment
+// between its check and the removal is refused by the runtime itself.
+type RemoveContainer struct {
+	RemoveID   string `json:"remove_id"`
+	InstanceID string `json:"instance_id"`
+	Lines      int    `json:"lines"`
+}
+
+// Outcomes of a TypeRemoveContainer, in RemoveContainerResult.Outcome. Plain
+// strings on the wire, like the other status fields.
+const (
+	// RemoveOutcomeRemoved: the log was archived and confirmed stored, then the
+	// container was removed.
+	RemoveOutcomeRemoved = "removed"
+
+	// RemoveOutcomeGone: there is no such container (already removed, or never
+	// there). Nothing was archived and nothing remains to do.
+	RemoveOutcomeGone = "gone"
+
+	// RemoveOutcomeRefused: a safety rule above held the container back. Detail
+	// says which. Nothing was archived or changed.
+	RemoveOutcomeRefused = "refused"
+
+	// RemoveOutcomeKept: the container's log could not be archived (the upload
+	// failed, the central app refused it, or no confirmation came), so the
+	// container was left in place for manual inspection.
+	RemoveOutcomeKept = "kept"
+
+	// RemoveOutcomeFailed: something else went wrong (the runtime errored).
+	// Detail says what; the container may or may not remain.
+	RemoveOutcomeFailed = "failed"
+)
+
+// RemoveContainerResult is TypeRemoveContainer's response payload.
+type RemoveContainerResult struct {
+	RemoveID   string `json:"remove_id"`
+	InstanceID string `json:"instance_id"`
+	Outcome    string `json:"outcome"`
+	Detail     string `json:"detail,omitempty"`
 }

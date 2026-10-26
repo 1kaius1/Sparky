@@ -154,6 +154,14 @@ func (b *Backend) InstancesForProfile(ctx context.Context, profileID string) ([]
 	return nil, nil
 }
 
+// ListManaged returns nothing: a bare-metal engine is a child process, not a
+// container, and a stopped one is cleared by Remove as soon as its log is
+// archived, so there is no pile of leftovers for stale container monitoring to
+// find.
+func (b *Backend) ListManaged(ctx context.Context) ([]runtime.ManagedContainer, bool, error) {
+	return nil, false, nil
+}
+
 // Remove drops the tracking record Halt left. Untracked is not an error.
 func (b *Backend) Remove(ctx context.Context, instanceID string) error {
 	b.mu.Lock()

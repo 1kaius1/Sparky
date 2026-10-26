@@ -57,12 +57,19 @@ const (
 // confirm it stored the log. It never removes anything itself: the caller
 // removes the container only on archiveStored.
 func (c *Conn) archiveInstance(ctx context.Context, conn *websocket.Conn, instanceID, reason string) archiveOutcome {
+	return c.archiveInstanceLines(ctx, conn, instanceID, reason, archiveLogLines)
+}
+
+// archiveInstanceLines is archiveInstance for a caller that chooses how many
+// trailing lines to keep (0 means all that is held) - the manual and
+// scheduled stale container cleanup, where the operator picks per container.
+func (c *Conn) archiveInstanceLines(ctx context.Context, conn *websocket.Conn, instanceID, reason string, lines int) archiveOutcome {
 	if !c.beginArchive(instanceID) {
 		return archiveBusy
 	}
 	defer c.endArchive(instanceID)
 
-	captured, err := c.runtime.Capture(ctx, instanceID, archiveLogLines)
+	captured, err := c.runtime.Capture(ctx, instanceID, lines)
 	if errors.Is(err, runtime.ErrNothingToCapture) {
 		return archiveNothing
 	}
@@ -89,7 +96,7 @@ func (c *Conn) archiveInstance(ctx context.Context, conn *websocket.Conn, instan
 	ackCh := c.registerArchiveWait(uploadID)
 	defer c.unregisterArchiveWait(uploadID)
 
-	meta := logMeta(instanceID, reason, archiveLogLines, captured)
+	meta := logMeta(instanceID, reason, lines, captured)
 	if err := c.sendLogChunks(ctx, conn, uploadID, "", meta, gz); err != nil {
 		c.logger.Printf("agent connection: upload log for instance %s: %v", instanceID, err)
 		return archiveFailed

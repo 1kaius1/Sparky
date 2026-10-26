@@ -984,6 +984,90 @@ func TestContainerLogChunk_FullSizeFitsTheMessageLimit(t *testing.T) {
 	t.Logf("full-size chunk envelope: %d bytes of %d", len(raw), wsReadLimit)
 }
 
+// One part of a list_containers answer, with every container carrying every
+// field at the longest length the agent sends, must stay under the WebSocket
+// library's 32768-byte read limit, or the connection is closed. The agent
+// sends only printable ASCII in these strings (agent/connection's wireText),
+// where the worst case for JSON escaping is a quote or backslash, which
+// doubles; so the name and id here are made of quotes.
+func TestListContainersResult_FullPartFitsTheMessageLimit(t *testing.T) {
+	const wsReadLimit = 32768
+	code := 137
+	now := time.Now()
+	one := ManagedContainer{
+		InstanceID: strings.Repeat("i", 36), ProfileID: strings.Repeat("p", 36),
+		ContainerID: strings.Repeat(`"`, MaxContainerIDLen), ContainerName: strings.Repeat(`"`, MaxContainerNameLen),
+		State: strings.Repeat(`"`, 32), Labelled: true, ExitCode: &code, OOMKilled: true, CreatedAt: &now, FinishedAt: &now,
+	}
+	res := ListContainersResult{ScanID: strings.Repeat("s", 32), Part: 99999, Final: true, Truncated: true, Error: strings.Repeat("e", 1000)}
+	for i := 0; i < ListContainersChunkSize; i++ {
+		res.Containers = append(res.Containers, one)
+	}
+	env, err := NewEnvelope(TypeListContainersResult, strings.Repeat("q", 64), res)
+	if err != nil {
+		t.Fatalf("NewEnvelope: %v", err)
+	}
+	raw, err := json.Marshal(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) >= wsReadLimit {
+		t.Errorf("full list part is %d bytes, must stay under %d", len(raw), wsReadLimit)
+	}
+	t.Logf("full list part: %d bytes of %d", len(raw), wsReadLimit)
+}
+
+func TestEnvelope_RoundTrip_ListAndRemoveContainer(t *testing.T) {
+	env, err := NewEnvelope(TypeListContainers, "", ListContainers{ScanID: "scan-1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var list ListContainers
+	if err := env.DecodePayload(&list); err != nil || list.ScanID != "scan-1" {
+		t.Errorf("list = %+v, %v", list, err)
+	}
+
+	code := 1
+	at := time.Date(2026, 10, 20, 8, 0, 0, 0, time.UTC)
+	want := ListContainersResult{ScanID: "scan-1", Part: 2, Final: true, Truncated: true, Containers: []ManagedContainer{
+		{InstanceID: "i-1", State: "exited", Labelled: true, ExitCode: &code, FinishedAt: &at},
+		{InstanceID: "i-2", State: "running"},
+	}}
+	env, _ = NewEnvelope(TypeListContainersResult, "", want)
+	var got ListContainersResult
+	if err := env.DecodePayload(&got); err != nil || got.Part != 2 || !got.Final || !got.Truncated || len(got.Containers) != 2 ||
+		got.Containers[0].ExitCode == nil || *got.Containers[0].ExitCode != 1 || !got.Containers[0].FinishedAt.Equal(at) || got.Containers[1].ExitCode != nil || got.Containers[1].FinishedAt != nil {
+		t.Errorf("list result = %+v, %v", got, err)
+	}
+
+	env, _ = NewEnvelope(TypeRemoveContainer, "", RemoveContainer{RemoveID: "rm-1", InstanceID: "i-1", Lines: 0})
+	var rm RemoveContainer
+	if err := env.DecodePayload(&rm); err != nil || rm.RemoveID != "rm-1" || rm.InstanceID != "i-1" || rm.Lines != 0 {
+		t.Errorf("remove = %+v, %v", rm, err)
+	}
+	// Lines is always sent, so an omitted one cannot be mistaken for "all".
+	if !strings.Contains(string(env.Payload), `"lines":0`) {
+		t.Errorf("payload %s must carry lines even when 0", env.Payload)
+	}
+
+	env, _ = NewEnvelope(TypeRemoveContainerResult, "", RemoveContainerResult{RemoveID: "rm-1", InstanceID: "i-1", Outcome: RemoveOutcomeKept, Detail: "log not stored"})
+	var res RemoveContainerResult
+	if err := env.DecodePayload(&res); err != nil || res.Outcome != "kept" || res.Detail != "log not stored" {
+		t.Errorf("remove result = %+v, %v", res, err)
+	}
+}
+
+// DecodePayload is strict, so a field the receiver does not know is refused
+// rather than silently dropped: an agent of another version must not act on a
+// half-understood removal.
+func TestRemoveContainer_RefusesUnknownFields(t *testing.T) {
+	env := Envelope{Type: TypeRemoveContainer, Payload: json.RawMessage(`{"remove_id":"r","instance_id":"i","lines":5,"force":true}`)}
+	var rm RemoveContainer
+	if err := env.DecodePayload(&rm); err == nil {
+		t.Errorf("decoded %+v despite an unknown field", rm)
+	}
+}
+
 func TestEnvelope_RoundTrip_LoadInstance_ProfileID(t *testing.T) {
 	want := LoadInstance{InstanceID: "i-1", ModelRef: "org/m", EngineType: "vllm", Image: "img", Port: 8000, ProfileID: "p-1"}
 	env, err := NewEnvelope(TypeLoadInstance, "", want)
