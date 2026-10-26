@@ -347,7 +347,10 @@ func (a *API) handleAlertRead() http.HandlerFunc {
 }
 
 func (a *API) handleAlertUnread() http.HandlerFunc {
-	return a.handleAlertAction(alertActionSpec{name: "mark alert unread", do: a.alerts.MarkUnread, keepOpen: true})
+	// Not keepOpen: an open alert that is unread marks itself read (the pane
+	// fires a mark-read as it loads), so reopening it here would immediately
+	// undo the action. The inbox shows it unread in the list instead.
+	return a.handleAlertAction(alertActionSpec{name: "mark alert unread", do: a.alerts.MarkUnread})
 }
 
 func (a *API) handleAlertDismiss() http.HandlerFunc {

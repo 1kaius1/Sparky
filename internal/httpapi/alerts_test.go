@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -158,6 +159,26 @@ func TestAlertsInbox_ListsRowsWithReadStateSeverityAndTabs(t *testing.T) {
 	// Looking at the inbox changes nothing and records nothing.
 	if len(fake.calls) != 0 {
 		t.Errorf("a GET called %v", fake.calls)
+	}
+}
+
+// htmx attributes are inherited by child elements. The inbox's bulk form sets
+// hx-swap="none" for its own POST, so a row link inside it that does not set
+// its own hx-swap inherits "none": the click fetches the alert and then throws
+// the response away, and nothing seems to happen. Found in manual testing.
+func TestAlertsInbox_RowLinksSetTheirOwnSwapInsideTheBulkForm(t *testing.T) {
+	fake := &fakeAlerts{items: []*alerts.Item{sampleAlertItem(testAlertID, "one", false), sampleAlertItem(testAlertID2, "two", true)}}
+	api, uid := alertsAPI(t, db.TierDeveloper, fake)
+	body := getAs(t, api, uid, "/alerts").Body.String()
+
+	links := regexp.MustCompile(`<a class="alert-row-link"[^>]*>`).FindAllString(body, -1)
+	if len(links) != 2 {
+		t.Fatalf("found %d row links, want 2", len(links))
+	}
+	for _, link := range links {
+		if !strings.Contains(link, `hx-swap="innerHTML"`) {
+			t.Errorf("row link has no hx-swap of its own, so it inherits the bulk form's %q: %s", `hx-swap="none"`, link)
+		}
 	}
 }
 
@@ -327,7 +348,9 @@ func TestAlertActions_RedirectKeepsOrDropsTheOpenAlert(t *testing.T) {
 	}{
 		// The automatic mark-read answers quietly: the event it causes refreshes the page.
 		{"read", "read", http.StatusNoContent, ""},
-		{"unread", "unread", http.StatusNoContent, "/alerts?view=all&selected=" + testAlertID},
+		// Mark unread closes the pane: an open unread alert marks itself read,
+		// which would undo it. Found in manual testing.
+		{"unread", "unread", http.StatusNoContent, "/alerts?view=all"},
 		{"resolve", "resolve", http.StatusNoContent, "/alerts?view=all&selected=" + testAlertID},
 		// A dismissed alert is gone, so its pane is not reopened.
 		{"dismiss", "dismiss", http.StatusNoContent, "/alerts?view=all"},

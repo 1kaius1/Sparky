@@ -23,8 +23,7 @@
     <form id="alerts-bulk" hx-post="/alerts/bulk" hx-swap="none">
       <input type="hidden" name="view" value="{{.Data.View}}">
       <div class="alerts-toolbar">
-        <button type="submit" name="action" value="read">Mark selected read</button>
-        <button type="submit" name="action" value="dismiss">Dismiss selected</button>
+        <button type="submit" name="action" value="read">Mark selected read</button>        <button type="submit" name="action" value="dismiss">Dismiss selected</button>
         {{if .Data.CanMarkAllRead}}
         <button type="button" hx-post="/alerts/mark-all-read" hx-vals='{"view": "{{.Data.View}}"}' hx-swap="none">Mark all read</button>
         {{end}}
@@ -33,8 +32,9 @@
         {{range .Data.Rows}}
         <li class="alert-row{{if not .Read}} unread{{end}}{{if .Selected}} selected{{end}}">
           <input type="checkbox" name="ids" value="{{.ID}}" aria-label="Select alert: {{.Title}}">
+          {{/* hx-swap is inherited by child elements, so without its own hx-swap this link would pick up the form's "none" and fetch the alert but never show it. */}}
           <a class="alert-row-link" href="/alerts?view={{$.Data.View}}&amp;selected={{.ID}}"
-             hx-get="/alerts?view={{$.Data.View}}&amp;selected={{.ID}}" hx-target="#main-content" hx-push-url="true">
+             hx-get="/alerts?view={{$.Data.View}}&amp;selected={{.ID}}" hx-target="#main-content" hx-swap="innerHTML" hx-push-url="true">
             <span class="status {{.SeverityClass}}">{{.SeverityLabel}}</span>
             <span class="alert-title">{{.Title}}</span>
             {{if gt .Occurrences 1}}<span class="alert-count">x{{.Occurrences}}</span>{{end}}
