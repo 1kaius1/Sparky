@@ -80,6 +80,12 @@
           <a href="/metrics" hx-get="/metrics" hx-target="#main-content" hx-push-url="true"
              class="{{if eq .ActiveSection "metrics"}}active{{end}}">Metrics</a>
         </li>
+        {{if .ShowGroupsNav}}
+        <li>
+          <a href="/groups" hx-get="/groups" hx-target="#main-content" hx-push-url="true"
+             class="{{if or (eq .ActiveSection "groups") (eq .ActiveSection "group")}}active{{end}}">Groups</a>
+        </li>
+        {{end}}
         {{if .ShowAdminNav}}
         <li>
           <a href="/users" hx-get="/users" hx-target="#main-content" hx-push-url="true"

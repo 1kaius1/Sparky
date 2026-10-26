@@ -27,6 +27,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/engineprovision"
 	"github.com/1kaius1/Sparky/internal/engines"
 	"github.com/1kaius1/Sparky/internal/events"
+	"github.com/1kaius1/Sparky/internal/groups"
 	"github.com/1kaius1/Sparky/internal/httpapi"
 	"github.com/1kaius1/Sparky/internal/inventory"
 	"github.com/1kaius1/Sparky/internal/lifecycle"
@@ -87,10 +88,17 @@ func main() {
 	// login is simply unavailable in that case; local-only accounts
 	// (localLoginService below, always constructed) are the only way to
 	// sign in - see SCHEMA.md Users' Local-only accounts subsection.
+	//
+	// groupDirectory is the same LDAP provider seen as a GroupDirectory (search,
+	// verify and read AD groups for application groups); it stays a nil
+	// interface when LDAP is unconfigured, so groups then work with manually
+	// added local members alone.
 	var loginService *httpapi.LoginService
+	var groupDirectory auth.GroupDirectory
 	if cfg.LDAPConfigured {
 		identityProvider := auth.NewLDAPProvider(cfg.LDAPServerAddr, cfg.LDAPBindDN, cfg.LDAPBindPassword, cfg.LDAPBaseDN, cfg.LDAPAccessGroupDN)
 		loginService = httpapi.NewLoginService(identityProvider, users, cfg.SessionSecret)
+		groupDirectory = identityProvider
 	} else {
 		logger.Println("LDAP not configured - AD login is unavailable, local-only accounts are the only way to sign in")
 	}
@@ -146,6 +154,12 @@ func main() {
 	// when an instance dies, and the Alerts pages read, dismiss and resolve
 	// them. It also owns the Settings page's alert retention.
 	alertService := alerts.NewService(db.NewAlertRepository(pool), db.NewAlertSettingsRepository(pool), auditRecorder, eventsBroker, logger)
+	// groupService manages application groups mapped to AD groups, and refreshes
+	// each AD user's cached memberships at login and at the session recheck.
+	groupService := groups.NewService(db.NewAppGroupRepository(pool), users, groupDirectory, auditRecorder, logger)
+	if loginService != nil {
+		loginService.WithMembershipRefresher(groupService)
+	}
 	lifecycleService := lifecycle.NewService(profileRepo, instanceRepo, engineRegistry, agentRegistry, auditRecorder, alertService, logger)
 	// containerLogService stores the container logs agents archive before
 	// removing a container (the container_log_chunk handling in onMessage
@@ -259,7 +273,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, groupService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}

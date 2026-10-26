@@ -178,6 +178,7 @@ sparky/
   - inventory/            # Node model inventory read/delete - cross-node grouping for the Inventory page
   - containerlogs/        # Container logs agents archive before removing a container: chunk reassembly, storage, Developer-floor viewing
   - alerts/               # In-app alert inbox: raise/resolve for server-side producers, per-user read/dismiss, audience scoping, retention
+  - groups/               # Application groups: named groups mapped to AD groups (cached membership) plus hand-added local accounts; an alert audience
   - transfers/            # Download + peer-to-peer rsync replication orchestration, cancellation
   - modelsource/           # Download size estimation (Hugging Face)
   - metrics/              # Telemetry ingestion, retention/downsample, NFS/S3 export
@@ -657,7 +658,10 @@ web/static/
   (Read-only - the first entry, with an unread badge; each viewer sees only the
   alerts addressed to them, scoped inside `internal/alerts`, and Admin sets the
   retention on Settings), Dashboard
-  (Read-only), Nodes (Read-only view / Admin edit, plus PowerDev may edit the
+  (Read-only), Groups (PowerDev and above - application groups: create, rename,
+  delete, and map AD groups, `rbac.CanManageGroups`; Admin only adds or removes
+  local accounts by hand, `rbac.CanManageGroupLocalMembers`; hidden from lower
+  tiers), Nodes (Read-only view / Admin edit, plus PowerDev may edit the
   free-text comment field only - `rbac.CanEditNodeComment`), Models group - Inventory
   (Read-only view / Admin+grant initiate, cancel, and delete - see SCHEMA.md
   Permission overrides for the PowerDev grant; Admin-only scan of nodes for

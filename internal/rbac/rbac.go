@@ -252,3 +252,32 @@ func CanResolveAnyAlert(actor Actor) bool {
 	}
 	return actor.Tier == db.TierAdmin
 }
+
+// CanManageGroups reports whether actor may see the Groups page and create,
+// rename and delete application groups and map AD groups to them - see
+// SCHEMA.md Application groups. PowerDev and above, as the maintainer decided
+// (PLANNING.md, 2026-10-26). No permission-override path: like the other
+// management floors it is by tier.
+func CanManageGroups(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	switch actor.Tier {
+	case db.TierPowerDev, db.TierAdmin:
+		return true
+	default:
+		return false
+	}
+}
+
+// CanManageGroupLocalMembers reports whether actor may add or remove a local
+// account as a manual member of an application group. Admin and SuperAdmin
+// only - narrower than CanManageGroups, because a manual membership is the one
+// grant that no AD group backs and groups will later gate shared capacity. The
+// maintainer's decision, 2026-10-26.
+func CanManageGroupLocalMembers(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}

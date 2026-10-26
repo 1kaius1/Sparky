@@ -1,0 +1,29 @@
+{{define "ad_group_results"}}
+{{if .Message}}
+<p class="ad-results-message">{{.Message}}</p>
+{{end}}
+{{if .Candidates}}
+<ul class="ad-result-list">
+  {{range .Candidates}}
+  <li class="ad-result">
+    <div class="ad-result-text">
+      <strong>{{.Name}}</strong>{{if .Description}} - {{.Description}}{{end}}
+      <div class="group-dn">{{.DN}}</div>
+    </div>
+    {{if .Mapped}}
+    <span class="ad-result-mapped">Already mapped</span>
+    {{else}}
+    <form method="post" action="/groups/{{$.GroupID}}/ad-groups">
+      <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
+      <input type="hidden" name="dn" value="{{.DN}}">
+      <button type="submit">Map</button>
+    </form>
+    {{end}}
+  </li>
+  {{end}}
+</ul>
+{{if .Truncated}}
+<p class="ad-results-message">More groups matched than are shown. Type more of the name to narrow it down.</p>
+{{end}}
+{{end}}
+{{end}}

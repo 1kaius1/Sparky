@@ -284,7 +284,11 @@ func TestRaise_RejectsInvalidInput(t *testing.T) {
 		"no audience":           func(p *RaiseParams) { p.Audiences = nil },
 		"user audience, no id":  func(p *RaiseParams) { p.Audiences = []db.AlertAudience{{Type: db.AlertAudienceUser}} },
 		"unknown tier":          func(p *RaiseParams) { p.Audiences = []db.AlertAudience{tierAud("superuser")} },
-		"unknown audience":      func(p *RaiseParams) { p.Audiences = []db.AlertAudience{{Type: "group"}} },
+		"unknown audience":      func(p *RaiseParams) { p.Audiences = []db.AlertAudience{{Type: "everyone"}} },
+		"group audience, no id": func(p *RaiseParams) { p.Audiences = []db.AlertAudience{{Type: db.AlertAudienceGroup}} },
+		"group audience, bad id": func(p *RaiseParams) {
+			p.Audiences = []db.AlertAudience{{Type: db.AlertAudienceGroup, AppGroupID: "not-a-uuid"}}
+		},
 	}
 	for name, mutate := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -298,6 +302,18 @@ func TestRaise_RejectsInvalidInput(t *testing.T) {
 				t.Error("an invalid alert reached the store")
 			}
 		})
+	}
+}
+
+func TestRaise_AcceptsAGroupAudienceWithAValidGroupID(t *testing.T) {
+	h := newHarness()
+	p := validParams()
+	p.Audiences = []db.AlertAudience{{Type: db.AlertAudienceGroup, AppGroupID: alertB}, tierAud(db.TierAdmin)}
+	if _, err := h.svc.Raise(context.Background(), p); err != nil {
+		t.Fatalf("Raise() error: %v", err)
+	}
+	if got := h.store.raised[0].Audiences[0]; got.Type != db.AlertAudienceGroup || got.AppGroupID != alertB {
+		t.Errorf("the group audience did not reach the store intact: %+v", got)
 	}
 }
 

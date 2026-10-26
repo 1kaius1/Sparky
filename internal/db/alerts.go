@@ -51,16 +51,19 @@ const (
 type AlertAudienceType string
 
 const (
-	AlertAudienceUser AlertAudienceType = "user"
-	AlertAudienceTier AlertAudienceType = "tier"
+	AlertAudienceUser  AlertAudienceType = "user"
+	AlertAudienceTier  AlertAudienceType = "tier"
+	AlertAudienceGroup AlertAudienceType = "group"
 )
 
-// AlertAudience is one addressee of an alert: a single user, or every user at
-// MinTier and above. Exactly one of UserID and MinTier is set, matching Type.
+// AlertAudience is one addressee of an alert: a single user, every user at
+// MinTier and above, or every member of an application group. Exactly one of
+// UserID, MinTier and AppGroupID is set, matching Type.
 type AlertAudience struct {
-	Type    AlertAudienceType
-	UserID  string
-	MinTier Tier
+	Type       AlertAudienceType
+	UserID     string
+	MinTier    Tier
+	AppGroupID string
 }
 
 // AlertListView selects which of a viewer's alerts a list returns.
@@ -171,7 +174,10 @@ func scanAlertView(row pgx.Row) (*AlertView, error) {
 // alert addressed to them (by user id, or by a tier at or below theirs) that
 // they have not dismissed. $1 is the viewer's user id (NULL for the
 // SuperAdmin), $2 their tier. user_tier is declared in ascending order, so
-// <= means "this tier and above".
+// <= means "this tier and above". A group audience matches a member of the
+// application group: a local account added by hand, or a person the membership
+// cache has in any AD group mapped to it (compared ignoring case, as AD does).
+// The SuperAdmin has no user id, so it matches no group.
 const visibleAlerts = `FROM alerts a
 	LEFT JOIN alert_user_state s ON s.alert_id = a.id AND s.user_id = $1::uuid
 	WHERE s.dismissed_at IS NULL
@@ -180,6 +186,13 @@ const visibleAlerts = `FROM alerts a
 		WHERE au.alert_id = a.id AND (
 			(au.audience_type = 'user' AND au.user_id = $1::uuid)
 			OR (au.audience_type = 'tier' AND au.min_tier <= $2::user_tier)
+			OR (au.audience_type = 'group' AND (
+				EXISTS (SELECT 1 FROM app_group_local_members m
+					WHERE m.app_group_id = au.app_group_id AND m.user_id = $1::uuid)
+				OR EXISTS (SELECT 1 FROM app_group_ad_groups g
+					JOIN user_ad_group_membership c ON lower(c.ad_group_dn) = lower(g.ad_group_dn)
+					WHERE g.app_group_id = au.app_group_id AND c.user_id = $1::uuid)
+			))
 		)
 	)`
 
@@ -260,7 +273,7 @@ func (r *AlertRepository) raiseOnce(ctx context.Context, in NewAlert) (*RaiseRes
 	}
 
 	for _, aud := range in.Audiences {
-		var userID *string
+		var userID, appGroupID *string
 		var minTier *Tier
 		switch aud.Type {
 		case AlertAudienceUser:
@@ -269,14 +282,17 @@ func (r *AlertRepository) raiseOnce(ctx context.Context, in NewAlert) (*RaiseRes
 		case AlertAudienceTier:
 			t := aud.MinTier
 			minTier = &t
+		case AlertAudienceGroup:
+			id := aud.AppGroupID
+			appGroupID = &id
 		default:
 			return nil, fmt.Errorf("unknown alert audience type %q", aud.Type)
 		}
 		// DO NOTHING covers a repeat naming an audience the alert already has.
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO alert_audiences (alert_id, audience_type, user_id, min_tier) VALUES ($1, $2, $3, $4)
+			`INSERT INTO alert_audiences (alert_id, audience_type, user_id, min_tier, app_group_id) VALUES ($1, $2, $3, $4, $5)
 			 ON CONFLICT DO NOTHING`,
-			result.Alert.ID, aud.Type, userID, minTier); err != nil {
+			result.Alert.ID, aud.Type, userID, minTier, appGroupID); err != nil {
 			return nil, fmt.Errorf("insert alert audience: %w", err)
 		}
 	}
@@ -405,7 +421,7 @@ func (r *AlertRepository) CountUnread(ctx context.Context, viewer AlertViewer) (
 // Audiences returns who an alert is addressed to.
 func (r *AlertRepository) Audiences(ctx context.Context, alertID string) ([]AlertAudience, error) {
 	rows, err := r.pool.Query(ctx,
-		`SELECT audience_type, user_id, min_tier FROM alert_audiences WHERE alert_id = $1`, alertID)
+		`SELECT audience_type, user_id, min_tier, app_group_id FROM alert_audiences WHERE alert_id = $1`, alertID)
 	if err != nil {
 		return nil, fmt.Errorf("list alert audiences: %w", err)
 	}
@@ -413,9 +429,9 @@ func (r *AlertRepository) Audiences(ctx context.Context, alertID string) ([]Aler
 	var out []AlertAudience
 	for rows.Next() {
 		var aud AlertAudience
-		var userID *string
+		var userID, appGroupID *string
 		var minTier *Tier
-		if err := rows.Scan(&aud.Type, &userID, &minTier); err != nil {
+		if err := rows.Scan(&aud.Type, &userID, &minTier, &appGroupID); err != nil {
 			return nil, fmt.Errorf("scan alert audience: %w", err)
 		}
 		if userID != nil {
@@ -423,6 +439,9 @@ func (r *AlertRepository) Audiences(ctx context.Context, alertID string) ([]Aler
 		}
 		if minTier != nil {
 			aud.MinTier = *minTier
+		}
+		if appGroupID != nil {
+			aud.AppGroupID = *appGroupID
 		}
 		out = append(out, aud)
 	}
