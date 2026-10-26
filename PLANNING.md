@@ -1963,6 +1963,28 @@ Releases; and per-profile engine version pinning.
         Required for 1.0.0 for the same reason the cleanup is. Built as PRs 1
         to 3 of the ordered series listed under Current Sprint; PR 1 (the
         alerts core) is done in 0.2.14.
+  - [ ] Responsive web UI for different screen sizes, especially portrait
+        devices such as phones and tablets (maintainer, 2026-10-26, found
+        while testing application groups). Today the layout assumes a wide
+        window: the sidebar is a fixed width with no collapsed form, only the
+        Alerts page has a media query, and wide data tables are not
+        contained, so most pages overflow horizontally on a narrow screen
+        (measurements in Known Issues). Scope: every page, not only Groups -
+        a collapsible navigation (the sidebar currently takes about 220px
+        before any content), tables that scroll or reflow inside their panel,
+        forms and the Alerts list/detail layout that stack, touch-sized
+        targets, and the sidebar's live-connection and "Signed in as" block
+        still reachable. Keeps the existing constraints: server-rendered
+        templates with htmx, plain CSS, no JS framework and no build step
+        (see CLAUDE.md Frontend Conventions), and no inline styles. Needs a
+        design pass before building (navigation pattern for small screens,
+        which tables reflow and which scroll) and real-device or
+        browser-emulation checks at phone and tablet widths in portrait and
+        landscape, in both light and dark themes; add a narrow-width pass to
+        the full GUI manual test plan (Future Ideas). Whether this lands
+        before or after 1.0.0 is not decided; until then, new pages should
+        avoid making it worse (wrap long values, keep tables inside their
+        panel).
 
 - [ ] **v2.0.0** - Image-generation workload support (post-1.0, not yet scoped in detail)
   - [ ] Additional model download sources beyond Hugging Face - Civit.ai named
@@ -2370,6 +2392,7 @@ Two questions originally tracked here have moved on, not been deleted outright:
 | `nvidia-ctk` 1.20.1 generates CDI specs that Podman 4.9.3 cannot parse: the auto-generated `/var/run/cdi/nvidia.yaml` (`cdiVersion` 0.7.0, written by `nvidia-cdi-refresh.service` on boot and on driver or toolkit changes) contains an `additionalGids` field, and Podman 4.9.3 rejects the whole file with "json: unknown field" - visible only at `--log-level=debug`, never in normal output. A node then works only if a parseable spec exists in `/etc/cdi` (on the 4090 laptop a hand-downgraded `cdiVersion: 0.6.0` copy), and can break silently when the refresh service regenerates the newer one. | Medium | Operational, not a Sparky code defect, found 2026-10-13. Needs documenting in `docs/AGENT.md` and, once built, surfacing in the agent-side `check-gpu` and node-level GPU probe (the approved validation plan) with the exact remediation, since the failure otherwise looks like a GPU-less container |
 | On Podman the Docker-compatible create call refuses a shm size together with the host IPC namespace ("cannot set shmsize when running in the host IPC Namespace"). The agent sends both for a vLLM profile with `shm_size_gb`. Fixed for GPU launches (they go through the native API, which now drops the size under host IPC); a Podman profile with no GPU that sets `shm_size_gb` still goes through the compat API and would fail the same way. | Low | A GPU-less vLLM profile on a Podman node is not a realistic configuration, so the compat path was left as is; the fix is the same one-line drop in `Start` if it ever matters. Docker was not tested for this combination |
 | `RequireCSRF` (`internal/httpapi/csrf.go`) only checks a request whose Content-Type is `application/x-www-form-urlencoded` or `multipart/form-data` (`isFormRequest`) and passes every other request through unchecked - by design, for the JSON login API. Noticed 2026-10-26 while testing the alerts POST routes (a POST with no Content-Type is not rejected for a missing token). A cross-site HTML form can send `enctype="text/plain"`, which is also not a form request by that test, so on any state-changing route whose handler takes its input from the URL path (Load, Unload, Cancel, alert read and dismiss) the CSRF token check is not what stops a forged cross-site POST. What does stop it in a current browser is that the session cookie is `SameSite=Lax` (`setCSRFCookie` mirrors `setSessionCookie`'s attributes), so it is not sent on a cross-site POST and `RequireSession` refuses the request. That reliance on `SameSite` alone has not been tested against a real cross-site form in a browser here. | Low | Not touched: the project rules forbid changing CSRF configuration without explicit instruction, and the alerts routes deliberately follow the existing pattern. A hardening would be to make `RequireCSRF` refuse any state-changing request that is not JSON and carries no valid token (so `text/plain` and a missing Content-Type fail closed), after checking that the login and break-glass JSON branches and the htmx routes still work; it needs the maintainer's go-ahead |
+| The web UI is not responsive and is unusable on a phone or a portrait tablet. Found 2026-10-26 while testing the Groups page in a real browser; the viewport meta tag is present, but the layout (`web/static/css/main.css`) keeps the sidebar at a fixed width beside the content at every window size, and the only media query in the stylesheet is the Alerts page's `max-width: 900px` stacking. Measured in headless Firefox at the narrowest window it allowed (a 500px-wide viewport), as the width the page needed versus the 500px available: Users 1040px, Settings 1032px, Nodes 862px, Dashboard 826px, Groups 578px; only the Audit log page fit. The cause is the fixed sidebar plus wide data tables that are not contained in their panel, so the page scrolls sideways and some controls, such as a table's action buttons, end up off-screen. Not measured: a real phone or tablet, landscape, or tablet portrait widths (600px and up), which fall between this and the desktop layout the pages were built for | Medium - tracked in the v1.0.0 milestone list; whether it lands before or after 1.0.0 is not decided | Not fixed in the application groups PR (#171), which was kept to that feature and made its own page no worse than the existing ones (long DNs wrap); it is a layout change touching every page and needs a design pass first (navigation pattern for small screens, which tables reflow and which scroll) |
 
 ---
 
