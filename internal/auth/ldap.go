@@ -31,6 +31,7 @@ const dialTimeout = 5 * time.Second
 type ldapConn interface {
 	Bind(username, password string) error
 	Search(searchRequest *ldap.SearchRequest) (*ldap.SearchResult, error)
+	SearchWithPaging(searchRequest *ldap.SearchRequest, pagingSize uint32) (*ldap.SearchResult, error)
 	Close() error
 }
 

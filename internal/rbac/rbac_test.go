@@ -318,6 +318,32 @@ func TestCanManageModelStore(t *testing.T) {
 	}
 }
 
+func TestCanManageGroupsAndLocalMembers(t *testing.T) {
+	tests := []struct {
+		actor        Actor
+		wantGroups   bool
+		wantLocalAdd bool
+	}{
+		{Actor{IsSuperAdmin: true}, true, true},
+		{Actor{Tier: db.TierAdmin}, true, true},
+		{Actor{Tier: db.TierPowerDev}, true, false},
+		{Actor{Tier: db.TierDeveloper}, false, false},
+		{Actor{Tier: db.TierReadOnly}, false, false},
+	}
+
+	for _, tt := range tests {
+		name := fmt.Sprintf("tier=%s,superadmin=%v", tt.actor.Tier, tt.actor.IsSuperAdmin)
+		t.Run(name, func(t *testing.T) {
+			if got := CanManageGroups(tt.actor); got != tt.wantGroups {
+				t.Errorf("CanManageGroups() = %v, want %v", got, tt.wantGroups)
+			}
+			if got := CanManageGroupLocalMembers(tt.actor); got != tt.wantLocalAdd {
+				t.Errorf("CanManageGroupLocalMembers() = %v, want %v", got, tt.wantLocalAdd)
+			}
+		})
+	}
+}
+
 func TestCanResolveAnyAlert(t *testing.T) {
 	tests := []struct {
 		actor Actor

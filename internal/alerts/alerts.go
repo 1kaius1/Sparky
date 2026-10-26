@@ -8,7 +8,8 @@
 // is audited. See PLANNING.md's 2026-10-26 Decisions Log entry for the
 // design and SCHEMA.md Alerts for the data model.
 //
-// An alert is addressed to a set of audiences (a user, or a tier and above).
+// An alert is addressed to a set of audiences (a user, a tier and above, or an
+// application group - internal/groups).
 // Read and dismissed state is per user; resolving closes the alert for
 // everyone. internal/events only carries a signal with no history, so it
 // cannot hold an alert - it is used here just to tell open browsers to
@@ -169,6 +170,10 @@ func (p RaiseParams) validate() error {
 		case db.AlertAudienceUser:
 			if !uuidPattern.MatchString(a.UserID) {
 				return fmt.Errorf("%w: user audience needs a user id", ErrInvalidAlert)
+			}
+		case db.AlertAudienceGroup:
+			if !uuidPattern.MatchString(a.AppGroupID) {
+				return fmt.Errorf("%w: group audience needs a group id", ErrInvalidAlert)
 			}
 		case db.AlertAudienceTier:
 			switch a.MinTier {

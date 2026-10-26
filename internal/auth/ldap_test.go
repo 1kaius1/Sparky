@@ -42,6 +42,12 @@ func (f *fakeConn) Search(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
 	return f.searchFunc(req)
 }
 
+// SearchWithPaging answers like Search: the fake has no page limit, so one
+// reply stands in for however many pages a real server would send.
+func (f *fakeConn) SearchWithPaging(req *ldap.SearchRequest, _ uint32) (*ldap.SearchResult, error) {
+	return f.searchFunc(req)
+}
+
 func (f *fakeConn) Close() error {
 	f.closed = true
 	return nil

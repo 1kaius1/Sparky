@@ -284,6 +284,36 @@ func (r *UserRepository) UpdateTier(ctx context.Context, id string, tier Tier, e
 	return nil
 }
 
+// FindIDsByLDAPDNs returns the ids of the users whose cached LDAP DN is one of
+// dns, comparing ignoring case (AD does). It is how a directory group's member
+// DNs are matched to the people the app already knows. A DN nobody has logged
+// in with is simply not in the result.
+func (r *UserRepository) FindIDsByLDAPDNs(ctx context.Context, dns []string) ([]string, error) {
+	lowered := lowerDistinct(dns)
+	if len(lowered) == 0 {
+		return nil, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT id FROM users WHERE ldap_dn IS NOT NULL AND lower(ldap_dn) = ANY($1::text[])`, lowered)
+	if err != nil {
+		return nil, fmt.Errorf("find users by LDAP DN: %w", err)
+	}
+	defer rows.Close()
+
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("find users by LDAP DN: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("find users by LDAP DN: %w", err)
+	}
+	return ids, nil
+}
+
 // List returns every user, ordered by display name - the future Users &
 // permissions page's full roster, and in the meantime the Audit log
 // page's source for resolving an audit record's actor_id to a display
