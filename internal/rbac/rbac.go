@@ -142,6 +142,18 @@ func CanManageStaleContainers(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanManageEmail reports whether actor may configure email delivery (the SMTP
+// relay, the digest time) and send the test email. Admin/SuperAdmin only
+// (PLANNING.md, 2026-10-26). A distinct function rather than CanViewSettings,
+// even though both share a tier floor today: email settings decide where
+// alert text is sent, and could be granted differently later.
+func CanManageEmail(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanViewSettings reports whether actor may view the Settings page (the
 // Metrics export config and Audit settings singleton rows) - see
 // CLAUDE.md Frontend Conventions, Settings' sidebar tier ("Admin"). Same

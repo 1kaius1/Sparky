@@ -82,6 +82,10 @@ type settingsPageData struct {
 	Stale        *staleSettingsView
 	StaleError   string
 	StaleSuccess bool
+
+	Email        *emailSettingsView
+	EmailError   string
+	EmailSuccess string
 }
 
 // resolveUserName resolves userID to a display name via FindByID,
@@ -212,6 +216,14 @@ func (a *API) renderSettingsPage(w http.ResponseWriter, r *http.Request, actor r
 		return
 	}
 	data.Stale = a.staleSettingsViewOf(ctx, staleView)
+
+	emailView, err := a.email.Settings(ctx, actor)
+	if err != nil {
+		a.logger.Printf("httpapi: get email settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data.Email = a.emailSettingsViewOf(ctx, emailView)
 
 	a.render(w, r, "settings", "Settings", data)
 }

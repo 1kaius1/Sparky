@@ -7,6 +7,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -40,6 +41,22 @@ type Config struct {
 	AuthRateLimitMaxAttempts int
 	AuthRateLimitWindowSecs  int
 	AuthRecheckIntervalSecs  int
+
+	// PublicURL is the address people reach this server at, for the links in
+	// emails (https://sparky.example.internal). Empty means emails carry no
+	// links. Normalized: no trailing slash, scheme and host required.
+	PublicURL string
+
+	// SMTPPassword is the password for the SMTP relay's user name (set on the
+	// Settings page). Empty means the relay is used without authentication. It
+	// is an environment variable, never stored in the database.
+	SMTPPassword string
+
+	// SMTPCAFile is a PEM file of extra certificate authorities to trust when
+	// verifying the relay's certificate, for a relay with an internal CA. Empty
+	// means the system's roots. There is deliberately no way to skip
+	// verification.
+	SMTPCAFile string
 }
 
 // required maps each mandatory environment variable to the Config field it
@@ -89,7 +106,21 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("parse BREAKGLASS_LOGIN_PATH: must start with \"/\", got %q", breakGlassLoginPath)
 	}
 
+	publicURL, err := parsePublicURL(os.Getenv("SPARKY_PUBLIC_URL"))
+	if err != nil {
+		return nil, err
+	}
+	smtpCAFile := os.Getenv("SMTP_CA_FILE")
+	if smtpCAFile != "" {
+		if info, err := os.Stat(smtpCAFile); err != nil || info.IsDir() {
+			return nil, fmt.Errorf("SMTP_CA_FILE: %q is not a readable file", smtpCAFile)
+		}
+	}
+
 	cfg := &Config{
+		PublicURL:                publicURL,
+		SMTPPassword:             os.Getenv("SMTP_PASSWORD"),
+		SMTPCAFile:               smtpCAFile,
 		ListenPort:               getEnvDefault("LISTEN_PORT", "8080"),
 		LogLevel:                 getEnvDefault("LOG_LEVEL", "info"),
 		LogFormat:                getEnvDefault("LOG_FORMAT", "text"),
@@ -147,6 +178,24 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+// parsePublicURL validates SPARKY_PUBLIC_URL: empty is fine (emails then carry
+// no links), otherwise it must be an http or https URL with a host and no
+// path, query or credentials, and is returned without a trailing slash. A
+// startup-time mistake here fails fast, like the other malformed settings,
+// because a wrong base would put broken links in every email sent.
+func parsePublicURL(raw string) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	u, err := url.Parse(raw)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil ||
+		(u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("SPARKY_PUBLIC_URL: %q must look like https://sparky.example.internal (http or https, a host, no path)", raw)
+	}
+	return u.Scheme + "://" + u.Host, nil
 }
 
 func getEnvDefault(key, fallback string) string {

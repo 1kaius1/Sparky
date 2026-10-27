@@ -60,6 +60,7 @@ type API struct {
 	groups               groupManager
 	schedule             scheduleManager
 	staleContainers      staleContainerManager
+	email                emailManager
 	sizeEstimator        sizeEstimator
 	templates            map[string]*template.Template
 	partials             map[string]*template.Template
@@ -147,7 +148,9 @@ type API struct {
 // Admin-only; scheduleSvc backs the Settings page's global time zone (the one zone every
 // schedule is read in) via internal/schedule.Service, Admin only; staleContainersSvc backs
 // the Settings page's stale container monitoring section and the Container cleanup
-// page via internal/stalecontainers.Service, Admin only; logger is used for
+// page via internal/stalecontainers.Service, Admin only; emailSvc backs the Settings page's
+// Email section (the SMTP relay and the test email) via internal/email.Service, Admin
+// only; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
@@ -170,7 +173,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, alertsSvc alertManager, groupsSvc groupManager, scheduleSvc scheduleManager, staleContainersSvc staleContainerManager, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, alertsSvc alertManager, groupsSvc groupManager, scheduleSvc scheduleManager, staleContainersSvc staleContainerManager, emailSvc emailManager, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -228,6 +231,7 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		groups:                 groupsSvc,
 		schedule:               scheduleSvc,
 		staleContainers:        staleContainersSvc,
+		email:                  emailSvc,
 		sizeEstimator:          sizeEstimatorSvc,
 		templates:              templates,
 		partials:               partials,
@@ -500,6 +504,10 @@ func (a *API) Router() http.Handler {
 	// Stale container monitoring (None / Report / Prune) - the RBAC gate (Admin)
 	// is inside stalecontainers.Service.UpdateSettings.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/stale-containers", a.handleUpdateStaleContainers)
+	// The SMTP relay settings and the test email - the RBAC gate (Admin) is
+	// inside email.Service.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/email", a.handleUpdateEmailSettings)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/email/test", a.handleSendTestEmail)
 	// The Container cleanup page: Admin only, the gate inside each
 	// stalecontainers.Service method. The scan is a GET (it changes nothing; it
 	// only asks the nodes what they hold) loaded into the page after it

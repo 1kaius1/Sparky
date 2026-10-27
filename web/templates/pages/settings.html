@@ -267,6 +267,125 @@
 </section>
 
 <section class="panel">
+  <h2>Email</h2>
+  {{if .Data.EmailError}}
+  <div class="form-error">{{.Data.EmailError}}</div>
+  {{end}}
+  {{if .Data.EmailSuccess}}
+  <div class="form-success">{{.Data.EmailSuccess}}</div>
+  {{end}}
+  <p>Sparky sends email only through an SMTP relay you run or are given: a mail server that accepts mail from this server, with a user name and password or by trusting this server's address. It does not deliver directly to recipients' mail servers. Mail is queued and sent in the background, retried if the relay is down, and a failure never affects anything else. Emails carry a summary and a link, never log or prompt content.</p>
+  <table class="data-table">
+    <tbody>
+      <tr>
+        <td>Email</td>
+        <td>{{if .Data.Email.Enabled}}on{{else}}off{{end}}</td>
+      </tr>
+      <tr>
+        <td>Relay password (<code>SMTP_PASSWORD</code>)</td>
+        <td>{{if .Data.Email.PasswordSet}}set in the server's environment{{else}}not set{{end}}</td>
+      </tr>
+      <tr>
+        <td>Extra certificate authority (<code>SMTP_CA_FILE</code>)</td>
+        <td>{{if .Data.Email.CAFileSet}}set{{else}}not set (the system's authorities are used){{end}}</td>
+      </tr>
+      <tr>
+        <td>Address used in email links (<code>SPARKY_PUBLIC_URL</code>)</td>
+        <td>{{if .Data.Email.PublicURL}}{{.Data.Email.PublicURL}}{{else}}not set: emails will contain no links{{end}}</td>
+      </tr>
+      <tr>
+        <td>Waiting to be sent</td>
+        <td>{{.Data.Email.Pending}}</td>
+      </tr>
+      <tr>
+        <td>Sent in the last day</td>
+        <td>{{.Data.Email.SentLastDay}}</td>
+      </tr>
+      <tr>
+        <td>Failed in the last week</td>
+        <td>{{.Data.Email.FailedLastWeek}}{{if .Data.Email.LastError}} - latest problem ({{.Data.Email.LastErrorAt}}): {{.Data.Email.LastError}}{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated by</td>
+        <td>{{if .Data.Email.UpdatedBy}}{{.Data.Email.UpdatedBy}}{{else}}-{{end}}</td>
+      </tr>
+      <tr>
+        <td>Last updated at</td>
+        <td>{{.Data.Email.UpdatedAt}}</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <form method="post" action="/settings/email">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p><label><input type="checkbox" name="email_enabled" value="yes"{{if .Data.Email.Enabled}} checked{{end}}> Send email</label></p>
+    <p>
+      <label for="email_host">Relay host</label><br>
+      <input type="text" id="email_host" name="email_host" maxlength="253" value="{{.Data.Email.Host}}" placeholder="smtp.example.internal">
+    </p>
+    <p>
+      <label for="email_port">Port</label><br>
+      <input type="number" id="email_port" name="email_port" min="1" max="65535" value="{{.Data.Email.Port}}" required>
+    </p>
+    <p>
+      <label for="email_tls_mode">Connection security</label><br>
+      <select id="email_tls_mode" name="email_tls_mode">
+        <option value="starttls"{{if eq .Data.Email.TLSMode "starttls"}} selected{{end}}>STARTTLS (usually port 587)</option>
+        <option value="tls"{{if eq .Data.Email.TLSMode "tls"}} selected{{end}}>TLS from the start (usually port 465)</option>
+        <option value="none"{{if eq .Data.Email.TLSMode "none"}} selected{{end}}>None (a relay on this machine or a trusted network)</option>
+      </select><br>
+      <small>The relay's certificate is always checked. A relay with its own certificate authority needs <code>SMTP_CA_FILE</code>.</small>
+    </p>
+    <p>
+      <label for="email_username">User name (leave empty for a relay that trusts this server's address)</label><br>
+      <input type="text" id="email_username" name="email_username" maxlength="255" value="{{.Data.Email.Username}}" autocomplete="off"><br>
+      <small>The password is read from <code>SMTP_PASSWORD</code> and is never shown or stored here.</small>
+    </p>
+    <p>
+      <label for="email_from_address">From address</label><br>
+      <input type="email" id="email_from_address" name="email_from_address" maxlength="254" value="{{.Data.Email.FromAddress}}" placeholder="sparky@example.internal">
+    </p>
+    <p>
+      <label for="email_from_name">From name</label><br>
+      <input type="text" id="email_from_name" name="email_from_name" maxlength="100" value="{{.Data.Email.FromName}}">
+    </p>
+    <p><button type="submit">Save email settings</button></p>
+  </form>
+
+  <h3>Send a test email</h3>
+  <p>Sent straight away with the saved settings, even while email is off, so you can check them first.</p>
+  <form method="post" action="/settings/email/test">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <p>
+      <label for="test_to">Send to</label><br>
+      <input type="email" id="test_to" name="test_to" maxlength="254" required>
+    </p>
+    <p><button type="submit">Send test email</button></p>
+  </form>
+
+  {{if .Data.Email.Recent}}
+  <h3>Recent email</h3>
+  <table class="data-table">
+    <thead>
+      <tr><th>Queued</th><th>Kind</th><th>To</th><th>Subject</th><th>Status</th><th>Tries</th></tr>
+    </thead>
+    <tbody>
+      {{range .Data.Email.Recent}}
+      <tr>
+        <td>{{.When}}</td>
+        <td>{{.Kind}}</td>
+        <td>{{.To}}</td>
+        <td>{{.Subject}}</td>
+        <td>{{.Status}}{{if .Error}} - {{.Error}}{{end}}</td>
+        <td>{{.Attempts}}</td>
+      </tr>
+      {{end}}
+    </tbody>
+  </table>
+  {{end}}
+</section>
+
+<section class="panel">
   <h2>Default theme</h2>
   {{if .Data.ThemeError}}
   <div class="form-error">{{.Data.ThemeError}}</div>
