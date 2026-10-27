@@ -349,6 +349,11 @@
       <label for="email_from_name">From name</label><br>
       <input type="text" id="email_from_name" name="email_from_name" maxlength="100" value="{{.Data.Email.FromName}}">
     </p>
+    <p>
+      <label for="email_digest_time">Daily digest time</label><br>
+      <input type="text" id="email_digest_time" name="email_digest_time" maxlength="5" size="6" pattern="([01][0-9]|2[0-3]):[0-5][0-9]" value="{{.Data.Email.DailyDigestTime}}" placeholder="08:00" required>
+      <small>HH:MM, 24-hour, in the site time zone ({{.Data.Email.Zone}}). People who chose a daily digest get one then; hourly digests go out on the hour.</small>
+    </p>
     <p><button type="submit">Save email settings</button></p>
   </form>
 

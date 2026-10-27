@@ -61,6 +61,15 @@ type userEmailStore interface {
 	PendingConfirmation(ctx context.Context, userID string) (*db.EmailConfirmation, error)
 	ConfirmationByTokenHash(ctx context.Context, hash string) (*db.EmailConfirmation, error)
 	DeleteConfirmation(ctx context.Context, userID string) (bool, error)
+
+	SetPreferences(ctx context.Context, userID string, delivery db.EmailDelivery, minSeverity db.AlertSeverity) error
+	RecipientsForAlert(ctx context.Context, alertID string, severity db.AlertSeverity) ([]db.EmailRecipient, error)
+	AddDigestItem(ctx context.Context, userID, alertID string, severity db.AlertSeverity, title string) error
+	UsersWithDigestItems(ctx context.Context, mode db.EmailDelivery) ([]string, error)
+	PendingDigest(ctx context.Context, userID string) ([]db.DigestItem, error)
+	DeleteDigestItems(ctx context.Context, userID string, alertIDs []string) error
+	DeleteDigestItemsOlderThan(ctx context.Context, cutoff time.Time) (int64, error)
+	DeleteExpiredConfirmations(ctx context.Context, now time.Time) (int64, error)
 }
 
 // RecordDirectoryEmail stores the address AD gave for an AD-backed account at
@@ -99,6 +108,16 @@ type AddressView struct {
 	// somewhere to point.
 	EmailOn    bool
 	CanConfirm bool
+
+	// Delivery and MinSeverity are how this person wants alert email: off,
+	// immediately or in a digest, and the lowest severity they want.
+	Delivery    db.EmailDelivery
+	MinSeverity db.AlertSeverity
+
+	// DailyDigestTime and Zone say when a daily digest goes out, for the
+	// Account page to tell the person.
+	DailyDigestTime string
+	Zone            string
 }
 
 // PendingView is a change of address waiting to be confirmed.
@@ -118,7 +137,9 @@ func (s *Service) MyAddress(ctx context.Context, userID string) (*AddressView, e
 	if err != nil {
 		return nil, fmt.Errorf("get email settings: %w", err)
 	}
-	v := &AddressView{Directory: u.Directory, EmailOn: cfg.Enabled, CanConfirm: cfg.Enabled && s.env.PublicURL != ""}
+	v := &AddressView{Directory: u.Directory, EmailOn: cfg.Enabled, CanConfirm: cfg.Enabled && s.env.PublicURL != "",
+		Delivery: u.Delivery, MinSeverity: u.MinSeverity,
+		DailyDigestTime: cfg.DailyDigestTime, Zone: s.location(ctx).String()}
 	if u.Email != nil && u.Source != nil {
 		v.Email, v.Source = *u.Email, *u.Source
 	}

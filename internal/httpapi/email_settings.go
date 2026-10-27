@@ -27,6 +27,7 @@ type emailManager interface {
 	MyAddress(ctx context.Context, userID string) (*email.AddressView, error)
 	RequestMyAddress(ctx context.Context, userID, address string) error
 	ClearMyAddress(ctx context.Context, userID string) error
+	SetMyPreferences(ctx context.Context, userID string, p email.MyPreferences) error
 	PreviewConfirmation(ctx context.Context, userID, token string) (*email.ConfirmationView, error)
 	ConfirmAddress(ctx context.Context, userID, token string) (string, error)
 	Addresses(ctx context.Context, actor rbac.Actor) (map[string]*db.UserEmail, error)
@@ -42,6 +43,9 @@ type emailSettingsView struct {
 	Username    string
 	FromAddress string
 	FromName    string
+
+	DailyDigestTime string
+	Zone            string
 
 	// What the environment provides; the password itself is never shown.
 	PasswordSet bool
@@ -73,7 +77,7 @@ func (a *API) emailSettingsViewOf(ctx context.Context, v *email.SettingsView) *e
 	cfg := v.Settings
 	out := &emailSettingsView{
 		Enabled: cfg.Enabled, Host: cfg.Host, Port: cfg.Port, TLSMode: string(cfg.TLSMode), Username: cfg.Username,
-		FromAddress: cfg.FromAddress, FromName: cfg.FromName,
+		FromAddress: cfg.FromAddress, FromName: cfg.FromName, DailyDigestTime: cfg.DailyDigestTime, Zone: v.Zone,
 		PasswordSet: v.PasswordSet, CAFileSet: v.CAFileSet, PublicURL: v.PublicURL,
 		Pending: v.Stats.Pending, SentLastDay: v.Stats.SentLastDay, FailedLastWeek: v.Stats.FailedLastWeek, LastError: v.Stats.LastError,
 		UpdatedBy: a.resolveUserName(ctx, cfg.UpdatedBy), UpdatedAt: cfg.UpdatedAt.Format("2006-01-02 15:04:05 MST"),
@@ -120,6 +124,8 @@ func (a *API) handleUpdateEmailSettings(w http.ResponseWriter, r *http.Request) 
 		Username:    r.PostFormValue("email_username"),
 		FromAddress: r.PostFormValue("email_from_address"),
 		FromName:    r.PostFormValue("email_from_name"),
+
+		DailyDigestTime: r.PostFormValue("email_digest_time"),
 	}
 
 	err = a.email.UpdateSettings(ctx, actor, in)

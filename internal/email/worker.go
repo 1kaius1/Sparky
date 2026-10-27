@@ -57,12 +57,22 @@ func (s *Service) Run(ctx context.Context) {
 		}
 		if s.now().Sub(lastPurge) >= purgeEvery {
 			lastPurge = s.now()
-			if n, err := s.queue.DeleteOlderThan(ctx, s.now().Add(-retention)); err != nil {
-				s.logger.Printf("email: remove old records: %v", err)
-			} else if n > 0 {
-				s.logger.Printf("email: removed %d delivery records older than %d days", n, int(retention.Hours()/24))
-			}
+			s.purge(ctx)
 		}
+	}
+}
+
+// purge removes finished mail past its retention, and confirmation links that
+// expired unopened (useless, and their token hash is not worth keeping). A
+// failure is logged; the next hour tries again.
+func (s *Service) purge(ctx context.Context) {
+	if n, err := s.queue.DeleteOlderThan(ctx, s.now().Add(-retention)); err != nil {
+		s.logger.Printf("email: remove old records: %v", err)
+	} else if n > 0 {
+		s.logger.Printf("email: removed %d delivery records older than %d days", n, int(retention.Hours()/24))
+	}
+	if _, err := s.users.DeleteExpiredConfirmations(ctx, s.now()); err != nil {
+		s.logger.Printf("email: remove expired confirmations: %v", err)
 	}
 }
 

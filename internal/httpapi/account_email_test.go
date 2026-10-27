@@ -143,6 +143,66 @@ func TestAccountEmail_Clear(t *testing.T) {
 	}
 }
 
+func TestAccountPage_ShowsAlertEmailChoicesOnlyWithAnAddress(t *testing.T) {
+	fake := &fakeEmail{}
+	fake.my = &email.AddressView{
+		Email: "ana@example.org", Source: db.EmailSourceSelf, EmailOn: true, CanConfirm: true,
+		Delivery: db.EmailDeliveryDaily, MinSeverity: db.AlertSeverityCritical, DailyDigestTime: "07:30", Zone: "Europe/Oslo",
+	}
+	api, uid := accountAPI(t, db.TierDeveloper, true, fake)
+	body := getAs(t, api, uid, "/account").Body.String()
+	for _, want := range []string{
+		`action="/account/email/preferences"`, `<option value="daily" selected>`, `<option value="critical" selected>`,
+		"07:30 (Europe/Oslo)",
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("account page is missing %q", want)
+		}
+	}
+	if strings.Contains(body, `<option value="immediate" selected>`) {
+		t.Error("more than the saved delivery choice is selected")
+	}
+
+	fake.my = &email.AddressView{EmailOn: true, CanConfirm: true}
+	if body := getAs(t, api, uid, "/account").Body.String(); strings.Contains(body, "/account/email/preferences") {
+		t.Error("alert email choices were offered to someone with no address")
+	}
+}
+
+func TestAccountEmail_PreferencesReachTheServiceAndRefusalsAreShown(t *testing.T) {
+	withAddress := func(fake *fakeEmail) *fakeEmail {
+		fake.my = &email.AddressView{Email: "ana@example.org", Source: db.EmailSourceSelf, EmailOn: true, CanConfirm: true, Delivery: db.EmailDeliveryImmediate, MinSeverity: db.AlertSeverityWarning}
+		return fake
+	}
+	fake := withAddress(&fakeEmail{})
+	api, uid := accountAPI(t, db.TierDeveloper, true, fake)
+	rec := postFormAs(t, api, uid, "/account/email/preferences", url.Values{"email_delivery": {"hourly"}, "email_min_severity": {"info"}})
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Alert email settings saved") {
+		t.Fatalf("status %d body %.200s", rec.Code, rec.Body.String())
+	}
+	if len(fake.prefs) != 1 || fake.prefs[0].Delivery != db.EmailDeliveryHourly || fake.prefs[0].MinSeverity != db.AlertSeverityInfo {
+		t.Errorf("service got %+v", fake.prefs)
+	}
+
+	// Whatever the form says reaches the service verbatim; the service decides.
+	fake = withAddress(&fakeEmail{})
+	fake.prefsErr = fmt.Errorf("%w: choose how you want alert email delivered", email.ErrInvalidSettings)
+	api, uid = accountAPI(t, db.TierDeveloper, true, fake)
+	body := postFormAs(t, api, uid, "/account/email/preferences", url.Values{"email_delivery": {"weekly"}}).Body.String()
+	if !strings.Contains(body, "choose how you want alert email delivered") || strings.Contains(body, "invalid email settings: ") || strings.Contains(body, "Alert email settings saved") {
+		t.Errorf("refusal body wrong: %.300s", body)
+	}
+
+	// An unexpected failure is not shown raw.
+	fake = withAddress(&fakeEmail{})
+	fake.prefsErr = errors.New("save the preferences: pq: boom at 10.0.0.5")
+	api, uid = accountAPI(t, db.TierDeveloper, true, fake)
+	body = postFormAs(t, api, uid, "/account/email/preferences", url.Values{"email_delivery": {"off"}, "email_min_severity": {"info"}}).Body.String()
+	if strings.Contains(body, "10.0.0.5") || !strings.Contains(body, "could not be saved") {
+		t.Errorf("internal error body wrong: %.300s", body)
+	}
+}
+
 func TestAccountEmail_ConfirmLinkOnlyShowsUntilTheOwnerPressesTheButton(t *testing.T) {
 	fake := &fakeEmail{}
 	fake.previewView = &email.ConfirmationView{Email: "new@example.org", ExpiresAt: time.Date(2026, 10, 28, 9, 0, 0, 0, time.UTC)}

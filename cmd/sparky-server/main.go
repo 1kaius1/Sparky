@@ -186,7 +186,10 @@ func main() {
 	// environment, never the database.
 	emailHello, _ := os.Hostname()
 	emailService := email.NewService(db.NewEmailSettingsRepository(pool), db.NewEmailQueueRepository(pool), db.NewUserEmailRepository(pool), auditRecorder,
-		email.Env{SMTPPassword: cfg.SMTPPassword, SMTPCAFile: cfg.SMTPCAFile, PublicURL: cfg.PublicURL}, emailHello, logger)
+		email.Env{SMTPPassword: cfg.SMTPPassword, SMTPCAFile: cfg.SMTPCAFile, PublicURL: cfg.PublicURL}, emailHello, logger).WithZone(scheduleService)
+	// A new or more severe alert is emailed to the people it is addressed to
+	// (immediately or in their digest) as it is raised.
+	alertService.WithNotifier(emailService)
 	// An AD user's address is the directory's mail attribute, stored at every
 	// sign-in. A local account's address is set on the Account page or by an Admin.
 	if loginService != nil {
@@ -328,6 +331,10 @@ func main() {
 	// The scheduler runs stale container monitoring when its schedule says it
 	// is due (and does nothing while the mode is None); it stops with the process.
 	go schedule.NewRunner(scheduleService, logger).Run(retentionCtx, staleContainerService.Job())
+	// The hourly and daily email digests run on the same scheduler.
+	for _, digestJob := range emailService.DigestJobs() {
+		go schedule.NewRunner(scheduleService, logger).Run(retentionCtx, digestJob)
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {

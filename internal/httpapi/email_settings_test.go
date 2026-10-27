@@ -83,6 +83,8 @@ type fakeAddresses struct {
 	setErr      error
 	setResult   email.SetUserResult
 	setCalls    []string
+	prefs       []email.MyPreferences
+	prefsErr    error
 }
 
 func (f *fakeEmail) MyAddress(_ context.Context, _ string) (*email.AddressView, error) {
@@ -95,6 +97,11 @@ func (f *fakeEmail) MyAddress(_ context.Context, _ string) (*email.AddressView, 
 func (f *fakeEmail) RequestMyAddress(_ context.Context, _, address string) error {
 	f.requested = append(f.requested, address)
 	return f.requestErr
+}
+
+func (f *fakeEmail) SetMyPreferences(_ context.Context, _ string, p email.MyPreferences) error {
+	f.prefs = append(f.prefs, p)
+	return f.prefsErr
 }
 
 func (f *fakeEmail) ClearMyAddress(context.Context, string) error {
@@ -138,6 +145,7 @@ func emailForm(extra url.Values) url.Values {
 	v := url.Values{
 		"email_enabled": {"yes"}, "email_host": {"relay.example.com"}, "email_port": {"587"}, "email_tls_mode": {"starttls"},
 		"email_username": {"svc"}, "email_from_address": {"sparky@example.com"}, "email_from_name": {"Sparky"},
+		"email_digest_time": {"07:30"},
 	}
 	for k, vals := range extra {
 		v[k] = vals
@@ -177,7 +185,7 @@ func TestSettings_EmailFormIsParsedForTheService(t *testing.T) {
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Email settings updated") {
 		t.Fatalf("status %d body %.200s", rec.Code, rec.Body.String())
 	}
-	want := email.SettingsInput{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: db.EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky"}
+	want := email.SettingsInput{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: db.EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky", DailyDigestTime: "07:30"}
 	if len(fake.updated) != 1 || fake.updated[0] != want {
 		t.Errorf("service got %+v, want %+v", fake.updated, want)
 	}

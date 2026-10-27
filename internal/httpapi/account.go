@@ -59,6 +59,9 @@ type accountPageData struct {
 	Email        *accountEmailView
 	EmailError   string
 	EmailSuccess string
+
+	EmailPrefsError   string
+	EmailPrefsSuccess bool
 }
 
 func (a *API) handleAccountPage(w http.ResponseWriter, r *http.Request) {

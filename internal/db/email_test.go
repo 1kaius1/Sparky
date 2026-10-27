@@ -21,7 +21,7 @@ func TestEmailSettingsRepository_GetUpdateRestoreAndChecks(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = repo.Restore(ctx, original) })
 
-	good := EmailSettings{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky"}
+	good := EmailSettings{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky", DailyDigestTime: "08:00"}
 	if err := repo.Update(ctx, good); err != nil {
 		t.Fatalf("Update() error: %v", err)
 	}
@@ -36,6 +36,11 @@ func TestEmailSettingsRepository_GetUpdateRestoreAndChecks(t *testing.T) {
 		"port 0":                       func(s *EmailSettings) { s.Port = 0 },
 		"port 65536":                   func(s *EmailSettings) { s.Port = 65536 },
 		"unknown TLS mode":             func(s *EmailSettings) { s.TLSMode = "ssl" },
+		"a digest time of 24:00":       func(s *EmailSettings) { s.DailyDigestTime = "24:00" },
+		"a digest time of 8:00":        func(s *EmailSettings) { s.DailyDigestTime = "8:00" },
+		"a digest time of 08:60":       func(s *EmailSettings) { s.DailyDigestTime = "08:60" },
+		"an empty digest time":         func(s *EmailSettings) { s.DailyDigestTime = "" },
+		"a digest time with seconds":   func(s *EmailSettings) { s.DailyDigestTime = "08:00:00" },
 	}
 	for name, mutate := range bad {
 		s := good
@@ -45,7 +50,7 @@ func TestEmailSettingsRepository_GetUpdateRestoreAndChecks(t *testing.T) {
 		}
 	}
 	// Off needs no relay.
-	off := EmailSettings{Enabled: false, Port: 25, TLSMode: EmailTLSNone}
+	off := EmailSettings{Enabled: false, Port: 25, TLSMode: EmailTLSNone, DailyDigestTime: "23:59"}
 	if err := repo.Update(ctx, off); err != nil {
 		t.Errorf("email off with no relay: %v", err)
 	}

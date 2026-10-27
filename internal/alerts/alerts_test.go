@@ -366,6 +366,64 @@ func TestRaise_PublishesOnlyWhenSomethingNewHappened(t *testing.T) {
 	}
 }
 
+// fakeNotifier records what the service told it.
+type fakeNotifier struct {
+	calls     int
+	escalated bool
+	alertID   string
+	ctxErr    error
+}
+
+func (f *fakeNotifier) AlertRaised(ctx context.Context, a *db.Alert, escalated bool) {
+	f.calls++
+	f.alertID, f.escalated, f.ctxErr = a.ID, escalated, ctx.Err()
+}
+
+func TestRaise_TellsTheNotifierOnlyAboutNewAndEscalatedAlerts(t *testing.T) {
+	cases := []struct {
+		name          string
+		result        *db.RaiseResult
+		wantCalls     int
+		wantEscalated bool
+	}{
+		{"new alert", &db.RaiseResult{Alert: &db.Alert{ID: alertA}, Created: true}, 1, false},
+		{"escalation", &db.RaiseResult{Alert: &db.Alert{ID: alertA}, Escalated: true}, 1, true},
+		{"plain repeat", &db.RaiseResult{Alert: &db.Alert{ID: alertA}}, 0, false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			h := newHarness()
+			n := &fakeNotifier{}
+			h.svc.WithNotifier(n)
+			h.store.raiseResult = c.result
+			if _, err := h.svc.Raise(context.Background(), validParams()); err != nil {
+				t.Fatalf("Raise() error: %v", err)
+			}
+			if n.calls != c.wantCalls || n.escalated != c.wantEscalated {
+				t.Errorf("notifier calls = %d (escalated %v), want %d (escalated %v)", n.calls, n.escalated, c.wantCalls, c.wantEscalated)
+			}
+			if c.wantCalls > 0 && n.alertID != alertA {
+				t.Errorf("notifier was given alert %q, want %q", n.alertID, alertA)
+			}
+		})
+	}
+
+	// A caller that has already given up must not stop the people the alert
+	// concerns from being told.
+	h := newHarness()
+	n := &fakeNotifier{}
+	h.svc.WithNotifier(n)
+	h.store.raiseResult = &db.RaiseResult{Alert: &db.Alert{ID: alertA}, Created: true}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := h.svc.Raise(ctx, validParams()); err != nil {
+		t.Fatalf("Raise() error: %v", err)
+	}
+	if n.calls != 1 || n.ctxErr != nil {
+		t.Errorf("after the caller cancelled: calls=%d ctx error=%v, want one call with a live context", n.calls, n.ctxErr)
+	}
+}
+
 func TestResolveCondition(t *testing.T) {
 	h := newHarness()
 	h.store.resolveKeys["k"] = []string{alertA}

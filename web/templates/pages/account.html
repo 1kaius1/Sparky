@@ -87,6 +87,37 @@ is nothing to edit on this page.</p>
 </form>
 {{end}}
 {{end}}
+{{if .Data.Email.Address}}
+<h3>How you get alert email</h3>
+{{if .Data.EmailPrefsError}}
+<div class="form-error">{{.Data.EmailPrefsError}}</div>
+{{end}}
+{{if .Data.EmailPrefsSuccess}}
+<div class="form-success">Alert email settings saved.</div>
+{{end}}
+<form method="post" action="/account/email/preferences">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="email_delivery">Send me alert email</label><br>
+    <select id="email_delivery" name="email_delivery">
+      <option value="immediate" {{if eq .Data.Email.Delivery "immediate"}}selected{{end}}>As each alert arrives</option>
+      <option value="hourly" {{if eq .Data.Email.Delivery "hourly"}}selected{{end}}>In an hourly digest</option>
+      <option value="daily" {{if eq .Data.Email.Delivery "daily"}}selected{{end}}>In a daily digest</option>
+      <option value="off" {{if eq .Data.Email.Delivery "off"}}selected{{end}}>Not at all (the Alerts inbox only)</option>
+    </select>
+  </p>
+  <p>
+    <label for="email_min_severity">Lowest severity to email me about</label><br>
+    <select id="email_min_severity" name="email_min_severity">
+      <option value="info" {{if eq .Data.Email.MinSeverity "info"}}selected{{end}}>Info and above</option>
+      <option value="warning" {{if eq .Data.Email.MinSeverity "warning"}}selected{{end}}>Warning and above</option>
+      <option value="critical" {{if eq .Data.Email.MinSeverity "critical"}}selected{{end}}>Critical only</option>
+    </select>
+  </p>
+  <p><small>Only new alerts, and alerts that become more severe, are emailed. An alert that is resolved or dismissed before a digest goes out is left out of it. Alerts always appear in the Alerts inbox either way. A daily digest goes out at {{.Data.Email.DailyDigestTime}} ({{.Data.Email.Zone}}); an hourly one on the hour.</small></p>
+  <p><button type="submit">Save</button></p>
+</form>
+{{end}}
 
 <h2>Theme</h2>
 {{if .Data.ThemeError}}

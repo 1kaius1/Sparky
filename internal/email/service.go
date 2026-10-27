@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,6 +34,9 @@ const (
 	maxSubjectLen = 300
 	maxBodyLen    = 50000
 )
+
+// digestTimePattern is what the daily digest time must look like: HH:MM, 24-hour.
+var digestTimePattern = regexp.MustCompile(`^([01][0-9]|2[0-3]):[0-5][0-9]$`)
 
 var (
 	// ErrInvalidSettings is wrapped by a refused settings change; its message
@@ -62,6 +66,13 @@ type settingsStore interface {
 	Get(ctx context.Context) (*db.EmailSettings, error)
 	Update(ctx context.Context, s db.EmailSettings) error
 	Restore(ctx context.Context, prev *db.EmailSettings) error
+	MarkDigestRun(ctx context.Context, kind db.DigestKind, startedAt time.Time) error
+}
+
+// zoneSource supplies the global time zone, for the times shown in emails and
+// the digest schedule (internal/schedule.Service).
+type zoneSource interface {
+	Location(ctx context.Context) (*time.Location, error)
 }
 
 // queueStore is the subset of *db.EmailQueueRepository this package needs.
@@ -98,6 +109,10 @@ type Service struct {
 	now      func() time.Time
 	send     sendFunc
 
+	// zone, when set, is the time zone times in emails are shown in; unset
+	// means UTC.
+	zone zoneSource
+
 	// sendTimeout bounds one delivery attempt by the worker. A batch of
 	// batchSize attempts must fit well inside the lease Claim takes, so a stalled
 	// relay cannot make the same mail look abandoned and be sent twice.
@@ -113,6 +128,24 @@ func NewService(settings settingsStore, queue queueStore, users userEmailStore, 
 		send:        func(ctx context.Context, cfg mailer.Config, m mailer.Message) error { return cfg.Send(ctx, m) },
 		sendTimeout: 30 * time.Second,
 	}
+}
+
+// WithZone sets the time zone times in emails are shown in (the global zone),
+// and returns the service for chaining.
+func (s *Service) WithZone(z zoneSource) *Service {
+	s.zone = z
+	return s
+}
+
+// location is the zone to show times in. A zone that cannot be loaded falls
+// back to UTC rather than failing an email over how its times are written.
+func (s *Service) location(ctx context.Context) *time.Location {
+	if s.zone != nil {
+		if loc, err := s.zone.Location(ctx); err == nil {
+			return loc
+		}
+	}
+	return time.UTC
 }
 
 // PublicURL is the address emails link to, "" when none is configured.
@@ -140,6 +173,9 @@ type SettingsView struct {
 	CAFileSet   bool
 	PublicURL   string
 
+	// Zone names the time zone the daily digest time is in.
+	Zone string
+
 	Stats  *db.EmailQueueStats
 	Recent []*db.Email
 }
@@ -164,6 +200,7 @@ func (s *Service) Settings(ctx context.Context, actor rbac.Actor) (*SettingsView
 	}
 	return &SettingsView{
 		Settings: cfg, PasswordSet: s.env.SMTPPassword != "", CAFileSet: s.env.SMTPCAFile != "", PublicURL: s.env.PublicURL,
+		Zone:  s.location(ctx).String(),
 		Stats: stats, Recent: recent,
 	}, nil
 }
@@ -177,6 +214,9 @@ type SettingsInput struct {
 	Username    string
 	FromAddress string
 	FromName    string
+
+	// DailyDigestTime is "HH:MM", 24-hour, in the global time zone.
+	DailyDigestTime string
 }
 
 // UpdateSettings saves the relay settings. Requires rbac.CanManageEmail.
@@ -204,6 +244,10 @@ func (s *Service) UpdateSettings(ctx context.Context, actor rbac.Actor, in Setti
 	}
 	if hasControl(in.Username) || hasControl(in.FromName) || len(in.Username) > 255 || len(in.FromName) > 100 {
 		return fmt.Errorf("%w: the user name or from name is too long or has control characters", ErrInvalidSettings)
+	}
+	in.DailyDigestTime = strings.TrimSpace(in.DailyDigestTime)
+	if !digestTimePattern.MatchString(in.DailyDigestTime) {
+		return fmt.Errorf("%w: the daily digest time must be written HH:MM, 24-hour (for example 08:00)", ErrInvalidSettings)
 	}
 	if in.FromAddress != "" {
 		addr, err := mailer.ParseAddress(in.FromAddress)
@@ -239,7 +283,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor rbac.Actor, in Setti
 	}
 	next := db.EmailSettings{
 		Enabled: in.Enabled, Host: in.Host, Port: in.Port, TLSMode: in.TLSMode, Username: in.Username,
-		FromAddress: in.FromAddress, FromName: in.FromName, UpdatedBy: actorID,
+		FromAddress: in.FromAddress, FromName: in.FromName, DailyDigestTime: in.DailyDigestTime, UpdatedBy: actorID,
 	}
 	if err := s.settings.Update(ctx, next); err != nil {
 		return fmt.Errorf("update email settings: %w", err)
@@ -247,6 +291,7 @@ func (s *Service) UpdateSettings(ctx context.Context, actor rbac.Actor, in Setti
 	detail := map[string]any{
 		"enabled": next.Enabled, "host": next.Host, "port": next.Port, "tls_mode": string(next.TLSMode),
 		"username": next.Username, "from_address": next.FromAddress, "previous_enabled": prev.Enabled,
+		"daily_digest_time": next.DailyDigestTime,
 	}
 	if err := s.audit.Record(ctx, actorID, actor.IsSuperAdmin, "updated_email_settings", "email_settings", settingsAuditObjectID, detail); err != nil {
 		auditErr := fmt.Errorf("record audit: %w", err)
@@ -335,6 +380,12 @@ func (s *Service) Enqueue(ctx context.Context, m Message) error {
 	if !cfg.Enabled {
 		return ErrDisabled
 	}
+	return s.queueChecked(ctx, m)
+}
+
+// queueChecked validates a message and queues it, without asking whether email
+// is on (the caller already knows).
+func (s *Service) queueChecked(ctx context.Context, m Message) error {
 	addr, err := mailer.ParseAddress(m.To)
 	if err != nil {
 		return fmt.Errorf("the recipient: %w", err)

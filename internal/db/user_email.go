@@ -40,6 +40,37 @@ type UserEmail struct {
 
 	Email  *string
 	Source *EmailSource
+
+	// Delivery and MinSeverity are the person's preferences: how alert email
+	// reaches them, and the lowest severity they want by email. They apply
+	// whether or not there is an address yet.
+	Delivery    EmailDelivery
+	MinSeverity AlertSeverity
+}
+
+// EmailDelivery is how a person wants alert email to reach them.
+type EmailDelivery string
+
+const (
+	// EmailDeliveryOff: no alert email at all; alerts stay in the inbox.
+	EmailDeliveryOff EmailDelivery = "off"
+
+	// EmailDeliveryImmediate: one email per alert, as it is raised.
+	EmailDeliveryImmediate EmailDelivery = "immediate"
+
+	// EmailDeliveryHourly and EmailDeliveryDaily: one email listing what arrived,
+	// on the hour or at the Admin-set daily time.
+	EmailDeliveryHourly EmailDelivery = "hourly"
+	EmailDeliveryDaily  EmailDelivery = "daily"
+)
+
+// Valid reports whether d is one of the four.
+func (d EmailDelivery) Valid() bool {
+	switch d {
+	case EmailDeliveryOff, EmailDeliveryImmediate, EmailDeliveryHourly, EmailDeliveryDaily:
+		return true
+	}
+	return false
 }
 
 // EmailConfirmation is a change of address waiting to be confirmed.
@@ -73,8 +104,8 @@ func NewUserEmailRepository(pool *pgxpool.Pool) *UserEmailRepository {
 func (r *UserEmailRepository) Get(ctx context.Context, userID string) (*UserEmail, error) {
 	var u UserEmail
 	err := r.pool.QueryRow(ctx,
-		`SELECT id, ad_sid IS NOT NULL, email, email_source FROM users WHERE id = $1`, userID).
-		Scan(&u.UserID, &u.Directory, &u.Email, &u.Source)
+		`SELECT id, ad_sid IS NOT NULL, email, email_source, email_delivery, email_min_severity FROM users WHERE id = $1`, userID).
+		Scan(&u.UserID, &u.Directory, &u.Email, &u.Source, &u.Delivery, &u.MinSeverity)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrUserNotFound
 	}
@@ -87,7 +118,7 @@ func (r *UserEmailRepository) Get(ctx context.Context, userID string) (*UserEmai
 // ListAll returns every user's address, keyed by user id - what the Users page
 // shows beside each account.
 func (r *UserEmailRepository) ListAll(ctx context.Context) (map[string]*UserEmail, error) {
-	rows, err := r.pool.Query(ctx, `SELECT id, ad_sid IS NOT NULL, email, email_source FROM users`)
+	rows, err := r.pool.Query(ctx, `SELECT id, ad_sid IS NOT NULL, email, email_source, email_delivery, email_min_severity FROM users`)
 	if err != nil {
 		return nil, fmt.Errorf("list user emails: %w", err)
 	}
@@ -95,7 +126,7 @@ func (r *UserEmailRepository) ListAll(ctx context.Context) (map[string]*UserEmai
 	out := make(map[string]*UserEmail)
 	for rows.Next() {
 		var u UserEmail
-		if err := rows.Scan(&u.UserID, &u.Directory, &u.Email, &u.Source); err != nil {
+		if err := rows.Scan(&u.UserID, &u.Directory, &u.Email, &u.Source, &u.Delivery, &u.MinSeverity); err != nil {
 			return nil, fmt.Errorf("scan user email: %w", err)
 		}
 		out[u.UserID] = &u

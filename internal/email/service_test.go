@@ -59,6 +59,17 @@ func (f *fakeSettings) Restore(_ context.Context, prev *db.EmailSettings) error 
 	return nil
 }
 
+func (f *fakeSettings) MarkDigestRun(_ context.Context, kind db.DigestKind, at time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if kind == db.DigestHourly {
+		f.cfg.LastHourlyDigestAt = &at
+	} else {
+		f.cfg.LastDailyDigestAt = &at
+	}
+	return nil
+}
+
 // fakeQueue behaves like the real queue where the service depends on it: Claim
 // counts an attempt, leases the row and returns only what is due.
 type fakeQueue struct {
@@ -66,11 +77,16 @@ type fakeQueue struct {
 	rows   []*db.Email
 	now    func() time.Time
 	nextID int
+
+	enqueueErr error
 }
 
 func (q *fakeQueue) Enqueue(_ context.Context, in db.NewEmail) (*db.Email, error) {
 	q.mu.Lock()
 	defer q.mu.Unlock()
+	if q.enqueueErr != nil {
+		return nil, q.enqueueErr
+	}
 	q.nextID++
 	e := &db.Email{ID: fmt.Sprintf("e%d", q.nextID), Kind: in.Kind, ToAddress: in.ToAddress, UserID: in.UserID, Subject: in.Subject, Body: in.Body,
 		Status: db.EmailPending, NextAttemptAt: q.now(), CreatedAt: q.now()}
@@ -257,12 +273,12 @@ func newFixture(t *testing.T) *fixture {
 }
 
 func validInput() SettingsInput {
-	return SettingsInput{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: db.EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky"}
+	return SettingsInput{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: db.EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky", DailyDigestTime: "08:00"}
 }
 
 // enable turns email on in the fixture's saved settings.
 func (f *fixture) enable() {
-	f.settings.cfg = db.EmailSettings{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: db.EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky"}
+	f.settings.cfg = db.EmailSettings{Enabled: true, Host: "relay.example.com", Port: 587, TLSMode: db.EmailTLSStartTLS, Username: "svc", FromAddress: "sparky@example.com", FromName: "Sparky", DailyDigestTime: "08:00"}
 }
 
 func TestUpdateSettings_AdminOnly(t *testing.T) {
@@ -295,6 +311,11 @@ func TestUpdateSettings_RefusesWhatIsInvalid(t *testing.T) {
 		"a newline in the from name":                   func(in *SettingsInput) { in.FromName = "Sparky\r\nBcc: x@y.com" },
 		"a newline in the user name":                   func(in *SettingsInput) { in.Username = "svc\n" + "x" },
 		"a user name over TLS none to another machine": func(in *SettingsInput) { in.TLSMode = db.EmailTLSNone },
+		"a digest time of 24:00":                       func(in *SettingsInput) { in.DailyDigestTime = "24:00" },
+		"a digest time of 8:00":                        func(in *SettingsInput) { in.DailyDigestTime = "8:00" },
+		"a digest time of 08:60":                       func(in *SettingsInput) { in.DailyDigestTime = "08:60" },
+		"an empty digest time":                         func(in *SettingsInput) { in.DailyDigestTime = "" },
+		"a digest time with a newline":                 func(in *SettingsInput) { in.DailyDigestTime = "08:00\n09:00" },
 	}
 	for name, mutate := range bad {
 		f := newFixture(t)
@@ -319,10 +340,10 @@ func TestUpdateSettings_RefusesWhatIsInvalid(t *testing.T) {
 	// local relay with no encryption.
 	f = newFixture(t)
 	for name, in := range map[string]SettingsInput{
-		"off, empty":          {Port: 587, TLSMode: db.EmailTLSStartTLS},
-		"anonymous relay":     {Enabled: true, Host: "relay.example.com", Port: 25, TLSMode: db.EmailTLSNone, FromAddress: "sparky@example.com"},
-		"local relay, no TLS": {Enabled: true, Host: "localhost", Port: 25, TLSMode: db.EmailTLSNone, Username: "svc", FromAddress: "sparky@example.com"},
-		"implicit TLS":        {Enabled: true, Host: "relay.example.com", Port: 465, TLSMode: db.EmailTLSImplicit, Username: "svc", FromAddress: "sparky@example.com"},
+		"off, empty":          {Port: 587, TLSMode: db.EmailTLSStartTLS, DailyDigestTime: "08:00"},
+		"anonymous relay":     {Enabled: true, Host: "relay.example.com", Port: 25, TLSMode: db.EmailTLSNone, FromAddress: "sparky@example.com", DailyDigestTime: "00:00"},
+		"local relay, no TLS": {Enabled: true, Host: "localhost", Port: 25, TLSMode: db.EmailTLSNone, Username: "svc", FromAddress: "sparky@example.com", DailyDigestTime: "23:59"},
+		"implicit TLS":        {Enabled: true, Host: "relay.example.com", Port: 465, TLSMode: db.EmailTLSImplicit, Username: "svc", FromAddress: "sparky@example.com", DailyDigestTime: " 17:30 "},
 	} {
 		if err := f.svc.UpdateSettings(context.Background(), admin, in); err != nil {
 			t.Errorf("%s: %v", name, err)

@@ -548,6 +548,7 @@ func (a *API) Router() http.Handler {
 	// service.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/account/email", a.handleRequestOwnEmail)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/account/email/clear", a.handleClearOwnEmail)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/account/email/preferences", a.handleUpdateEmailPreferences)
 	r.With(a.RequireSession).Get("/account/email/confirm", a.handleEmailConfirmPage)
 	r.With(a.RequireSession, a.RequireCSRF).Post("/account/email/confirm", a.handleEmailConfirm)
 

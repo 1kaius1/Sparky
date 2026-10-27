@@ -26,15 +26,120 @@ type fakeUsers struct {
 	setErr   error
 	putErr   error
 	setLocal int
+
+	// Alert email: who RecipientsForAlert returns (a test sets it, standing in
+	// for the SQL that mirrors the inbox rules), and the digest items waiting.
+	recipients []db.EmailRecipient
+	digest     map[string][]db.DigestItem
+	prefErr    error
+	recipErr   error
 }
 
 func newFakeUsers(now func() time.Time) *fakeUsers {
-	return &fakeUsers{now: now, users: map[string]*db.UserEmail{}, pending: map[string]*db.EmailConfirmation{}}
+	return &fakeUsers{now: now, users: map[string]*db.UserEmail{}, pending: map[string]*db.EmailConfirmation{}, digest: map[string][]db.DigestItem{}}
 }
 
-func (f *fakeUsers) addAD(id string) { f.users[id] = &db.UserEmail{UserID: id, Directory: true} }
+func (f *fakeUsers) addAD(id string) {
+	f.users[id] = &db.UserEmail{UserID: id, Directory: true, Delivery: db.EmailDeliveryImmediate, MinSeverity: db.AlertSeverityWarning}
+}
 func (f *fakeUsers) addLocal(id string) {
-	f.users[id] = &db.UserEmail{UserID: id}
+	f.users[id] = &db.UserEmail{UserID: id, Delivery: db.EmailDeliveryImmediate, MinSeverity: db.AlertSeverityWarning}
+}
+
+func (f *fakeUsers) SetPreferences(_ context.Context, id string, d db.EmailDelivery, min db.AlertSeverity) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.prefErr != nil {
+		return f.prefErr
+	}
+	u := f.users[id]
+	if u == nil {
+		return db.ErrUserNotFound
+	}
+	u.Delivery, u.MinSeverity = d, min
+	return nil
+}
+
+func (f *fakeUsers) RecipientsForAlert(context.Context, string, db.AlertSeverity) ([]db.EmailRecipient, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.recipErr != nil {
+		return nil, f.recipErr
+	}
+	return append([]db.EmailRecipient(nil), f.recipients...), nil
+}
+
+func (f *fakeUsers) AddDigestItem(_ context.Context, userID, alertID string, sev db.AlertSeverity, title string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.digest[userID] = append(f.digest[userID], db.DigestItem{AlertID: alertID, Severity: sev, Title: title, QueuedAt: f.now(), Open: true})
+	return nil
+}
+
+func (f *fakeUsers) UsersWithDigestItems(_ context.Context, mode db.EmailDelivery) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for id, items := range f.digest {
+		if u := f.users[id]; len(items) > 0 && u != nil && u.Delivery == mode {
+			out = append(out, id)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeUsers) PendingDigest(_ context.Context, userID string) ([]db.DigestItem, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]db.DigestItem(nil), f.digest[userID]...), nil
+}
+
+func (f *fakeUsers) DeleteDigestItems(_ context.Context, userID string, alertIDs []string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	drop := map[string]bool{}
+	for _, id := range alertIDs {
+		drop[id] = true
+	}
+	var keep []db.DigestItem
+	for _, it := range f.digest[userID] {
+		if !drop[it.AlertID] {
+			keep = append(keep, it)
+		}
+	}
+	f.digest[userID] = keep
+	return nil
+}
+
+func (f *fakeUsers) DeleteExpiredConfirmations(_ context.Context, now time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for id, c := range f.pending {
+		if c.ExpiresAt.Before(now) {
+			delete(f.pending, id)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (f *fakeUsers) DeleteDigestItemsOlderThan(_ context.Context, cutoff time.Time) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var n int64
+	for id, items := range f.digest {
+		var keep []db.DigestItem
+		for _, it := range items {
+			if it.QueuedAt.Before(cutoff) {
+				n++
+			} else {
+				keep = append(keep, it)
+			}
+		}
+		f.digest[id] = keep
+	}
+	return n, nil
 }
 
 func (f *fakeUsers) Get(_ context.Context, id string) (*db.UserEmail, error) {

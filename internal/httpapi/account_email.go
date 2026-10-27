@@ -30,10 +30,19 @@ type accountEmailView struct {
 	// EmailOn and CanConfirm say whether a change can be asked for now.
 	EmailOn    bool
 	CanConfirm bool
+
+	// How this person wants alert email, and when a daily digest goes out.
+	Delivery        string
+	MinSeverity     string
+	DailyDigestTime string
+	Zone            string
 }
 
 func accountEmailViewOf(v *email.AddressView) *accountEmailView {
-	out := &accountEmailView{Directory: v.Directory, Address: v.Email, EmailOn: v.EmailOn, CanConfirm: v.CanConfirm}
+	out := &accountEmailView{
+		Directory: v.Directory, Address: v.Email, EmailOn: v.EmailOn, CanConfirm: v.CanConfirm,
+		Delivery: string(v.Delivery), MinSeverity: string(v.MinSeverity), DailyDigestTime: v.DailyDigestTime, Zone: v.Zone,
+	}
 	switch v.Source {
 	case db.EmailSourceDirectory:
 		out.SourceLabel = "from your directory account"
@@ -125,6 +134,39 @@ func (a *API) handleClearOwnEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.renderAccountPage(w, r, identity, accountPageData{EmailSuccess: "Your email address was removed. You will not get alert email."})
+}
+
+// handleUpdateEmailPreferences is POST /account/email/preferences: how the
+// signed-in person wants alert email - off, immediately, or in a digest - and
+// the lowest severity they want. Any tier, any account with an address.
+func (a *API) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Request) {
+	identity, ok := IdentityFromContext(r.Context())
+	if !ok {
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	if identity.IsSuperAdmin {
+		writeError(w, r, http.StatusForbidden, "FORBIDDEN", "the break-glass account has no email address")
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		a.renderAccountPage(w, r, identity, accountPageData{EmailPrefsError: "invalid form submission"})
+		return
+	}
+	err := a.email.SetMyPreferences(r.Context(), identity.UserID, email.MyPreferences{
+		Delivery:    db.EmailDelivery(r.PostFormValue("email_delivery")),
+		MinSeverity: db.AlertSeverity(r.PostFormValue("email_min_severity")),
+	})
+	if errors.Is(err, email.ErrInvalidSettings) {
+		a.renderAccountPage(w, r, identity, accountPageData{EmailPrefsError: strings.TrimPrefix(err.Error(), email.ErrInvalidSettings.Error()+": ")})
+		return
+	}
+	if err != nil {
+		a.logger.Printf("httpapi: update email preferences: %v", err)
+		a.renderAccountPage(w, r, identity, accountPageData{EmailPrefsError: "the settings could not be saved"})
+		return
+	}
+	a.renderAccountPage(w, r, identity, accountPageData{EmailPrefsSuccess: true})
 }
 
 // emailConfirmData is the view model of the confirm page.
