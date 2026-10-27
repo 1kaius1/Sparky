@@ -180,6 +180,8 @@ sparky/
   - alerts/               # In-app alert inbox: raise/resolve for server-side producers, per-user read/dismiss, audience scoping, retention
   - groups/               # Application groups: named groups mapped to AD groups (cached membership) plus hand-added local accounts; an alert audience
   - schedule/             # Shared scheduler: weekday/time or every-N-days specs, the global IANA time zone, and the runner that fires a job when it is due
+  - mailer/               # SMTP client only (net/smtp): TLS modes, optional extra CA, auth, permanent-vs-transient errors; no queue, no policy
+  - email/                # Relay settings, delivery queue and worker, user addresses and confirmation links, alert email and hourly/daily digests
   - stalecontainers/      # Stale container monitoring (None/Report/Prune): classify containers left by ended instances, report them as alerts, remove them after archiving their logs
   - transfers/            # Download + peer-to-peer rsync replication orchestration, cancellation
   - modelsource/           # Download size estimation (Hugging Face)
@@ -554,6 +556,9 @@ with `existingSecret` support, etc.). Agent-specific variables are documented in
 | `BREAKGLASS_LOGIN_PATH`  | No       | `/login/break-glass` | Path the break-glass login route is mounted at - see `.env.example` |
 | `AUTH_RATE_LIMIT_MAX_ATTEMPTS` | No | `10`        | Per-source-IP attempt cap for `POST /login`/`POST /login/break-glass`, each throttled independently - see `.env.example` |
 | `AUTH_RATE_LIMIT_WINDOW_SECONDS` | No | `300`     | Window (seconds) the above cap applies over before resetting |
+| `SMTP_PASSWORD`          | No       | (empty)     | Password for the SMTP relay's user name (set on the Settings page); needed only for an authenticated relay - never stored in the database |
+| `SMTP_CA_FILE`           | No       | (empty)     | Path to an extra PEM CA certificate to trust for the relay, beside the system roots (an internal CA) |
+| `SPARKY_PUBLIC_URL`      | No       | (empty)     | The `http(s)://host[:port]` address people reach this server at; the links in emails use it, and a person cannot add their own email address without it |
 | `AUTH_RECHECK_INTERVAL_SECONDS` | No | `3600`     | How long a session's AD login-gate group membership is trusted before it's re-verified against LDAP - see `PLANNING.md` Decisions Log |
 
 The five `LDAP_*` variables above are validated as a single all-or-nothing

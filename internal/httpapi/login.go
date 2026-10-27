@@ -48,6 +48,24 @@ type LoginService struct {
 	// memberships after they sign in or are rechecked. Optional: the groups
 	// feature is not needed to log in.
 	memberships membershipRefresher
+
+	// directoryEmail, when set, stores the address AD gave for the person who
+	// just signed in. Optional: alert email is not needed to log in.
+	directoryEmail directoryEmailRecorder
+}
+
+// directoryEmailRecorder is the subset of *email.Service LoginService needs. It
+// never returns an error: a problem is logged by the email service and must not
+// stop anyone signing in.
+type directoryEmailRecorder interface {
+	RecordDirectoryEmail(ctx context.Context, userID, mail string)
+}
+
+// WithDirectoryEmailRecorder sets who stores the address AD gives at sign-in,
+// and returns the service for chaining.
+func (s *LoginService) WithDirectoryEmailRecorder(r directoryEmailRecorder) *LoginService {
+	s.directoryEmail = r
+	return s
 }
 
 // membershipRefresher is the subset of *groups.Service LoginService needs. It
@@ -114,6 +132,9 @@ func (s *LoginService) Login(ctx context.Context, username, password string) (*d
 	// directory that cannot answer this just leaves their cached groups as they
 	// were.
 	s.RefreshMemberships(ctx, user.ID, authUser.DN)
+	if s.directoryEmail != nil {
+		s.directoryEmail.RecordDirectoryEmail(ctx, user.ID, authUser.Email)
+	}
 
 	cookieValue, err := session.Sign(s.sessionSecret, session.New(user.ID, sessionDuration))
 	if err != nil {

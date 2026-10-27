@@ -1,0 +1,16 @@
+{{define "content"}}
+<h1>Confirm email address</h1>
+
+{{if .Data.Error}}
+<div class="form-error">{{.Data.Error}}</div>
+<p><a href="/account" hx-get="/account" hx-target="#main-content" hx-push-url="true">Back to My account</a></p>
+{{else}}
+<p>{{if .Data.ByAdmin}}A Sparky Admin asked{{else}}You asked{{end}} to use <strong>{{.Data.Email}}</strong> for Sparky alert emails. Confirm it to start receiving them there. This link works until {{.Data.ExpiresAt}}.</p>
+<form method="post" action="/account/email/confirm">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <input type="hidden" name="token" value="{{.Data.Token}}">
+  <p><button type="submit">Confirm this address</button></p>
+</form>
+<p><small>If you did not expect this, do nothing and the address will not be used.</small></p>
+{{end}}
+{{end}}

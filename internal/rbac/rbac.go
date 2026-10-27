@@ -142,6 +142,18 @@ func CanManageStaleContainers(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanManageEmail reports whether actor may configure email delivery (the SMTP
+// relay, the digest time) and send the test email. Admin/SuperAdmin only
+// (PLANNING.md, 2026-10-26). A distinct function rather than CanViewSettings,
+// even though both share a tier floor today: email settings decide where
+// alert text is sent, and could be granted differently later.
+func CanManageEmail(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanViewSettings reports whether actor may view the Settings page (the
 // Metrics export config and Audit settings singleton rows) - see
 // CLAUDE.md Frontend Conventions, Settings' sidebar tier ("Admin"). Same
@@ -176,6 +188,18 @@ func CanCreateLocalAccount(actor Actor) bool {
 // this file's existing precedent (CanViewSettings vs. CanViewAuditLog/
 // CanViewUsers) of not conflating capabilities that could diverge later.
 func CanResetLocalAccountPassword(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
+// CanSetUserEmail reports whether actor may set or clear another local
+// account's email address, and see every account's address on the Users page.
+// Same unconditional-by-tier shape as CanResetLocalAccountPassword and for the
+// same reason a distinct function: an address decides where a person's alert
+// text is sent, so it is its own capability even though it shares a floor.
+func CanSetUserEmail(actor Actor) bool {
 	if actor.IsSuperAdmin {
 		return true
 	}

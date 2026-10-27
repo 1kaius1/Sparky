@@ -28,6 +28,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/config"
 	"github.com/1kaius1/Sparky/internal/containerlogs"
 	"github.com/1kaius1/Sparky/internal/db"
+	"github.com/1kaius1/Sparky/internal/email"
 	"github.com/1kaius1/Sparky/internal/engineprovision"
 	"github.com/1kaius1/Sparky/internal/engines"
 	"github.com/1kaius1/Sparky/internal/events"
@@ -179,6 +180,21 @@ func main() {
 	// cleanup page, removes them after their logs are archived. It asks and
 	// instructs the agents through agentRegistry; their answers arrive in
 	// onMessage below.
+	// emailService holds the SMTP relay settings and the delivery queue; its
+	// worker (started below) sends queued mail through the relay. The relay's
+	// password, an extra CA file and the public address come from the
+	// environment, never the database.
+	emailHello, _ := os.Hostname()
+	emailService := email.NewService(db.NewEmailSettingsRepository(pool), db.NewEmailQueueRepository(pool), db.NewUserEmailRepository(pool), auditRecorder,
+		email.Env{SMTPPassword: cfg.SMTPPassword, SMTPCAFile: cfg.SMTPCAFile, PublicURL: cfg.PublicURL}, emailHello, logger).WithZone(scheduleService)
+	// A new or more severe alert is emailed to the people it is addressed to
+	// (immediately or in their digest) as it is raised.
+	alertService.WithNotifier(emailService)
+	// An AD user's address is the directory's mail attribute, stored at every
+	// sign-in. A local account's address is set on the Account page or by an Admin.
+	if loginService != nil {
+		loginService.WithDirectoryEmailRecorder(emailService)
+	}
 	staleContainerService := stalecontainers.NewService(db.NewStaleContainerSettingsRepository(pool), nodeRepo, instanceRepo, profileRepo, agentRegistry, alertService, auditRecorder, scheduleService, logger)
 	// transferService additionally gets nodeService (SSH identity and
 	// interface resolution) and inventoryService (source-presence check) for
@@ -293,7 +309,7 @@ func main() {
 	// breakGlass is also the Setup Check's completeness signal - see
 	// setup.go and internal/httpapi's setupGate.
 	api, err := httpapi.New(loginService, localLoginService, breakGlassLoginService, breakGlass, cfg.BreakGlassAllowedIPs, cfg.BreakGlassLoginPath, cfg.AuthRateLimitMaxAttempts, time.Duration(cfg.AuthRateLimitWindowSecs)*time.Second, time.Duration(cfg.AuthRecheckIntervalSecs)*time.Second, cfg.SessionSecret, agentConnHandler,
-		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, groupService, scheduleService, staleContainerService, logger)
+		nodeService, nodeService, profileService, profileService, lifecycleService, lifecycleService, transferService, transferService, users, auditRecorder, rbacService, rbacService, rbacService, rbacService, settingsService, themeSettingsRepo, metricsService, eventsBroker, engineProvisionService, engineProvisionService, engineProvisionService, inventoryService, modelsource.New(), containerLogService, alertService, groupService, scheduleService, staleContainerService, emailService, logger)
 	if err != nil {
 		logger.Fatalf("httpapi: %v", err)
 	}
@@ -309,9 +325,16 @@ func main() {
 	defer stopRetention()
 	go containerLogService.RunRetention(retentionCtx)
 	go alertService.RunRetention(retentionCtx)
+	// The email worker sends queued mail through the relay (and does nothing
+	// while email is off); it stops with the process.
+	go emailService.Run(retentionCtx)
 	// The scheduler runs stale container monitoring when its schedule says it
 	// is due (and does nothing while the mode is None); it stops with the process.
 	go schedule.NewRunner(scheduleService, logger).Run(retentionCtx, staleContainerService.Job())
+	// The hourly and daily email digests run on the same scheduler.
+	for _, digestJob := range emailService.DigestJobs() {
+		go schedule.NewRunner(scheduleService, logger).Run(retentionCtx, digestJob)
+	}
 
 	serveErr := make(chan error, 1)
 	go func() {

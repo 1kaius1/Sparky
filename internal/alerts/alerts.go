@@ -110,12 +110,29 @@ type Service struct {
 	pub      publisher
 	logger   *log.Logger
 	now      func() time.Time
+	notifier Notifier
+}
+
+// Notifier is told about each alert worth a person's attention as it is
+// raised: a new alert, or an open one that became more severe (escalated). It
+// is the email service; it has no way to fail the raise, and so no error to
+// return.
+type Notifier interface {
+	AlertRaised(ctx context.Context, a *db.Alert, escalated bool)
 }
 
 // NewService constructs a Service. pub may be nil (no live refresh), which
 // only tests do.
 func NewService(store store, settings settingsStore, audit auditRecorder, pub publisher, logger *log.Logger) *Service {
 	return &Service{store: store, settings: settings, audit: audit, pub: pub, logger: logger, now: time.Now}
+}
+
+// WithNotifier sets who is told when an alert is raised or escalates, and
+// returns the service for chaining. Unset, nobody is (alerts stay in the
+// inbox only).
+func (s *Service) WithNotifier(n Notifier) *Service {
+	s.notifier = n
+	return s
 }
 
 // RaiseParams describes an alert a producer wants raised.
@@ -219,6 +236,12 @@ func (s *Service) Raise(ctx context.Context, p RaiseParams) (*db.RaiseResult, er
 	}
 	if res.Created || res.Escalated {
 		s.changed()
+		if s.notifier != nil {
+			// Detached from the caller's cancellation: the alert exists now, and
+			// a caller that gives up must not leave the people it concerns
+			// unmailed. The notifier bounds its own time.
+			s.notifier.AlertRaised(context.WithoutCancel(ctx), res.Alert, res.Escalated)
+		}
 	}
 	return res, nil
 }

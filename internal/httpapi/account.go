@@ -55,6 +55,13 @@ type accountPageData struct {
 	StatusPalette    string // "" (auto) / "light" / "dark"
 	ThemeError       string
 	ThemeSuccess     bool
+
+	Email        *accountEmailView
+	EmailError   string
+	EmailSuccess string
+
+	EmailPrefsError   string
+	EmailPrefsSuccess bool
 }
 
 func (a *API) handleAccountPage(w http.ResponseWriter, r *http.Request) {
@@ -107,6 +114,14 @@ func (a *API) renderAccountPage(w http.ResponseWriter, r *http.Request, identity
 	if user.ThemeStatusPalette != nil {
 		data.StatusPalette = string(*user.ThemeStatusPalette)
 	}
+
+	addr, err := a.email.MyAddress(r.Context(), identity.UserID)
+	if err != nil {
+		a.logger.Printf("httpapi: look up email address for account page: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data.Email = accountEmailViewOf(addr)
 
 	a.render(w, r, "account", "My account", data)
 }

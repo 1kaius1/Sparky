@@ -49,6 +49,76 @@ is nothing to edit on this page.</p>
 {{end}}
 
 {{if not .Data.IsSuperAdmin}}
+<h2>Email</h2>
+{{if .Data.EmailError}}
+<div class="form-error">{{.Data.EmailError}}</div>
+{{end}}
+{{if .Data.EmailSuccess}}
+<div class="form-success">{{.Data.EmailSuccess}}</div>
+{{end}}
+{{if .Data.Email.Address}}
+<p>Alert email goes to <strong>{{.Data.Email.Address}}</strong> ({{.Data.Email.SourceLabel}}).</p>
+{{else}}
+<p>You have no email address, so you get no alert email. Alerts still appear in your Alerts inbox.</p>
+{{end}}
+{{if .Data.Email.Directory}}
+<p>Your address is read from your directory account each time you sign in. To change it, change it there.</p>
+{{else}}
+{{if .Data.Email.PendingEmail}}
+<p>Waiting for you to confirm <strong>{{.Data.Email.PendingEmail}}</strong>{{if .Data.Email.PendingByAdmin}} (an Admin asked for it){{end}}: open the link in the email sent to it, while signed in here. It works until {{.Data.Email.PendingExpires}}.</p>
+{{end}}
+{{if .Data.Email.CanConfirm}}
+<form method="post" action="/account/email">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="email">{{if .Data.Email.Address}}Change your address{{else}}Your email address{{end}}</label><br>
+    <input type="email" id="email" name="email" maxlength="254" placeholder="name@example.org" required>
+  </p>
+  <p><small>A confirmation link is sent to the new address. Nothing changes until you open it.</small></p>
+  <p><button type="submit">Send confirmation link</button></p>
+</form>
+{{else}}
+<p><small>{{if not .Data.Email.EmailOn}}Email is turned off on this server, so you cannot add an address yourself; ask an Admin.{{else}}This server has no public address configured, so a confirmation link cannot be sent; ask an Admin to set your address.{{end}}</small></p>
+{{end}}
+{{if .Data.Email.Address}}
+<form method="post" action="/account/email/clear">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p><button type="submit">Remove my address</button></p>
+</form>
+{{end}}
+{{end}}
+{{if .Data.Email.Address}}
+<h3>How you get alert email</h3>
+{{if .Data.EmailPrefsError}}
+<div class="form-error">{{.Data.EmailPrefsError}}</div>
+{{end}}
+{{if .Data.EmailPrefsSuccess}}
+<div class="form-success">Alert email settings saved.</div>
+{{end}}
+<form method="post" action="/account/email/preferences">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="email_delivery">Send me alert email</label><br>
+    <select id="email_delivery" name="email_delivery">
+      <option value="immediate" {{if eq .Data.Email.Delivery "immediate"}}selected{{end}}>As each alert arrives</option>
+      <option value="hourly" {{if eq .Data.Email.Delivery "hourly"}}selected{{end}}>In an hourly digest</option>
+      <option value="daily" {{if eq .Data.Email.Delivery "daily"}}selected{{end}}>In a daily digest</option>
+      <option value="off" {{if eq .Data.Email.Delivery "off"}}selected{{end}}>Not at all (the Alerts inbox only)</option>
+    </select>
+  </p>
+  <p>
+    <label for="email_min_severity">Lowest severity to email me about</label><br>
+    <select id="email_min_severity" name="email_min_severity">
+      <option value="info" {{if eq .Data.Email.MinSeverity "info"}}selected{{end}}>Info and above</option>
+      <option value="warning" {{if eq .Data.Email.MinSeverity "warning"}}selected{{end}}>Warning and above</option>
+      <option value="critical" {{if eq .Data.Email.MinSeverity "critical"}}selected{{end}}>Critical only</option>
+    </select>
+  </p>
+  <p><small>Only new alerts, and alerts that become more severe, are emailed. An alert that is resolved or dismissed before a digest goes out is left out of it. Alerts always appear in the Alerts inbox either way. A daily digest goes out at {{.Data.Email.DailyDigestTime}} ({{.Data.Email.Zone}}); an hourly one on the hour.</small></p>
+  <p><button type="submit">Save</button></p>
+</form>
+{{end}}
+
 <h2>Theme</h2>
 {{if .Data.ThemeError}}
 <div class="form-error">{{.Data.ThemeError}}</div>

@@ -3,6 +3,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -187,6 +189,66 @@ func TestLoad_InvalidAuthRecheckIntervalSeconds_ReturnsError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "AUTH_RECHECK_INTERVAL_SECONDS") {
 		t.Errorf("Load() error = %q, want it to mention AUTH_RECHECK_INTERVAL_SECONDS", err.Error())
+	}
+}
+
+func TestLoad_EmailSettings(t *testing.T) {
+	setAllRequired(t)
+	cfg, err := Load()
+	if err != nil || cfg.PublicURL != "" || cfg.SMTPPassword != "" || cfg.SMTPCAFile != "" {
+		t.Fatalf("defaults: %+v, %v; want everything empty", cfg, err)
+	}
+
+	ca := filepath.Join(t.TempDir(), "ca.pem")
+	if err := os.WriteFile(ca, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SPARKY_PUBLIC_URL", "https://sparky.example.internal/")
+	t.Setenv("SMTP_PASSWORD", "relay-secret")
+	t.Setenv("SMTP_CA_FILE", ca)
+	cfg, err = Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.PublicURL != "https://sparky.example.internal" || cfg.SMTPPassword != "relay-secret" || cfg.SMTPCAFile != ca {
+		t.Errorf("got %+v", cfg)
+	}
+}
+
+func TestLoad_PublicURLIsNormalizedOrRefused(t *testing.T) {
+	good := map[string]string{
+		"http://localhost:8080":           "http://localhost:8080",
+		"https://sparky.example.com":      "https://sparky.example.com",
+		"https://sparky.example.com/":     "https://sparky.example.com",
+		"  https://sparky.example.com  ":  "https://sparky.example.com",
+		"HTTPS://Sparky.Example.com:8443": "https://Sparky.Example.com:8443",
+	}
+	for in, want := range good {
+		setAllRequired(t)
+		t.Setenv("SPARKY_PUBLIC_URL", in)
+		cfg, err := Load()
+		if err != nil || cfg.PublicURL != want {
+			t.Errorf("%q: %q, %v; want %q", in, cfg.PublicURL, err, want)
+		}
+	}
+	for _, bad := range []string{"sparky.example.com", "ftp://sparky.example.com", "https://", "https://u:p@sparky.example.com", "https://sparky.example.com/app", "https://sparky.example.com?x=1", "https://sparky.example.com/#top", "javascript:alert(1)"} {
+		setAllRequired(t)
+		t.Setenv("SPARKY_PUBLIC_URL", bad)
+		if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SPARKY_PUBLIC_URL") {
+			t.Errorf("%q: %v, want a SPARKY_PUBLIC_URL error", bad, err)
+		}
+	}
+}
+
+func TestLoad_SMTPCAFileMustBeAReadableFile(t *testing.T) {
+	setAllRequired(t)
+	t.Setenv("SMTP_CA_FILE", filepath.Join(t.TempDir(), "missing.pem"))
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SMTP_CA_FILE") {
+		t.Errorf("missing file: %v", err)
+	}
+	t.Setenv("SMTP_CA_FILE", t.TempDir())
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "SMTP_CA_FILE") {
+		t.Errorf("a directory: %v", err)
 	}
 }
 

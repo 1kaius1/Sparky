@@ -32,6 +32,11 @@ the schema.
 | `theme_custom_colors` | jsonb, `NOT NULL DEFAULT '{}'` | Sparse map of CSS custom-property name -> `"#RRGGBB"` string, layered on top of `theme_preset` (or the inherited system default) - deliberately opaque to the database, validated against a fixed 15-key whitelist at the service layer (`internal/rbac/theme.go`, the single source of truth for that whitelist), same "validated in Go, not SQL" precedent as Model profiles' `engine_params`. Never includes a `--color-status-*` key - status colors are locked, never part of arbitrary customization, see `theme_status_palette` below. Empty object means no customization is active |
 | `theme_status_palette` | enum, nullable | `light` / `dark`. `NULL` means auto-derive from the resolved preset's own family (each of the 8 presets belongs to exactly one); non-null is an explicit override, letting a customizing user pair either status-color palette with either preset independent of its family - only ever meaningful once `theme_custom_colors` is non-empty |
 
+| `email` | text, nullable | Where this person's alert email goes - `NULL` means none, and a person with no address gets no alert email whatever they choose below. Not unique: several accounts may share a team mailbox. Migration `000047_add_user_email` |
+| `email_source` | enum, nullable | `directory` / `self` / `admin`, `NULL` exactly when `email` is. `directory`: read from AD's `mail` attribute at every sign-in, only for an AD-backed row, never edited in Sparky (a person's address changes in the directory; a value that is not a plain address is stored as none). `self`: a local-only account's own address, in use only after its owner opened the confirmation link sent to it. `admin`: set by an Admin on a local-only account, with or without the confirmation step (the Admin chooses). Two `CHECK`s keep the pair consistent and tie `directory` to `ad_sid` and the other two to a local-only row |
+| `email_delivery` | enum, `NOT NULL DEFAULT 'immediate'` | `off` / `immediate` / `hourly` / `daily`: no alert email at all, one email per alert as it is raised, or one email listing what arrived in an hourly or daily digest. Set by the person at `/account` (`internal/email.Service.SetMyPreferences`), any tier. Moving to `off` or `immediate` drops that person's waiting digest items. Migration `000048_email_preferences_and_digests` |
+| `email_min_severity` | `alert_severity`, `NOT NULL DEFAULT 'warning'` | The lowest severity this person wants by email. The defaults mean warning and critical alerts by email at once, with info alerts in the inbox only. The Alerts inbox is unaffected by either column |
+
 `tier` is a plain enum column, not a normalized roles table - four fixed values with
 no per-tier metadata does not justify the extra join.
 
@@ -471,6 +476,110 @@ Audited actions (object type `app_group`, object id the group's id): `created_ap
 are reads and are not audited. Creating, renaming, deleting, mapping and unmapping are
 open to PowerDev and above (`rbac.CanManageGroups`); adding or removing a local account
 by hand is Admin and above (`rbac.CanManageGroupLocalMembers`).
+
+---
+
+## Email settings
+
+Singleton settings row (migration `000046_create_email`, extended by `000048`), editable on
+the Settings page (Admin only, `rbac.CanManageEmail`), seeded at migration time with email off
+like the other settings rows. Sparky sends mail only through an SMTP relay - a mail server that
+accepts mail from this one, with a login or by trusting its address - and never directly to
+recipients' mail servers (PLANNING.md Decisions Log, 2026-10-26). The relay's password is
+deliberately not here: it comes from the `SMTP_PASSWORD` environment variable, like every
+other secret, as do the optional extra CA file (`SMTP_CA_FILE`) and the address emails link to
+(`SPARKY_PUBLIC_URL`).
+
+| Field | Type | Notes |
+|---|---|---|
+| `enabled` | boolean | Default `false`. A `CHECK` refuses `true` without a host and a from address, so "enabled" never means "enabled but unusable". While off, nothing new is queued or sent, and mail already queued waits (and is given up on at a day old) |
+| `host` / `port` | text / integer | The relay. Port 1 to 65535 (`CHECK`); default 587 |
+| `tls_mode` | enum | `none` / `starttls` / `tls`. `none` is for a relay on this machine or an internal network; it is refused together with a user name unless the relay is on this machine, because the password would otherwise cross the network in clear text. `starttls` requires the relay to offer the upgrade and never falls back to clear text. There is no option to skip certificate verification |
+| `username` | text | Empty means an anonymous relay (one that trusts this server's address); otherwise `SMTP_PASSWORD` must be set |
+| `from_address` / `from_name` | text | The sender shown on every email |
+| `daily_digest_time` | text | `HH:MM`, 24-hour, in the global time zone (Schedule settings); default `08:00`, format enforced by a `CHECK`. People who chose a daily digest get it then; hourly digests go out on the hour |
+| `digest_schedule_set_at` | timestamptz | When the digest schedule was last changed (restarted only when `daily_digest_time` changes) - the scheduler's anchor, so it never catches up on an occurrence from before it |
+| `last_hourly_digest_at` / `last_daily_digest_at` | timestamptz, nullable | When each digest last began, stamped before it runs so a crash mid-run cannot send it twice |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row, and when the break-glass SuperAdmin makes the change |
+| `updated_at` | timestamptz | |
+
+Audited as `updated_email_settings` (object type `email_settings`); the audit detail never
+includes the password. An Admin can also send a test email to any address (`sent_test_email`);
+it goes straight to the relay, even while email is off, so the settings can be checked before
+turning it on, and shows the relay's own answer.
+
+---
+
+## Email queue
+
+Mail waiting to go and a record of what went (migration `000046`). A row is written when
+something wants to send - an alert, a digest, a confirmation link - and a worker in
+`internal/email` delivers it, so a mail outage never blocks the application. It is a record, not
+a mailbox: the subject and body are what was sent, which is a summary and a link, never log or
+prompt content. A test email is sent directly and is not queued.
+
+| Field | Type | Notes |
+|---|---|---|
+| `id` | uuid, PK | |
+| `kind` | enum | `alert` / `digest` / `confirmation` / `test` |
+| `to_address` | text | |
+| `user_id` | uuid, nullable, FK -> Users.id `ON DELETE SET NULL` | Informational: the record of what was sent outlives the account |
+| `subject` / `body` | text | As sent |
+| `status` | enum | `pending` / `sent` / `failed`. A `CHECK` ties `sent` to `sent_at` |
+| `attempts` | integer | Counted when the worker claims the row, so a crash mid-send still counts |
+| `next_attempt_at` | timestamptz | When the worker may try again, and also the lease on a row it has claimed (`FOR UPDATE SKIP LOCKED`), so a crash retries later instead of losing the mail and two workers never send one row twice |
+| `last_error` | text, nullable | The relay's answer or the network error, shown on the Settings page |
+| `created_at` / `sent_at` | timestamptz | |
+
+A transient failure (network error, a 4xx answer) is retried after 1 minute, 5 minutes, 30
+minutes, 2 hours and 6 hours; the sixth failed attempt, a permanent refusal (a 5xx answer to
+the recipient or to the message itself), or mail a day old makes it `failed`. Rows older than
+30 days are deleted hourly.
+
+---
+
+## Email confirmations
+
+A change of a local-only account's address waiting for its owner to confirm it (migration
+`000047_add_user_email`). One row per user: a new request replaces the old.
+
+| Field | Type | Notes |
+|---|---|---|
+| `user_id` | uuid, PK, FK -> Users.id `ON DELETE CASCADE` | |
+| `email` | text | The address being confirmed |
+| `token_hash` | text, unique | SHA-256 (hex) of a 32-byte random token. Only the hash is stored, so a copy of the database cannot confirm anything; the token itself is only in the email sent to the new address |
+| `source` | enum | `self` or `admin`: who asked |
+| `requested_by` | uuid, nullable, FK -> Users.id `ON DELETE SET NULL` | The asking Admin; null for a self request or the break-glass SuperAdmin |
+| `created_at` / `expires_at` | timestamptz | A link works for 24 hours; a second request within a minute of the last is refused |
+
+The link opens a page that changes nothing (a mail scanner or preview must not confirm an
+address); the signed-in owner presses a button, which POSTs. A link opened while signed in as
+anyone else is the same "not valid" answer as an unknown one. Audited actions:
+`requested_email_confirmation`, `confirmed_email_address`, `cleared_email_address` (object type
+`user`), and `set_user_email` when an Admin sets or clears an address (the detail has
+`require_confirmation`, or `cleared`). Expired rows are deleted hourly.
+
+---
+
+## Email digest items
+
+Alerts waiting for a person's next hourly or daily digest (migration `000048`). One row per
+(person, alert): a repeat at a higher severity updates the row instead of adding another.
+
+| Field | Type | Notes |
+|---|---|---|
+| `user_id` | uuid, FK -> Users.id `ON DELETE CASCADE` | Part of the primary key |
+| `alert_id` | uuid, FK -> Alerts.id `ON DELETE CASCADE` | Part of the primary key, so alert retention takes these with it |
+| `severity` / `title` | `alert_severity` / text | What the alert was when queued |
+| `queued_at` | timestamptz | Indexed; items older than 48 hours are dropped at the next digest run |
+
+At digest time the alert itself is consulted: one since resolved, or one the person dismissed,
+is left out, as is one below their current minimum severity. Items are cleared only after the
+digest email is queued, so a failure to queue loses nothing. Who an alert is emailed to is
+decided in SQL (`db.UserEmailRepository.RecipientsForAlert`) with the same rules as the Alerts
+inbox (user, tier and above, application group), so nobody is emailed about an alert they could
+not open. Changing delivery preferences is audited as `updated_email_preferences` (object type
+`user`, the person themselves; the detail holds the old and new values).
 
 ---
 
