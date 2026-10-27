@@ -127,6 +127,9 @@ func (r *StaleContainerSettingsRepository) Update(ctx context.Context, u StaleCo
 // change whose audit record could not be written. Update cannot do this: it
 // would treat the restored schedule as a new one.
 func (r *StaleContainerSettingsRepository) Restore(ctx context.Context, prev *StaleContainerSettings) error {
+	if prev == nil {
+		return fmt.Errorf("restore stale container settings: nothing to restore")
+	}
 	if _, err := r.pool.Exec(ctx,
 		`UPDATE stale_container_settings SET
 		   mode = $1, schedule = $2::jsonb, schedule_set_at = $3, last_run_at = $4,

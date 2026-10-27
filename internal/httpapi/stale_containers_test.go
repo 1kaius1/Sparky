@@ -438,6 +438,17 @@ func TestAlertObjectLink_StaleContainersGoToTheCleanupPage(t *testing.T) {
 	}
 }
 
+func TestContainerLogReasonLabel_KnowsStaleCleanup(t *testing.T) {
+	for reason, want := range map[string]string{
+		"stale_cleanup": "removed as stale", "unload": "unloaded", "failed_launch": "failed launch",
+		"replaced": "replaced by a new launch", "something_new": "something new",
+	} {
+		if got := containerLogReasonLabel(reason); got != want {
+			t.Errorf("containerLogReasonLabel(%q) = %q, want %q", reason, got, want)
+		}
+	}
+}
+
 func TestCleanupLineOptions(t *testing.T) {
 	opts := cleanupLineOptions(2000)
 	if len(opts) != 6 || !opts[3].Selected || opts[3].Value != 2000 || opts[5].Value != 0 || opts[5].Label != "All" {

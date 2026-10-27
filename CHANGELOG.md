@@ -68,6 +68,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no agent or protocol change. This is PR 2 of the series recorded in
   PLANNING.md (2026-10-26). Tested against a stand-in LDAP server, not a real
   Active Directory - please try mapping and sign-in on your own directory.
+- Stale container monitoring and the Container cleanup page: when an instance
+  ends, its container can be left behind on the node. A new **Stale container
+  monitoring** section on the Settings page (Admin) has three modes: **None**
+  (the default, does nothing), **Report** (scan on a schedule and send the Admins
+  an alert per node listing what was found) and **Prune** (scan on a schedule
+  and remove what is stale, saving each container's log first). The schedule is
+  either chosen weekdays at chosen times, or every N days starting when it is
+  saved; a run missed while the server was down happens once, not once per
+  miss. A container is stale when its instance is over, it is stopped, and it
+  has been stopped for the **minimum age** (an Admin setting, default 24 hours).
+  A container that is running, whose instance is still running, or that stopped
+  more recently than that is never touched. A container Sparky started but has
+  no record of is stale only once exited; a running one is reported in its own
+  alert and never removed. A container whose log cannot be saved is kept, with a
+  warning alert. Turning Prune on asks for an explicit confirmation each time it
+  is switched on. A new **Container cleanup** page (Admin, under Models) scans
+  every node when opened and lists what is stale, what is too recent and what
+  is running without a record; each stale container has its own **Remove**
+  button with a choice of how many log lines to save first, and a click checks
+  again that the container is stale before removing it. The log is saved under
+  Container logs (reason "removed as stale"). A removal is audited as
+  `removed_stale_container`, naming the Admin who clicked, or the system for a
+  scheduled run; changing the settings is audited as
+  `updated_stale_container_settings`. A node that is offline or does not answer
+  is reported as not scanned, never assumed to be empty. Alongside it is the
+  shared scheduler and one **global time zone** (a Settings section, IANA name,
+  default UTC; the zone database is built into the server) that every schedule is
+  read in, audited as `updated_schedule_timezone`. New migrations
+  `000044_create_schedule_settings` and `000045_create_stale_container_settings`;
+  run them with the server (`migrate -path migrations/ -database "$DATABASE_URL"
+  up`). **Upgrade the agents first, then the server**: this adds two agent
+  messages (`list_containers`, `remove_container`); an older agent ignores them
+  and its node is reported as not answering. SCHEMA.md, ARCHITECTURE.md,
+  CLAUDE.md, docs/AGENT.md and PLANNING.md updated; `VERSION` bumped to
+  `0.2.17`. This is PR 3 of the series recorded in PLANNING.md (2026-10-26). Tested
+  against a real Podman 4.9.3 socket with a real agent; not yet on Docker or a real
+  DGX Spark, and the pages have not been checked in a real browser.
 - Live container logs and log retention: a **Logs** link on the Profiles page
   (for an active instance) and on the Dashboard's running instances (Developer
   and above) opens that instance's current output, read from its node on

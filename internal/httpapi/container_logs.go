@@ -93,6 +93,8 @@ func containerLogReasonLabel(reason string) string {
 		return "failed launch"
 	case "replaced":
 		return "replaced by a new launch"
+	case "stale_cleanup":
+		return "removed as stale"
 	default:
 		return strings.ReplaceAll(reason, "_", " ")
 	}

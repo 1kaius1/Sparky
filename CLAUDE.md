@@ -179,6 +179,8 @@ sparky/
   - containerlogs/        # Container logs agents archive before removing a container: chunk reassembly, storage, Developer-floor viewing
   - alerts/               # In-app alert inbox: raise/resolve for server-side producers, per-user read/dismiss, audience scoping, retention
   - groups/               # Application groups: named groups mapped to AD groups (cached membership) plus hand-added local accounts; an alert audience
+  - schedule/             # Shared scheduler: weekday/time or every-N-days specs, the global IANA time zone, and the runner that fires a job when it is due
+  - stalecontainers/      # Stale container monitoring (None/Report/Prune): classify containers left by ended instances, report them as alerts, remove them after archiving their logs
   - transfers/            # Download + peer-to-peer rsync replication orchestration, cancellation
   - modelsource/           # Download size estimation (Hugging Face)
   - metrics/              # Telemetry ingestion, retention/downsample, NFS/S3 export
@@ -672,7 +674,11 @@ web/static/
   Developer and above) and Container logs
   (Developer and above - archived container output, which can contain prompt
   content; `rbac.CanViewInstanceLogs`; the same floor gates the live log link on
-  Profiles and Dashboard), Engines group -
+  Profiles and Dashboard) and Container cleanup (Admin only,
+  `rbac.CanManageStaleContainers` - stale containers left on nodes by ended
+  instances, removed one at a time with a per-container choice of how many log
+  lines to save first; its monitoring mode, schedule and minimum age live on
+  Settings), Engines group -
   Inventory (Read-only) and Transfers (Read-only view / Admin+ provision),
   Metrics (Read-only), Users & permissions (Admin), Audit log (Admin), Settings
   (Admin). Models' flat transfer history (`GET /transfers`) is reachable from
