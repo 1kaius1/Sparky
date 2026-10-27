@@ -161,7 +161,43 @@ what - an alert not addressed to a viewer is simply not found - and the audit of
 those actions, so the HTTP handlers stay thin. `internal/events` carries only a signal
 with no history, so it cannot hold alerts; the service publishes `alerts_changed` on it
 and each open browser refetches its own unread count for the sidebar badge (events name
-no user). A daily job expires old alerts per the Settings page's retention.
+no user). A daily job expires old alerts per the Settings page's retention. A new alert, or
+one that becomes more severe, is also handed to an optional `Notifier` - the email service,
+see Email below - which decides who is emailed; a repeat at the same severity is not news.
+
+#### Email
+`internal/mailer` is the SMTP client alone - connect, upgrade to TLS as configured, authenticate
+if a user name is set, send one message - on `net/smtp` (no new dependency). It verifies the
+relay's certificate against the system roots plus an optional extra CA file and has no way to
+skip that, never falls back to clear text after a failed STARTTLS, never sends a password
+over a clear-text connection to another machine, and refuses an address or header that
+contains a line break. It tells a permanent refusal (a 5xx answer to the recipient or to the
+message) from a transient failure, which decides retry. `internal/email` is everything around
+it - see `SCHEMA.md` Email settings, Email queue, Email confirmations and Email digest items:
+
+- **Queue and worker.** Anything that wants to send writes a row to the queue (`Enqueue`) and
+  returns; a worker started in `main` claims due rows with a lease, sends them through the
+  mailer and records the result, with a growing delay between attempts, so a relay outage
+  never slows or fails the thing that wanted to send. Mail a day old is given up on.
+- **Addresses.** An AD account's address is the directory's `mail` attribute, stored at every
+  sign-in through a narrow interface (so `auth` and `httpapi` do not import `email`) and
+  never edited in Sparky. A local account's is entered on `/account` and used only after its
+  owner opens an emailed link and presses a button, or set by an Admin, who chooses whether
+  to require that. The break-glass SuperAdmin is not a user and has no address.
+- **Alert email.** `internal/alerts` tells a `Notifier` (the email service) about each new or
+  escalated alert after it is stored; the notifier can neither fail nor delay the raise
+  beyond a short bound. The email service asks the database for the people the alert is
+  addressed to (same visibility rules as the inbox) who have an address, have not turned
+  email off, and want that severity, and then either queues one email per person or adds the
+  alert to their hourly or daily digest.
+- **Digests.** Two jobs on the shared scheduler (below): hourly on the hour, and daily at the
+  Admin-set time in the global time zone. A digest lists only alerts still open and not
+  dismissed, so an alert fixed before the digest goes out never appears.
+- **What an email contains.** The alert's title, severity, time, short summary and a link
+  (`SPARKY_PUBLIC_URL`; omitted if unset). Never log or prompt content, and control
+  characters and lengths are bounded so alert text cannot add headers or lines.
+
+Email is optional: with it off, or no relay, alerts remain in the inbox and nothing else changes.
 
 #### Application groups
 `internal/groups`: named groups of people, mapped to one or more AD groups - see
@@ -802,7 +838,13 @@ state change and is recorded (`read_alert`, only on the unread-to-read transitio
 as are marking it unread, dismissing it, resolving it and "mark all read" (one entry
 with a count). Two exceptions are deliberate: an alert raised by the system, and its
 automatic resolve when the condition clears, are not recorded (the alert row is the
-record, and the triggering event is usually audited already). And, once the auditor
+record, and the triggering event is usually audited already). Email follows the same line:
+changing relay settings, sending a test email, requesting, confirming or clearing an address,
+an Admin setting someone's address and changing one's own delivery preferences are recorded
+(`updated_email_settings`, `sent_test_email`, `requested_email_confirmation`,
+`confirmed_email_address`, `cleared_email_address`, `set_user_email`,
+`updated_email_preferences`), while the emails themselves, the directory refreshing an AD
+account's address at sign-in, and digests are not - the queue is the record of what was sent. And, once the auditor
 access work lands, opening or exporting the Audit log page will itself be recorded.
 
 Retention: configurable, up to 24 months of local storage in Postgres (see

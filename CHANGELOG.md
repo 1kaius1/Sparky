@@ -8,6 +8,51 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Email: alerts can now be sent by email, through an SMTP relay only (a mail
+  server that accepts mail from Sparky, with a login or by trusting its address;
+  Sparky never delivers directly to recipients' mail servers). An Admin sets the
+  relay on a new **Email** section of the Settings page: host, port, connection
+  security (none, STARTTLS or TLS from the start), user name (empty for an
+  anonymous relay), from address and name, and the time the daily digest goes
+  out (default 08:00, in the site time zone). The relay's certificate is always
+  verified, against the system authorities plus an optional extra CA file
+  (`SMTP_CA_FILE`), and there is no option to skip that; STARTTLS never falls
+  back to clear text, and a password is never sent unencrypted to another
+  machine. The password comes from `SMTP_PASSWORD` in the server's environment,
+  never the database, and `SPARKY_PUBLIC_URL` gives emails their links (without
+  it emails carry none, and a person cannot add their own address). A **Send a
+  test email** form shows the relay's own answer and works while email is off,
+  and the section shows what is waiting, what was sent in the last day, what
+  failed in the last week and the last error. Mail goes through a queue with
+  retry (1 minute, 5 minutes, 30 minutes, 2 hours, 6 hours), so a mail outage
+  never blocks or fails anything that wanted to send; a refusal the relay will
+  not change its mind about, six failures, or a day's waiting makes it failed
+  with the reason recorded, and records are kept 30 days.
+- Email addresses: an AD account's address is the directory's `mail` attribute,
+  refreshed at every sign-in and never edited in Sparky. A local account's is
+  entered under **Email** on My account and used only after its owner opens the
+  link sent to the new address and presses a button (the link changes nothing
+  when merely opened, expires in 24 hours, works only for that account, and a
+  second request within a minute is refused). An Admin can set or clear a local
+  account's address from the Users page, and chooses whether the owner must
+  confirm it (the default). The break-glass SuperAdmin has no address. Audited:
+  `requested_email_confirmation`, `confirmed_email_address`,
+  `cleared_email_address`, `set_user_email`, `updated_email_settings`,
+  `sent_test_email`.
+- Alert email: a new alert, or an open one that becomes more severe (never a
+  repeat at the same severity), is emailed to the people it is addressed to who
+  have an address. Each person chooses on My account how they get it: as each
+  alert arrives, in an hourly digest (on the hour), in a daily digest (at the
+  Admin-set time), or not at all, and the lowest severity they want (default:
+  immediately, warning and above, so info alerts stay in the inbox). A digest
+  lists only the alerts still open and not dismissed when it goes out, worst
+  first, at most 50. An email carries the alert's title, severity, time, summary
+  and a link, never log or prompt content. Changing the choices is audited as
+  `updated_email_preferences`. New migrations `000046` to `000048`; run them with
+  the server (`migrate -path migrations/ -database "$DATABASE_URL" up`). Server
+  only: no agent or protocol change. `VERSION` bumped to `0.2.18`. This is PR 4
+  of the series recorded in PLANNING.md (2026-10-26); the auditor capability and
+  scheduled loads come later.
 - Alerts: an in-app inbox for things that need a person's attention. A new
   **Alerts** entry at the top of the sidebar shows an unread count that
   refreshes live, and opens an inbox with Unread / All / Resolved tabs, a list
