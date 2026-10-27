@@ -185,8 +185,13 @@ func main() {
 	// password, an extra CA file and the public address come from the
 	// environment, never the database.
 	emailHello, _ := os.Hostname()
-	emailService := email.NewService(db.NewEmailSettingsRepository(pool), db.NewEmailQueueRepository(pool), auditRecorder,
+	emailService := email.NewService(db.NewEmailSettingsRepository(pool), db.NewEmailQueueRepository(pool), db.NewUserEmailRepository(pool), auditRecorder,
 		email.Env{SMTPPassword: cfg.SMTPPassword, SMTPCAFile: cfg.SMTPCAFile, PublicURL: cfg.PublicURL}, emailHello, logger)
+	// An AD user's address is the directory's mail attribute, stored at every
+	// sign-in. A local account's address is set on the Account page or by an Admin.
+	if loginService != nil {
+		loginService.WithDirectoryEmailRecorder(emailService)
+	}
 	staleContainerService := stalecontainers.NewService(db.NewStaleContainerSettingsRepository(pool), nodeRepo, instanceRepo, profileRepo, agentRegistry, alertService, auditRecorder, scheduleService, logger)
 	// transferService additionally gets nodeService (SSH identity and
 	// interface resolution) and inventoryService (source-presence check) for

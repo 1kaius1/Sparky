@@ -483,6 +483,9 @@ func (a *API) Router() http.Handler {
 	// handleResetLocalAccountPassword via rbac.Service.ResetLocalAccountPassword,
 	// same reasoning as the tier-change form above.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/users/{id}/local/reset-password", a.handleResetLocalAccountPassword)
+	// The per-row action that sets or clears a local account's email address;
+	// its RBAC decision (rbac.CanSetUserEmail) is inside email.Service.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/users/{id}/email", a.handleSetUserEmail)
 	// /settings' floor is also Admin, same reasoning as /audit-log and
 	// /users - the tier check happens inside handleSettings via
 	// settings.Service.Get.
@@ -538,6 +541,15 @@ func (a *API) Router() http.Handler {
 	// (the break-glass session has no Users row to persist to), unlike
 	// the two forms above.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/account/theme", a.handleUpdateTheme)
+	// Email address (alert email): a local account asks to change its own, a
+	// confirmation link goes to the new address, and the link is opened - GET
+	// only shows it, the POST is what confirms - by the signed-in owner. An
+	// AD-backed account's address comes from the directory and is refused by the
+	// service.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/account/email", a.handleRequestOwnEmail)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/account/email/clear", a.handleClearOwnEmail)
+	r.With(a.RequireSession).Get("/account/email/confirm", a.handleEmailConfirmPage)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/account/email/confirm", a.handleEmailConfirm)
 
 	// Static assets (CSS, vendored htmx) - public, no session required,
 	// same reasoning a login page's own assets would need if one existed.

@@ -83,12 +83,37 @@ func (d *testDirectory) dial(_ string) (ldapConn, error) {
 
 	search := func(req *ldap.SearchRequest) (*ldap.SearchResult, error) {
 		if strings.HasPrefix(req.Filter, "(sAMAccountName=") {
-			return d.userSearchResult, d.userSearchErr
+			return onlyRequestedAttributes(d.userSearchResult, req.Attributes), d.userSearchErr
 		}
 		return d.groupSearchResult, d.groupSearchErr
 	}
 
 	return &fakeConn{bindFunc: bind, searchFunc: search}, nil
+}
+
+// onlyRequestedAttributes returns res with each entry cut down to the
+// attributes the search asked for, the way a real directory answers: an
+// attribute nobody requested is simply not there, so a test cannot pass by
+// reading something the code forgot to ask for.
+func onlyRequestedAttributes(res *ldap.SearchResult, requested []string) *ldap.SearchResult {
+	if res == nil {
+		return nil
+	}
+	want := map[string]bool{}
+	for _, a := range requested {
+		want[strings.ToLower(a)] = true
+	}
+	out := &ldap.SearchResult{}
+	for _, e := range res.Entries {
+		kept := ldap.NewEntry(e.DN, nil)
+		for _, attr := range e.Attributes {
+			if want[strings.ToLower(attr.Name)] {
+				kept.Attributes = append(kept.Attributes, attr)
+			}
+		}
+		out.Entries = append(out.Entries, kept)
+	}
+	return out
 }
 
 func newTestProvider(d *testDirectory) *LDAPProvider {
@@ -136,6 +161,33 @@ func TestLDAPProvider_Authenticate_SuccessInAccessGroup(t *testing.T) {
 	}
 	if user.DN != testUserDN {
 		t.Errorf("DN = %q, want %q", user.DN, testUserDN)
+	}
+}
+
+func TestLDAPProvider_Authenticate_ReturnsTheDirectoryMailAttribute(t *testing.T) {
+	for name, attrs := range map[string][]string{"with a mail attribute": {"jane.smith@example.org"}, "without one": nil} {
+		entry := ldap.NewEntry(testUserDN, map[string][]string{
+			"displayName": {"Jane Smith"},
+			"objectSid":   {string(validSIDBytes)},
+			"mail":        attrs,
+		})
+		dir := &testDirectory{
+			userSearchResult:  oneResult(entry),
+			groupSearchResult: oneResult(ldap.NewEntry(testUserDN, nil)),
+			validUserDN:       testUserDN,
+			validUserPassword: testUserPassword,
+		}
+		user, err := newTestProvider(dir).Authenticate(context.Background(), "jsmith", testUserPassword)
+		if err != nil {
+			t.Fatalf("%s: Authenticate() error: %v", name, err)
+		}
+		want := ""
+		if attrs != nil {
+			want = attrs[0]
+		}
+		if user.Email != want {
+			t.Errorf("%s: Email = %q, want %q", name, user.Email, want)
+		}
 	}
 }
 

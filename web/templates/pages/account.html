@@ -49,6 +49,45 @@ is nothing to edit on this page.</p>
 {{end}}
 
 {{if not .Data.IsSuperAdmin}}
+<h2>Email</h2>
+{{if .Data.EmailError}}
+<div class="form-error">{{.Data.EmailError}}</div>
+{{end}}
+{{if .Data.EmailSuccess}}
+<div class="form-success">{{.Data.EmailSuccess}}</div>
+{{end}}
+{{if .Data.Email.Address}}
+<p>Alert email goes to <strong>{{.Data.Email.Address}}</strong> ({{.Data.Email.SourceLabel}}).</p>
+{{else}}
+<p>You have no email address, so you get no alert email. Alerts still appear in your Alerts inbox.</p>
+{{end}}
+{{if .Data.Email.Directory}}
+<p>Your address is read from your directory account each time you sign in. To change it, change it there.</p>
+{{else}}
+{{if .Data.Email.PendingEmail}}
+<p>Waiting for you to confirm <strong>{{.Data.Email.PendingEmail}}</strong>{{if .Data.Email.PendingByAdmin}} (an Admin asked for it){{end}}: open the link in the email sent to it, while signed in here. It works until {{.Data.Email.PendingExpires}}.</p>
+{{end}}
+{{if .Data.Email.CanConfirm}}
+<form method="post" action="/account/email">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p>
+    <label for="email">{{if .Data.Email.Address}}Change your address{{else}}Your email address{{end}}</label><br>
+    <input type="email" id="email" name="email" maxlength="254" placeholder="name@example.org" required>
+  </p>
+  <p><small>A confirmation link is sent to the new address. Nothing changes until you open it.</small></p>
+  <p><button type="submit">Send confirmation link</button></p>
+</form>
+{{else}}
+<p><small>{{if not .Data.Email.EmailOn}}Email is turned off on this server, so you cannot add an address yourself; ask an Admin.{{else}}This server has no public address configured, so a confirmation link cannot be sent; ask an Admin to set your address.{{end}}</small></p>
+{{end}}
+{{if .Data.Email.Address}}
+<form method="post" action="/account/email/clear">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <p><button type="submit">Remove my address</button></p>
+</form>
+{{end}}
+{{end}}
+
 <h2>Theme</h2>
 {{if .Data.ThemeError}}
 <div class="form-error">{{.Data.ThemeError}}</div>

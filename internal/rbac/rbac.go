@@ -194,6 +194,18 @@ func CanResetLocalAccountPassword(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanSetUserEmail reports whether actor may set or clear another local
+// account's email address, and see every account's address on the Users page.
+// Same unconditional-by-tier shape as CanResetLocalAccountPassword and for the
+// same reason a distinct function: an address decides where a person's alert
+// text is sent, so it is its own capability even though it shares a floor.
+func CanSetUserEmail(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanManageModelStore reports whether actor has the manage_model_store
 // capability (download and delete models) - see SCHEMA.md Permission
 // overrides. Admin and SuperAdmin always have it implicitly. PowerDev has

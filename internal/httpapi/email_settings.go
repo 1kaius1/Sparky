@@ -21,6 +21,16 @@ type emailManager interface {
 	Settings(ctx context.Context, actor rbac.Actor) (*email.SettingsView, error)
 	UpdateSettings(ctx context.Context, actor rbac.Actor, in email.SettingsInput) error
 	SendTest(ctx context.Context, actor rbac.Actor, to string) error
+
+	// A person's own address (Account page) and the Admin's view and edit of
+	// everyone's (Users page).
+	MyAddress(ctx context.Context, userID string) (*email.AddressView, error)
+	RequestMyAddress(ctx context.Context, userID, address string) error
+	ClearMyAddress(ctx context.Context, userID string) error
+	PreviewConfirmation(ctx context.Context, userID, token string) (*email.ConfirmationView, error)
+	ConfirmAddress(ctx context.Context, userID, token string) (string, error)
+	Addresses(ctx context.Context, actor rbac.Actor) (map[string]*db.UserEmail, error)
+	SetUserAddress(ctx context.Context, actor rbac.Actor, targetUserID, address string, requireConfirmation bool) (email.SetUserResult, error)
 }
 
 // emailSettingsView is the Email section of the Settings page.

@@ -90,6 +90,7 @@ type sendFunc func(ctx context.Context, cfg mailer.Config, m mailer.Message) err
 type Service struct {
 	settings settingsStore
 	queue    queueStore
+	users    userEmailStore
 	audit    auditRecorder
 	env      Env
 	hello    string
@@ -105,9 +106,9 @@ type Service struct {
 
 // NewService constructs a Service. hello is what this server calls itself in
 // EHLO ("" for localhost).
-func NewService(settings settingsStore, queue queueStore, audit auditRecorder, env Env, hello string, logger *log.Logger) *Service {
+func NewService(settings settingsStore, queue queueStore, users userEmailStore, audit auditRecorder, env Env, hello string, logger *log.Logger) *Service {
 	return &Service{
-		settings: settings, queue: queue, audit: audit, env: env, hello: hello, logger: logger,
+		settings: settings, queue: queue, users: users, audit: audit, env: env, hello: hello, logger: logger,
 		now:         time.Now,
 		send:        func(ctx context.Context, cfg mailer.Config, m mailer.Message) error { return cfg.Send(ctx, m) },
 		sendTimeout: 30 * time.Second,

@@ -77,6 +77,12 @@ type userRow struct {
 	ElevatedAt     string
 	ReachableTiers []string
 	IsLocalAccount bool
+
+	// Email is the address alert email goes to, "" when there is none;
+	// EmailSource says where it came from ("from the directory", "set by an
+	// Admin", "confirmed by the user").
+	Email       string
+	EmailSource string
 }
 
 func (a *API) handleUsers(w http.ResponseWriter, r *http.Request) {
@@ -117,6 +123,14 @@ func (a *API) handleUsers(w http.ResponseWriter, r *http.Request) {
 		names[u.ID] = u.DisplayName
 	}
 
+	// Addresses are best effort on this page: if they cannot be read the roster
+	// still shows, without the Email column filled in.
+	addresses, err := a.email.Addresses(ctx, actor)
+	if err != nil {
+		a.logger.Printf("httpapi: list email addresses for the users page: %v", err)
+		addresses = nil
+	}
+
 	rows := make([]userRow, 0, len(users))
 	for _, u := range users {
 		var lastLogin string
@@ -134,7 +148,7 @@ func (a *API) handleUsers(w http.ResponseWriter, r *http.Request) {
 		if u.ElevatedAt != nil {
 			elevatedAt = u.ElevatedAt.Format("2006-01-02 15:04:05 MST")
 		}
-		rows = append(rows, userRow{
+		row := userRow{
 			ID:             u.ID,
 			DisplayName:    u.DisplayName,
 			Tier:           string(u.Tier),
@@ -143,7 +157,19 @@ func (a *API) handleUsers(w http.ResponseWriter, r *http.Request) {
 			ElevatedAt:     elevatedAt,
 			ReachableTiers: reachableTiers(actor, u.Tier),
 			IsLocalAccount: u.LocalUsername != nil,
-		})
+		}
+		if ue := addresses[u.ID]; ue != nil && ue.Email != nil && ue.Source != nil {
+			row.Email = *ue.Email
+			switch *ue.Source {
+			case db.EmailSourceDirectory:
+				row.EmailSource = "from the directory"
+			case db.EmailSourceAdmin:
+				row.EmailSource = "set by an Admin"
+			case db.EmailSourceSelf:
+				row.EmailSource = "confirmed by the user"
+			}
+		}
+		rows = append(rows, row)
 	}
 
 	a.render(w, r, "users", "Users & permissions", usersPageData{Users: rows})

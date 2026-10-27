@@ -235,6 +235,7 @@ type fixture struct {
 	svc      *Service
 	settings *fakeSettings
 	queue    *fakeQueue
+	users    *fakeUsers
 	audit    *fakeAudit
 	sink     *sink
 	clock    time.Time
@@ -248,7 +249,8 @@ func newFixture(t *testing.T) *fixture {
 	f.queue = &fakeQueue{now: now}
 	f.audit = &fakeAudit{}
 	f.sink = &sink{}
-	f.svc = NewService(f.settings, f.queue, f.audit, Env{SMTPPassword: relayPassword, SMTPCAFile: "/etc/ca.pem", PublicURL: "https://sparky.example.com"}, "sparky.example.com", log.New(io.Discard, "", 0))
+	f.users = newFakeUsers(now)
+	f.svc = NewService(f.settings, f.queue, f.users, f.audit, Env{SMTPPassword: relayPassword, SMTPCAFile: "/etc/ca.pem", PublicURL: "https://sparky.example.com"}, "sparky.example.com", log.New(io.Discard, "", 0))
 	f.svc.now = now
 	f.svc.send = f.sink.send
 	return f

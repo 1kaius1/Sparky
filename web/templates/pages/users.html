@@ -8,11 +8,13 @@
     <tr>
       <th>Display name</th>
       <th>Tier</th>
+      <th>Email</th>
       <th>Last login</th>
       <th>Elevated by</th>
       <th>Elevated at</th>
       <th>Change tier</th>
       <th>Reset password</th>
+      <th>Set email</th>
     </tr>
   </thead>
   <tbody>
@@ -20,6 +22,7 @@
     <tr>
       <td>{{.DisplayName}}</td>
       <td>{{.Tier}}</td>
+      <td>{{if .Email}}{{.Email}}<br><small>{{.EmailSource}}</small>{{else}}-{{end}}</td>
       <td>{{.LastLoginAt}}</td>
       <td>{{.ElevatedBy}}</td>
       <td>{{.ElevatedAt}}</td>
@@ -41,9 +44,21 @@
         </form>
         {{end}}
       </td>
+      <td>
+        {{if .IsLocalAccount}}
+        <form hx-post="/users/{{.ID}}/email" hx-swap="none" data-toast="Email address saved for {{.DisplayName}}">
+          <input type="email" name="email" value="{{.Email}}" placeholder="name@example.org" maxlength="254" aria-label="Email address for {{.DisplayName}}">
+          <label><input type="checkbox" name="require_confirmation" value="yes" checked> ask them to confirm</label>
+          <button type="submit">Save</button>
+        </form>
+        <small>Leave empty to remove it.</small>
+        {{else}}
+        <small>from the directory</small>
+        {{end}}
+      </td>
     </tr>
     {{else}}
-    <tr><td colspan="7" class="empty">No users yet.</td></tr>
+    <tr><td colspan="9" class="empty">No users yet.</td></tr>
     {{end}}
   </tbody>
 </table>

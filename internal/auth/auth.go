@@ -22,6 +22,11 @@ type AuthenticatedUser struct {
 
 	DisplayName string
 
+	// Email is the address in the directory's mail attribute, exactly as the
+	// directory holds it, "" when it has none. It is untrusted text: the
+	// caller validates it before use (internal/mailer's ParseAddress).
+	Email string
+
 	// InAccessGroup reports whether the user is a member of the dedicated
 	// login-gate AD group (LDAP_ACCESS_GROUP_DN), resolved server-side
 	// including nested membership. This package only resolves the

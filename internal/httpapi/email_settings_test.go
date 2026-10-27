@@ -23,6 +23,7 @@ import (
 // applies, so these tests exercise the handlers' handling of the typed errors
 // rather than a rule of their own.
 type fakeEmail struct {
+	fakeAddresses
 	view      *email.SettingsView
 	updateErr error
 	updated   []email.SettingsInput
@@ -60,6 +61,70 @@ func (f *fakeEmail) SendTest(_ context.Context, actor rbac.Actor, to string) err
 	}
 	f.tested = append(f.tested, to)
 	return f.testErr
+}
+
+// The address-handling half of fakeEmail: what MyAddress returns, what the
+// Admin-facing calls return, and a record of each call so a test can see what
+// the handlers passed on.
+type fakeAddresses struct {
+	my          *email.AddressView
+	myErr       error
+	requestErr  error
+	requested   []string
+	clearErr    error
+	cleared     int
+	previewView *email.ConfirmationView
+	previewErr  error
+	previewed   int
+	confirmed   []string
+	confirmAddr string
+	confirmErr  error
+	addresses   map[string]*db.UserEmail
+	setErr      error
+	setResult   email.SetUserResult
+	setCalls    []string
+}
+
+func (f *fakeEmail) MyAddress(_ context.Context, _ string) (*email.AddressView, error) {
+	if f.my != nil || f.myErr != nil {
+		return f.my, f.myErr
+	}
+	return &email.AddressView{EmailOn: true, CanConfirm: true}, nil
+}
+
+func (f *fakeEmail) RequestMyAddress(_ context.Context, _, address string) error {
+	f.requested = append(f.requested, address)
+	return f.requestErr
+}
+
+func (f *fakeEmail) ClearMyAddress(context.Context, string) error {
+	f.cleared++
+	return f.clearErr
+}
+
+func (f *fakeEmail) PreviewConfirmation(context.Context, string, string) (*email.ConfirmationView, error) {
+	f.previewed++
+	return f.previewView, f.previewErr
+}
+
+func (f *fakeEmail) ConfirmAddress(_ context.Context, _, token string) (string, error) {
+	f.confirmed = append(f.confirmed, token)
+	return f.confirmAddr, f.confirmErr
+}
+
+func (f *fakeEmail) Addresses(_ context.Context, actor rbac.Actor) (map[string]*db.UserEmail, error) {
+	if !rbac.CanSetUserEmail(actor) {
+		return nil, rbac.ErrNotPermitted
+	}
+	return f.addresses, nil
+}
+
+func (f *fakeEmail) SetUserAddress(_ context.Context, actor rbac.Actor, target, address string, require bool) (email.SetUserResult, error) {
+	if !rbac.CanSetUserEmail(actor) {
+		return email.SetUserResult{}, rbac.ErrNotPermitted
+	}
+	f.setCalls = append(f.setCalls, fmt.Sprintf("%s|%s|%v", target, address, require))
+	return f.setResult, f.setErr
 }
 
 func emailAPI(t *testing.T, tier db.Tier, fake *fakeEmail) (*API, string) {

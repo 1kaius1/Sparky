@@ -115,6 +115,7 @@ func (p *LDAPProvider) Authenticate(ctx context.Context, username, password stri
 	return &AuthenticatedUser{
 		ADSID:         sid,
 		DisplayName:   entry.GetAttributeValue("displayName"),
+		Email:         entry.GetAttributeValue("mail"),
 		InAccessGroup: inAccessGroup,
 		DN:            entry.DN,
 	}, nil
@@ -151,7 +152,7 @@ func (p *LDAPProvider) findUser(conn ldapConn, username string) (*ldap.Entry, er
 		p.baseDN,
 		ldap.ScopeWholeSubtree, ldap.NeverDerefAliases, 2, 0, false,
 		fmt.Sprintf("(sAMAccountName=%s)", ldap.EscapeFilter(username)),
-		[]string{"displayName", "objectSid"},
+		[]string{"displayName", "objectSid", "mail"},
 		nil,
 	)
 
