@@ -131,6 +131,62 @@ func (r *RunningInstanceRepository) FindByID(ctx context.Context, id string) (*R
 	return scanRunningInstance(row)
 }
 
+// FindByIDs looks up several running instances at once and returns them keyed
+// by id. An id with no row is simply absent from the map - the caller (stale
+// container monitoring, matching a node's containers to instances) needs to
+// tell "no such instance" from an error. An id that is not a uuid is left out
+// of the query rather than failing it.
+func (r *RunningInstanceRepository) FindByIDs(ctx context.Context, ids []string) (map[string]*RunningInstance, error) {
+	out := make(map[string]*RunningInstance, len(ids))
+	var valid []string
+	for _, id := range ids {
+		if looksLikeUUID(id) {
+			valid = append(valid, id)
+		}
+	}
+	if len(valid) == 0 {
+		return out, nil
+	}
+	rows, err := r.pool.Query(ctx,
+		`SELECT `+runningInstanceColumns+` FROM running_instances WHERE id = ANY($1::uuid[])`, valid)
+	if err != nil {
+		return nil, fmt.Errorf("find running instances by id: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		inst, err := scanRunningInstance(rows)
+		if err != nil {
+			return nil, fmt.Errorf("find running instances by id: %w", err)
+		}
+		out[inst.ID] = inst
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("find running instances by id: %w", err)
+	}
+	return out, nil
+}
+
+// looksLikeUUID reports whether s has the 8-4-4-4-12 hex shape a uuid column
+// accepts, so a malformed id from the wire cannot turn a lookup into an error.
+func looksLikeUUID(s string) bool {
+	if len(s) != 36 {
+		return false
+	}
+	for i, c := range s {
+		switch i {
+		case 8, 13, 18, 23:
+			if c != '-' {
+				return false
+			}
+		default:
+			if !(c >= '0' && c <= '9' || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // FindActiveByProfileID returns a profile's current non-terminal running
 // instance (status starting, running, or stopping), if any - used to
 // refuse a second concurrent load for a profile that is already running

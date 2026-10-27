@@ -334,6 +334,36 @@ process record so it can be read, and `Remove` drops it; a failed archive
 leaves that record in memory. Viewing archives is on the Container logs page
 (Developer and above).
 
+### Stale container cleanup
+
+Stale container monitoring on the central app (`ARCHITECTURE.md` Stale container
+monitoring) uses the agent in two ways, both on the Docker and Podman backends. The
+agent never decides to remove anything by itself.
+
+**Listing.** On `list_containers` the agent describes every container its runtime
+holds that Sparky started (`runtime.Backend.ListManaged`): those carrying the
+`sparky.managed` label with an instance id, and those found only by the legacy
+`sparky-instance-<uuid>` name an older agent gave them (reported as unlabelled).
+A name or label must match exactly: a container someone else named
+`sparky-instance-<uuid>-backup` is not listed, and neither is the `check-gpu` probe
+container. It reports each container's state, exit code, out-of-memory flag and when
+it finished, in parts of at most 30 containers so the answer fits the WebSocket message
+limit, and changes nothing. A bare-metal node has no containers and lists none.
+
+**Removing.** On `remove_container` (an instance id and a number of log lines, 0 meaning
+all) the agent refuses unless the instance is not one it is itself running, the
+container is in the listing, and its state is `exited`, `dead` or `created` (an
+unlabelled one: `exited` only). It then archives the log with reason `stale_cleanup`
+exactly as for an unload, and removes the container only once the central app confirms
+it stored the log; if the upload fails, is refused or is not confirmed within 30
+seconds, the container is kept and the answer says so. It never forces the removal, so a
+container that started between the check and the removal is refused by the runtime.
+The answer to the central app is one of `removed`, `gone`, `refused`, `kept` or `failed`.
+
+**Upgrade the agents first, then the server.** An agent older than this ignores both
+messages, so the central app's scan reports that node as not answering (and removes
+nothing from it).
+
 ## Configuration and Data Storage
 
 Deliberately deviates from the generic Service-type default

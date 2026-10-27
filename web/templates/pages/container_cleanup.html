@@ -1,0 +1,11 @@
+{{define "content"}}
+<h1>Container cleanup</h1>
+
+<p>When an instance ends, its container can be left behind on the node. This page asks every node what it holds and lists the ones that are stale: the instance is over and the container has been stopped for at least {{.Data.MinAgeHours}} hours (the minimum age, set under <a href="/settings" hx-get="/settings" hx-target="#main-content" hx-push-url="true">Settings</a>). Removing one saves its log first, to Container logs; if the log cannot be saved the container is kept. Nothing running, and nothing whose instance is still running, is ever removed.</p>
+
+<div id="cleanup-results" hx-get="/containers/cleanup/scan" hx-trigger="load" hx-swap="innerHTML">
+  <p class="check-status check-pending">Asking the nodes what they hold...</p>
+</div>
+
+<p><button type="button" hx-get="/containers/cleanup/scan" hx-target="#cleanup-results" hx-swap="innerHTML">Scan again</button></p>
+{{end}}

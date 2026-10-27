@@ -157,6 +157,39 @@ func TestRunningInstanceRepository_FindByID(t *testing.T) {
 	}
 }
 
+func TestRunningInstanceRepository_FindByIDs(t *testing.T) {
+	pool := newTestPool(t)
+	nodes := NewNodeRepository(pool)
+	profiles := NewProfileRepository(pool)
+	instances := NewRunningInstanceRepository(pool)
+	ctx := context.Background()
+
+	node := createTestNode(t, nodes, fmt.Sprintf("node-%s", t.Name()))
+	profile := createTestProfile(t, profiles, node.ID)
+	a := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+	b := createTestRunningInstance(t, instances, profile.ID, node.ID, nil)
+
+	// Two real ids, one well-formed id with no row, and several that are not
+	// uuids at all (including an injection attempt): the real ones come back,
+	// the rest are absent, and nothing is an error.
+	got, err := instances.FindByIDs(ctx, []string{a.ID, b.ID, "00000000-0000-0000-0000-000000000000", "not-a-uuid", "", "'; DROP TABLE running_instances; --"})
+	if err != nil {
+		t.Fatalf("FindByIDs() error: %v", err)
+	}
+	if len(got) != 2 || got[a.ID] == nil || got[b.ID] == nil || got[a.ID].ProfileID != profile.ID {
+		t.Errorf("FindByIDs() = %v, want exactly the two real instances", got)
+	}
+
+	none, err := instances.FindByIDs(ctx, nil)
+	if err != nil || len(none) != 0 {
+		t.Errorf("FindByIDs(nil) = %v, %v", none, err)
+	}
+	onlyBad, err := instances.FindByIDs(ctx, []string{"not-a-uuid"})
+	if err != nil || len(onlyBad) != 0 {
+		t.Errorf("FindByIDs(only malformed) = %v, %v", onlyBad, err)
+	}
+}
+
 func TestRunningInstanceRepository_FindByID_NotFound(t *testing.T) {
 	pool := newTestPool(t)
 	instances := NewRunningInstanceRepository(pool)

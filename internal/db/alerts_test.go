@@ -295,6 +295,60 @@ func TestAlertRepository_AudiencesAndShapeConstraint(t *testing.T) {
 	}
 }
 
+func TestAlertRepository_ResolveByKeyPrefixExcept(t *testing.T) {
+	pool := newTestPool(t)
+	repo := NewAlertRepository(pool)
+	ctx := context.Background()
+
+	// A prefix with LIKE wildcards in it, to prove it is matched literally.
+	prefix := "kept_" + t.Name() + "%:node-1:"
+	raise := func(key string) *Alert {
+		k := key
+		return raiseTestAlert(t, repo, NewAlert{
+			Kind: "test_kind", Severity: AlertSeverityWarning, Title: key, DedupeKey: &k,
+			Audiences: []AlertAudience{{Type: AlertAudienceTier, MinTier: TierAdmin}},
+		}).Alert
+	}
+	gone1 := raise(prefix + "inst-gone-1")
+	gone2 := raise(prefix + "inst-gone-2")
+	still := raise(prefix + "inst-still-listed")
+	otherNode := raise("kept_" + t.Name() + "%:node-2:inst-x")
+	lookalike := raise("kept_" + t.Name() + "XX:node-1:inst-y") // would match an unescaped %
+
+	closed, err := repo.ResolveByKeyPrefixExcept(ctx, prefix, []string{prefix + "inst-still-listed"})
+	if err != nil {
+		t.Fatalf("ResolveByKeyPrefixExcept() error: %v", err)
+	}
+	if len(closed) != 2 {
+		t.Fatalf("closed %v, want exactly the two whose container is gone", closed)
+	}
+	resolved := func(a *Alert) bool {
+		var at *time.Time
+		var resolution *string
+		if err := pool.QueryRow(ctx, `SELECT resolved_at, resolution::text FROM alerts WHERE id = $1`, a.ID).Scan(&at, &resolution); err != nil {
+			t.Fatal(err)
+		}
+		return at != nil && resolution != nil && *resolution == "cleared"
+	}
+	if !resolved(gone1) || !resolved(gone2) {
+		t.Error("an alert whose container is gone stayed open")
+	}
+	if resolved(still) || resolved(otherNode) || resolved(lookalike) {
+		t.Errorf("closed too much: still-listed %v, other node %v, wildcard lookalike %v", resolved(still), resolved(otherNode), resolved(lookalike))
+	}
+
+	// With nothing to keep, the rest under the prefix close; already-closed
+	// ones are not closed again.
+	closed, err = repo.ResolveByKeyPrefixExcept(ctx, prefix, nil)
+	if err != nil || len(closed) != 1 || !resolved(still) {
+		t.Errorf("second pass closed %v, %v", closed, err)
+	}
+	closed, _ = repo.ResolveByKeyPrefixExcept(ctx, prefix, nil)
+	if len(closed) != 0 {
+		t.Errorf("a third pass closed %v again", closed)
+	}
+}
+
 func TestAlertRepository_DeleteOlderThanCascades(t *testing.T) {
 	pool := newTestPool(t)
 	repo := NewAlertRepository(pool)

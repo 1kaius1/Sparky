@@ -210,6 +210,55 @@ type Backend interface {
 	// gone is not an error. Call it only after the log has been stored
 	// (agent/connection's archive-then-remove rule).
 	Remove(ctx context.Context, instanceID string) error
+
+	// ListManaged returns every container this backend holds that Sparky
+	// started - running or not - for the central app's stale container
+	// monitoring. It describes; it never changes anything. A container is
+	// Sparky's if it carries the managed label, or (Labelled false) if it has
+	// the legacy sparky-instance-<id> name an older agent gave a container
+	// before the label existed. A diagnostic probe container and anything
+	// else on the host is not included. The list is capped at MaxManaged;
+	// truncated says the cap was hit. The bare-metal backend has no
+	// containers and returns none.
+	ListManaged(ctx context.Context) (containers []ManagedContainer, truncated bool, err error)
+}
+
+// MaxManaged caps how many containers ListManaged returns, so a host with an
+// unexpected pile of them cannot make one reply unbounded.
+const MaxManaged = 500
+
+// ManagedContainer describes one container Sparky started, as ListManaged
+// sees it.
+type ManagedContainer struct {
+	// InstanceID is the instance the container was started for: the
+	// instance-id label, or for an unlabelled legacy container the id in its
+	// name.
+	InstanceID string
+
+	// ProfileID is the profile it was launched from. Empty for a container
+	// started before that label existed.
+	ProfileID string
+
+	// ContainerID and ContainerName are the runtime's own. Informational.
+	ContainerID   string
+	ContainerName string
+
+	// State is the container's own state word: running, exited, created,
+	// dead, paused, restarting or removing.
+	State string
+
+	// Labelled is false for a container found only by its legacy name.
+	Labelled bool
+
+	// ExitCode is nil unless the container has exited; OOMKilled says the
+	// runtime killed it for running out of memory.
+	ExitCode  *int
+	OOMKilled bool
+
+	// CreatedAt and FinishedAt are zero when unknown. FinishedAt is when it
+	// stopped, which the central app ages a stale container by.
+	CreatedAt  time.Time
+	FinishedAt time.Time
 }
 
 // ErrNothingToCapture is returned by Backend.Capture for an instance the

@@ -218,7 +218,7 @@ chunks and stored whole once the central app has verified it
 | `profile_id` | uuid, nullable | The profile at the time, resolved by the central app from the instance row. No foreign key, for the same reason |
 | `profile_name` | text | A copy of the profile's name then, since a profile can be renamed or deleted. Empty when unknown |
 | `container_name` / `container_id` | text | As the runtime reported them. Informational |
-| `reason` | text | Why the container was archived: `unload` (an Unload), `failed_launch` (the engine never started or never became ready) or `replaced` (an older container of the same profile cleared before a new launch). `unknown` for a value the central app does not recognise |
+| `reason` | text | Why the container was archived: `unload` (an Unload), `failed_launch` (the engine never started or never became ready) or `replaced` (an older container of the same profile cleared before a new launch) or `stale_cleanup` (a stopped container removed by stale container monitoring or the Container cleanup page). `unknown` for a value the central app does not recognise |
 | `container_state` | text | The container's own state word (`exited`, `running`, ...), empty when unknown |
 | `exit_code` | integer, nullable | `NULL` while the instance was still running or when the backend cannot tell. A bare-metal process killed by a signal is `-1` |
 | `oom_killed` | boolean | The runtime reported the container was killed for running out of memory. Always false for bare-metal |
@@ -248,6 +248,67 @@ Container log archives above are kept.
 | `retention_months` | integer | 1 to 24 (enforced by a CHECK constraint), mirroring the audit log's range. Defaults to 12 on the seeded row. A job in `internal/containerlogs` runs a minute after the server starts and then daily, deleting archives whose `created_at` is older than this many months; a run that deletes anything is recorded in the audit log as `expired_container_logs` by the system (see Audit log). Unlike Audit settings' own `retention_months`, which is only displayed, this one is editable and enforced |
 | `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row, and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
 | `updated_at` | timestamptz | |
+
+---
+
+## Schedule settings
+
+Singleton settings row (migration `000044_create_schedule_settings`), editable on the
+Settings page (Admin only), seeded at migration time like the other settings rows. It
+holds the one time zone every schedule is read in. A schedule itself (weekdays and times
+of day, or every N days) is stored on whatever owns it - stale container monitoring's own
+settings row, later scheduled model loads - and is an opaque `jsonb` value validated in Go
+(`internal/schedule`), the same split as Model profiles' `engine_params`.
+
+| Field | Type | Notes |
+|---|---|---|
+| `timezone` | text | An IANA zone name such as `America/New_York`; defaults to `UTC` on the seeded row. A schedule written as "02:00 on Mondays" means 02:00 in this zone, and emails show times in it. Validated against the zone database by `schedule.ParseTimezone`, not in SQL (the database only refuses a blank value): the empty string and `Local` are refused even though Go would accept them, so a schedule never depends on the host's own zone. The server embeds the zone database, so a host with no `/usr/share/zoneinfo` still works. A change applies to the next run; nothing already run is repeated. Audited as `updated_schedule_timezone` |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row, and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
+
+---
+
+## Stale container settings
+
+Singleton settings row (migration `000045_create_stale_container_settings`), editable on the
+Settings page (Admin only), seeded at migration time with the monitoring off. It configures
+stale container monitoring (`internal/stalecontainers`, `PLANNING.md`'s 2026-10-26 Decisions
+Log): finding the containers a node still holds for instances that have ended, and reporting
+or removing them. A container is **stale** when its instance is over (stopped or failed, or
+no record exists at all), it is stopped (exited, dead or created; an unlabelled one only once
+exited), and it has been stopped for at least `min_age_hours`. A container that is running,
+paused or restarting, or whose instance is starting, running or stopping (including a dead
+instance, which Unload clears), is never touched. Nothing here changes a table other than this
+one; what a scan finds is held only for the length of the request.
+
+| Field | Type | Notes |
+|---|---|---|
+| `mode` | enum | `none` (the default, does nothing) / `report` (scan on the schedule and raise alerts) / `prune` (scan on the schedule and remove stale containers after archiving each one's log). Switching Prune on from another mode needs an explicit confirmation in the UI each time, recorded in the audit entry |
+| `schedule` | jsonb, nullable | An `internal/schedule` Spec: `{"kind":"weekly","weekdays":[1,3],"times":["02:00"]}` (weekdays numbered from Sunday = 0, times 24-hour in the global time zone, see Schedule settings) or `{"kind":"every_days","every_days":N}`. Opaque to the database and validated in Go, like Model profiles' `engine_params`. A CHECK requires it whenever `mode` is not `none`; switching to `none` keeps whatever was saved |
+| `schedule_set_at` | timestamptz | When the schedule was last saved or the monitoring last switched on from `none`. A weekly schedule never runs an occurrence earlier than this; an every-N-days schedule's first run is this moment. Saving anything else (for example the minimum age) leaves it alone, so editing a setting never triggers a scan |
+| `last_run_at` | timestamptz, nullable | Stamped when a scheduled run begins, before it does anything, so a crash mid-run cannot make it run twice. Cleared when the schedule restarts |
+| `last_run_summary` | jsonb, nullable | What that run found and did (mode, nodes scanned and skipped, stale, recent and unrecorded-running counts, and for Prune removed / gone / kept / failed), shown on the Settings page. Display only |
+| `min_age_hours` | integer | 0 to 720 (CHECK), default 24. How long a container must have been stopped to count as stale: a grace period that keeps a crash's evidence in place for whoever is looking into it. Applies to Report, Prune and the Container cleanup page alike |
+| `archive_lines` | integer | 0 to 100000 (CHECK), default 2000, 0 meaning all that is held. How many trailing lines of a container's log a *scheduled Prune* archives before removing it; the Container cleanup page asks per container |
+| `updated_by` | uuid, nullable, FK -> Users.id | Null on the seeded row, and when the break-glass SuperAdmin makes the change - same reasoning as Nodes' `registered_by` |
+| `updated_at` | timestamptz | |
+
+Audited: `updated_stale_container_settings` (object type `stale_container_settings`, detail the
+new mode, schedule, minimum age and log lines, the previous mode and whether Prune was
+confirmed) and `removed_stale_container` (object type `container`, object id the instance id,
+detail the node, container, profile, state, exit code, log lines archived and the trigger -
+`manual` or `scheduled_prune`; the actor is the Admin who clicked, or the system for a
+scheduled run). Only a removal that actually happened is audited. A scan, a preview and the
+alerts raised are not (the alert row is the record).
+
+Alerts it raises (all to the Admin tier; see Alerts): `stale_containers` (warning, one per
+node, key `stale_containers:<node id>`, updated in place and closed when the node has none),
+`orphan_containers` (warning, one per node, running containers Sparky started but has no
+record of; these are never removed), `stale_container_kept` (warning, one per container,
+key `stale_container_kept:<node id>:<instance id>`, raised when a container's log could not
+be archived so it was kept, closed when the container is gone) and `stale_containers_removed`
+(info, one per Prune run that removed something). A node that did not answer a scan keeps
+whatever alerts it had: its containers are unknown, not gone.
 
 ---
 
@@ -560,7 +621,7 @@ see `ARCHITECTURE.md` Audit Log section for the full policy.
 | Field | Type | Notes |
 |---|---|---|
 | `id` | uuid, PK | |
-| `actor_id` | uuid, nullable, FK -> Users.id | Null actor with an `is_superadmin` flag set represents the break-glass account. Null actor with the flag unset represents the system itself - a scheduled job with no person behind it (today the container log expiry, `expired_container_logs`, and the alert expiry, `expired_alerts`) |
+| `actor_id` | uuid, nullable, FK -> Users.id | Null actor with an `is_superadmin` flag set represents the break-glass account. Null actor with the flag unset represents the system itself - a scheduled job with no person behind it (today the container log expiry, `expired_container_logs`, the alert expiry, `expired_alerts`, and the removals made by a scheduled Prune, `removed_stale_container` - a manual removal on the Container cleanup page names the Admin instead) |
 | `is_superadmin_action` | boolean | |
 | `action` | text | Past-tense verb, e.g. `loaded_model`, `elevated_user`, `deleted_model_copy` |
 | `object_type` / `object_id` | text, uuid | What was affected |

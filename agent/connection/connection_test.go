@@ -61,6 +61,13 @@ type fakeRuntimeBackend struct {
 	forProfile      map[string][]string
 	forProfileErr   error
 	forProfileCalls []string
+
+	// listed answers ListManaged: the containers the runtime "holds".
+	// listErr is returned instead when set; listCalls counts the calls.
+	listed        []agentruntime.ManagedContainer
+	listTruncated bool
+	listErr       error
+	listCalls     int
 	// events records the order Halt/Capture/Remove/Start were called in, as
 	// "halt:<id>", "capture:<id>", "remove:<id>", "start:<id>".
 	events []string
@@ -132,6 +139,13 @@ func (f *fakeRuntimeBackend) InstancesForProfile(_ context.Context, profileID st
 	defer f.mu.Unlock()
 	f.forProfileCalls = append(f.forProfileCalls, profileID)
 	return f.forProfile[profileID], f.forProfileErr
+}
+
+func (f *fakeRuntimeBackend) ListManaged(_ context.Context) ([]agentruntime.ManagedContainer, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listCalls++
+	return append([]agentruntime.ManagedContainer(nil), f.listed...), f.listTruncated, f.listErr
 }
 
 func (f *fakeRuntimeBackend) Halt(_ context.Context, instanceID string) error {

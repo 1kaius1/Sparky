@@ -8,10 +8,12 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/1kaius1/Sparky/internal/containerlogs"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/rbac"
+	"github.com/1kaius1/Sparky/internal/schedule"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,6 +27,13 @@ import (
 type settingsViewer interface {
 	Get(ctx context.Context, actor rbac.Actor) (*db.MetricsExportConfig, *db.AuditSettings, *db.ThemeSettings, error)
 	UpdateDefaultTheme(ctx context.Context, actor rbac.Actor, preset db.ThemePreset, customColors map[string]string, statusPalette *db.ThemeStatusPalette) error
+}
+
+// scheduleManager is the subset of *schedule.Service the Settings page needs:
+// the one global time zone every schedule is read in.
+type scheduleManager interface {
+	Settings(ctx context.Context, actor rbac.Actor) (*db.ScheduleSettings, error)
+	UpdateTimezone(ctx context.Context, actor rbac.Actor, name string) error
 }
 
 // settingsPageData is the Settings page's view model - CLAUDE.md
@@ -62,6 +71,17 @@ type settingsPageData struct {
 	AlertUpdatedAt       string
 	AlertError           string
 	AlertSuccess         bool
+
+	ScheduleTimezone  string
+	ScheduleLocalTime string
+	ScheduleUpdatedBy string
+	ScheduleUpdatedAt string
+	ScheduleError     string
+	ScheduleSuccess   bool
+
+	Stale        *staleSettingsView
+	StaleError   string
+	StaleSuccess bool
 }
 
 // resolveUserName resolves userID to a display name via FindByID,
@@ -169,7 +189,72 @@ func (a *API) renderSettingsPage(w http.ResponseWriter, r *http.Request, actor r
 	data.AlertUpdatedBy = a.resolveUserName(ctx, alertSettings.UpdatedBy)
 	data.AlertUpdatedAt = alertSettings.UpdatedAt.Format("2006-01-02 15:04:05 MST")
 
+	scheduleSettings, err := a.schedule.Settings(ctx, actor)
+	if err != nil {
+		a.logger.Printf("httpapi: get schedule settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data.ScheduleTimezone = scheduleSettings.Timezone
+	data.ScheduleUpdatedBy = a.resolveUserName(ctx, scheduleSettings.UpdatedBy)
+	data.ScheduleUpdatedAt = scheduleSettings.UpdatedAt.Format("2006-01-02 15:04:05 MST")
+	// What the clock reads there right now, so an Admin can see the zone they
+	// typed is the one they meant. Best effort: a stored zone this server can
+	// no longer load simply shows no time.
+	if loc, err := schedule.ParseTimezone(scheduleSettings.Timezone); err == nil {
+		data.ScheduleLocalTime = time.Now().In(loc).Format("2006-01-02 15:04 MST")
+	}
+
+	staleView, err := a.staleContainers.Settings(ctx, actor)
+	if err != nil {
+		a.logger.Printf("httpapi: get stale container settings: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	data.Stale = a.staleSettingsViewOf(ctx, staleView)
+
 	a.render(w, r, "settings", "Settings", data)
+}
+
+// handleUpdateScheduleTimezone sets the global time zone every schedule is
+// read in - see schedule.Service.UpdateTimezone. A name the server does not
+// know redisplays the page with the reason, never a 500.
+func (a *API) handleUpdateScheduleTimezone(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		// RequireSession already guarantees this - defensive only.
+		writeError(w, r, http.StatusUnauthorized, "UNAUTHENTICATED", "no session")
+		return
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	if err != nil {
+		a.logger.Printf("httpapi: resolve actor for time zone update: %v", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	if err := r.ParseForm(); err != nil {
+		a.renderSettingsPage(w, r, actor, settingsPageData{ScheduleError: "invalid form submission"})
+		return
+	}
+
+	err = a.schedule.UpdateTimezone(ctx, actor, strings.TrimSpace(r.PostFormValue("timezone")))
+	switch {
+	case errors.Is(err, rbac.ErrNotPermitted):
+		a.renderForbidden(w, r, actor.Tier)
+		return
+	case errors.Is(err, schedule.ErrInvalidTimezone):
+		a.renderSettingsPage(w, r, actor, settingsPageData{ScheduleError: err.Error()})
+		return
+	case err != nil:
+		a.logger.Printf("httpapi: update time zone: %v", err)
+		a.renderSettingsPage(w, r, actor, settingsPageData{ScheduleError: "failed to update the time zone"})
+		return
+	}
+
+	a.renderSettingsPage(w, r, actor, settingsPageData{ScheduleSuccess: true})
 }
 
 // handleUpdateContainerLogRetention sets how long archived container logs are

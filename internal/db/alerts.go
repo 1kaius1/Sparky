@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -326,6 +327,45 @@ func (r *AlertRepository) ResolveByDedupeKey(ctx context.Context, dedupeKey stri
 		return nil, fmt.Errorf("resolve alert by dedupe key: %w", err)
 	}
 	return ids, nil
+}
+
+// ResolveByKeyPrefixExcept closes every open alert whose dedupe key starts with
+// prefix and is not one of keep, because the condition each key names has
+// cleared, and returns the ids it closed. It is how a producer that raises one
+// alert per thing (a container, a node) closes the ones whose thing is gone
+// without having to remember which it raised. The prefix is matched literally;
+// LIKE wildcards in it are escaped.
+func (r *AlertRepository) ResolveByKeyPrefixExcept(ctx context.Context, prefix string, keep []string) ([]string, error) {
+	if keep == nil {
+		keep = []string{}
+	}
+	rows, err := r.pool.Query(ctx,
+		`UPDATE alerts SET resolved_at = now(), resolution = 'cleared'
+		 WHERE dedupe_key LIKE $1 || '%' ESCAPE '\' AND resolved_at IS NULL
+		   AND NOT (dedupe_key = ANY($2::text[]))
+		 RETURNING id`, escapeLike(prefix), keep)
+	if err != nil {
+		return nil, fmt.Errorf("resolve alerts by key prefix: %w", err)
+	}
+	defer rows.Close()
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan resolved alert id: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("resolve alerts by key prefix: %w", err)
+	}
+	return ids, nil
+}
+
+// escapeLike makes s match literally in a LIKE pattern that uses \ as its
+// escape character.
+func escapeLike(s string) string {
+	return strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(s)
 }
 
 // ResolveByUser closes an open alert on a person's behalf. resolvedBy is nil

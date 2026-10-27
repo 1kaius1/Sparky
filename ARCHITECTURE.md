@@ -182,6 +182,46 @@ manual membership of local accounts works. Application groups are an alert audie
 (`internal/alerts`, `internal/db`'s visibility query), and the foundation for team-shared
 scheduled loads later.
 
+#### Scheduler
+`internal/schedule`: when a recurring job is due, kept apart from what the job does - see
+`SCHEMA.md` Schedule settings. A `Spec` is chosen weekdays at chosen times of day, or every
+N days (no free-form cron: two forms cover the need and are easy to validate and to describe
+on a page). `Spec.Latest` returns only the newest occurrence in a window, so a run missed
+while the server was down is owed once, never once per miss; a weekly schedule ignores
+occurrences from before it was saved, and an every-N-days schedule runs the moment it is
+saved. Everything is read in one global IANA time zone, set by an Admin and defaulting to
+UTC (`schedule.Service`; the zone database is embedded in the binary, and `Local` and the
+empty name are refused so a schedule never depends on the host). A local time the clocks
+skip (daylight saving starts) runs at the first valid minute after the gap, and a repeated
+one runs once; Go's own `time.Date` resolves a skipped time an hour *early*, which is why the
+package does it explicitly. A `Runner` checks each job every 30 seconds (after a minute's
+grace at startup, so the agents have reconnected), re-reading the job's schedule and the zone
+each time, so a settings change needs no restart. It records that a run began *before*
+running it and skips the run if it cannot: for a job that removes things, never twice
+matters more than never missed.
+
+#### Stale container monitoring
+`internal/stalecontainers`: finds the containers a node's runtime still holds for instances
+that have ended, and reports or removes them - see `SCHEMA.md` Stale container settings.
+The server decides and triggers every removal; the agent only describes what it holds and
+acts on a named instance. `Classify` is the safety boundary and a pure function: a running,
+paused or restarting container is never touched whatever the database says, nor one whose
+instance is starting, running or stopping, nor one whose record names another node; only
+exited, dead and created containers can be stale (an unlabelled legacy-named one only once
+exited); and it must have been stopped for the minimum age, an unknown stop time counting as
+recent. A scan asks every online container node (`list_containers`, concurrently), matches
+what comes back to `running_instances` in one lookup, and classifies it. A node that is
+offline, does not answer or answers badly is reported as such and its containers are
+unknown - never assumed absent - and if the instance lookup fails nothing is stale. Answers
+are believed only from the node that was asked. Three entry points use the scan: a scheduled
+run (`Job`, run by the Scheduler; Report raises alerts, Prune also removes), the Container
+cleanup page's preview, and its per-row removal, which re-scans the node and refuses unless
+that container is stale *now*, so a stale page cannot get a live container removed. Removals
+go through `remove_container` one at a time (serialized across the schedule and the page,
+because each archives a log through an upload path that holds only a few unfinished uploads
+per node). A removal is audited, with the Admin who asked or the system for a scheduled run;
+a container whose log cannot be archived is kept and raises a warning alert instead.
+
 #### Node & Fabric Registry
 CRUD for Nodes and Fabric groups. Fabric group membership is an explicit, manually
 declared Admin action (the app cannot sense physical cabling) - see `SCHEMA.md`
@@ -394,6 +434,19 @@ is shown and discarded, never stored. It waits up to 15 seconds and allows at
 most two requests per node and eight overall. Saved logs expire after the
 retention period in `container_log_settings` (Settings page, Admin): a daily
 job deletes older ones and records the run in the audit log as the system.
+
+Stale container monitoring uses two more command pairs. `list_containers` /
+`list_containers_result` asks a node what Sparky containers its runtime holds, running or
+not, and only describes: the answer is a numbered series of at most 30 containers a part
+(a long list does not fit one 32768-byte message), with every string printable ASCII and
+length-clipped so a part's size is bounded whatever a runtime reports. `remove_container` /
+`remove_container_result` asks a node to remove one named stopped container. The agent
+refuses unless the instance is not one it is running, the container is Sparky's (exact
+uuid, never a looser pattern), and its state is exited, dead or created; then it archives
+the log through the `container_log_chunk` series above and removes the container only on
+a stored ack, without forcing, so a container that started in the instant after the check
+is refused by the runtime itself. An older agent ignores both messages, so the scan reports
+it as not answering. See `docs/AGENT.md` Stale container cleanup.
 
 ---
 

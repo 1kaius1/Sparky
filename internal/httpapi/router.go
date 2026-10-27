@@ -58,6 +58,8 @@ type API struct {
 	containerLogs        containerLogViewer
 	alerts               alertManager
 	groups               groupManager
+	schedule             scheduleManager
+	staleContainers      staleContainerManager
 	sizeEstimator        sizeEstimator
 	templates            map[string]*template.Template
 	partials             map[string]*template.Template
@@ -142,7 +144,10 @@ type API struct {
 // every alert is scoped to the viewer inside the service, so the routes need only a
 // session; groupsSvc backs the Groups pages (application groups mapped to AD groups) via
 // internal/groups.Service, gated by rbac.CanManageGroups, with manual local members
-// Admin-only; logger is used for
+// Admin-only; scheduleSvc backs the Settings page's global time zone (the one zone every
+// schedule is read in) via internal/schedule.Service, Admin only; staleContainersSvc backs
+// the Settings page's stale container monitoring section and the Container cleanup
+// page via internal/stalecontainers.Service, Admin only; logger is used for
 // rendering/query failures a handler can't turn into a useful HTTP
 // response on its own. breakGlassAllowedIPs (BREAKGLASS_ALLOWED_IPS) is
 // parsed once here into breakGlassIPWhitelist, gating both GET and POST
@@ -165,7 +170,7 @@ type API struct {
 // build-time bug, caught here rather than surfacing as a broken page on
 // first request.
 func New(loginService *LoginService, localLoginService *LocalLoginService, breakGlassLoginService *BreakGlassLoginService, breakGlassStore breakGlassStore, breakGlassAllowedIPs string, breakGlassLoginPath string, authRateLimitMaxAttempts int, authRateLimitWindow time.Duration, authRecheckInterval time.Duration, sessionSecret string, agentConn http.Handler,
-	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, alertsSvc alertManager, groupsSvc groupManager, logger *log.Logger) (*API, error) {
+	nodes nodeLister, registrar nodeRegistrar, profiles profileLister, profileEditorSvc profileEditor, instances instanceLister, launcher instanceLauncher, transfers transferLister, transferInitiatorSvc transferInitiator, users userLister, auditLog auditLister, roster userRoster, elevator userElevator, localAccountsSvc localAccountManager, selfAccountSvc selfAccountManager, settingsSvc settingsViewer, themeSettingsSvc themeSettingsReader, metricsSvc metricsLister, eventsSource eventSource, engineProvisionerSvc engineProvisioner, engineTransfersSvc engineTransferLister, engineInventorySvc engineInventoryLister, inventorySvc inventoryLister, sizeEstimatorSvc sizeEstimator, containerLogsSvc containerLogViewer, alertsSvc alertManager, groupsSvc groupManager, scheduleSvc scheduleManager, staleContainersSvc staleContainerManager, logger *log.Logger) (*API, error) {
 	templates, err := loadPageTemplates()
 	if err != nil {
 		return nil, fmt.Errorf("load page templates: %w", err)
@@ -221,6 +226,8 @@ func New(loginService *LoginService, localLoginService *LocalLoginService, break
 		containerLogs:          containerLogsSvc,
 		alerts:                 alertsSvc,
 		groups:                 groupsSvc,
+		schedule:               scheduleSvc,
+		staleContainers:        staleContainersSvc,
 		sizeEstimator:          sizeEstimatorSvc,
 		templates:              templates,
 		partials:               partials,
@@ -487,6 +494,19 @@ func (a *API) Router() http.Handler {
 	// How long alerts are kept - the RBAC gate (Admin) is inside
 	// alerts.Service.UpdateRetention.
 	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/alerts", a.handleUpdateAlertRetention)
+	// The global time zone every schedule is read in - the RBAC gate (Admin)
+	// is inside schedule.Service.UpdateTimezone.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/schedule", a.handleUpdateScheduleTimezone)
+	// Stale container monitoring (None / Report / Prune) - the RBAC gate (Admin)
+	// is inside stalecontainers.Service.UpdateSettings.
+	r.With(a.RequireSession, a.RequireCSRF).Post("/settings/stale-containers", a.handleUpdateStaleContainers)
+	// The Container cleanup page: Admin only, the gate inside each
+	// stalecontainers.Service method. The scan is a GET (it changes nothing; it
+	// only asks the nodes what they hold) loaded into the page after it
+	// renders; the removal is a CSRF-protected POST, one container per request.
+	r.With(a.RequireSession).Get("/containers/cleanup", a.handleContainerCleanup)
+	r.With(a.RequireSession).Get("/containers/cleanup/scan", a.handleContainerCleanupScan)
+	r.With(a.RequireSession, a.RequireCSRF).Post("/containers/cleanup/remove", a.handleContainerCleanupRemove)
 	// limitBody runs ahead of RequireCSRF, not just inside the handler -
 	// RequireCSRF itself must parse the multipart body to find the
 	// csrf_token field (see its own doc comment), so the hard size cap has

@@ -1,0 +1,9 @@
+{{define "stale_row_result"}}
+<tr id="stale-{{.InstanceID}}">
+  <td colspan="5">
+    <div class="form-{{.Class}}">
+      {{if .Container}}<strong>{{.Container}}</strong>{{if .Profile}} (profile {{.Profile}}){{end}}: {{end}}{{.Message}}
+    </div>
+  </td>
+</tr>
+{{end}}

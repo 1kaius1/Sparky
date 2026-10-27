@@ -129,6 +129,19 @@ func CanViewUsers(actor Actor) bool {
 	return actor.Tier == db.TierAdmin
 }
 
+// CanManageStaleContainers reports whether actor may configure stale container
+// monitoring and use the manual cleanup page, which removes containers from a
+// node. Admin/SuperAdmin only (PLANNING.md, 2026-10-26). A distinct function
+// rather than CanViewSettings or CanManageNodes, even though all share the
+// same tier floor today: removing a node's containers is a different
+// capability from reading settings, and could be granted differently later.
+func CanManageStaleContainers(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanViewSettings reports whether actor may view the Settings page (the
 // Metrics export config and Audit settings singleton rows) - see
 // CLAUDE.md Frontend Conventions, Settings' sidebar tier ("Admin"). Same

@@ -35,6 +35,10 @@ type fakeDockerClient struct {
 
 	inspectResult client.ContainerInspectResult
 	inspectErr    error
+	// inspectFunc, if set, answers ContainerInspect instead of inspectResult
+	// and inspectErr - for a test that lists several containers and needs a
+	// different answer for each.
+	inspectFunc func(ref string) (client.ContainerInspectResult, error)
 
 	pullCalls int
 	pullErr   error
@@ -77,6 +81,9 @@ func (f *fakeDockerClient) ContainerRemove(_ context.Context, ref string, _ clie
 
 func (f *fakeDockerClient) ContainerInspect(_ context.Context, ref string, _ client.ContainerInspectOptions) (client.ContainerInspectResult, error) {
 	f.inspectRefs = append(f.inspectRefs, ref)
+	if f.inspectFunc != nil {
+		return f.inspectFunc(ref)
+	}
 	return f.inspectResult, f.inspectErr
 }
 
