@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `sparky-entra-probe`, a small program that checks the Entra sign-in code against a
+  real tenant and writes a report that is safe to share by construction. Whoever has
+  a tenant builds it from this repository's source and runs it with an app
+  registration they create (`docs/ENTRA_PROBE.md`): it reads the tenant's discovery
+  document and signing keys, requests an app-only token for Microsoft Graph, and
+  signs one test account in through the browser with the same code the server will
+  use. The report holds results, counts, yes or no answers and the names and types
+  of claims and document members, so the fake tenant can be corrected where it
+  differs from the real one. It never holds a token, the secret, the tenant ID, an
+  application or object ID, a name, an address or a URL: it is built only from typed
+  facts, shows non-standard names as `other-N`, and is refused entirely, writing
+  nothing, if anything it handled that is sensitive or anything shaped like an
+  identifier, token, address or URL would appear in it. A test plants known values
+  in the fake tenant and fails if any reaches the report or the console. It makes
+  only requests that succeed, which add one app-only token request and one sign-in
+  to the tenant's logs. Version 1 covers the discovery document, signing keys, app
+  token and interactive sign-in; the Microsoft Graph calls come with the Graph
+  client. Verified against a mock only.
 - Microsoft Entra ID sign-in, first part - groundwork only: nothing in the server
   uses it yet, so no behavior changes. A new package `internal/auth/entra` does
   the OpenID Connect authorization code sign-in with PKCE as a confidential client

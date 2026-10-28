@@ -168,6 +168,7 @@ sparky/
 - cmd/
   - sparky-server/        # Central app entry point
   - sparky-agent/         # Spark/node agent entry point
+  - sparky-entra-probe/   # Checks the Entra sign-in code against a real tenant; its report is safe to share - docs/ENTRA_PROBE.md
 - internal/
   - auth/                 # LDAP, identity-provider interface
     - entra/              # Entra ID sign-in (OIDC code flow + PKCE, one tenant); not wired in yet - docs/ENTRA_DESIGN.md

@@ -113,6 +113,7 @@ type Server struct {
 	tokenRedirect string
 	counts        map[string]int
 	tokenForms    []url.Values
+	issued        []string
 }
 
 // New starts a fake tenant. Close it when done.
@@ -215,6 +216,13 @@ func (s *Server) MutateDiscovery(fn func(doc map[string]any)) {
 	s.discoveryHook = fn
 }
 
+// SetRedirectURIs replaces the registered redirect addresses.
+func (s *Server) SetRedirectURIs(uris []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.opts.RedirectURIs = append([]string(nil), uris...)
+}
+
 // SetDown makes every endpoint answer 503.
 func (s *Server) SetDown(down bool) {
 	s.mu.Lock()
@@ -257,6 +265,21 @@ func (s *Server) TokenForms() []url.Values {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]url.Values(nil), s.tokenForms...)
+}
+
+// IssuedTokens returns every ID token and app token the server has issued, oldest
+// first, so a test can check that none of them ends up somewhere it must not.
+func (s *Server) IssuedTokens() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.issued...)
+}
+
+func (s *Server) record(token string) string {
+	s.mu.Lock()
+	s.issued = append(s.issued, token)
+	s.mu.Unlock()
+	return token
 }
 
 func (s *Server) now() time.Time { return time.Now().Add(s.offset) }
@@ -475,7 +498,10 @@ func (s *Server) redirectRegistered(given string) bool {
 	if err != nil {
 		return false
 	}
-	for _, reg := range s.opts.RedirectURIs {
+	s.mu.Lock()
+	registered := append([]string(nil), s.opts.RedirectURIs...)
+	s.mu.Unlock()
+	for _, reg := range registered {
 		if reg == given {
 			return true
 		}
@@ -712,7 +738,7 @@ func (s *Server) issueIDToken(p Person, g *grant) string {
 	if hook != nil {
 		hook(spec)
 	}
-	return signJWT(spec, current)
+	return s.record(signJWT(spec, current))
 }
 
 // pairwiseSub is a stand-in for the subject Entra derives per application.
@@ -753,7 +779,7 @@ func (s *Server) appToken(w http.ResponseWriter, form url.Values) {
 		"ver":   "1.0",
 		"roles": s.opts.GraphRoles,
 	}
-	token := signJWT(&IDTokenSpec{Claims: claims, SignWith: s.NewUnpublishedKey()}, nil)
+	token := s.record(signJWT(&IDTokenSpec{Claims: claims, SignWith: s.NewUnpublishedKey()}, nil))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"token_type":   "Bearer",
 		"expires_in":   3599,
