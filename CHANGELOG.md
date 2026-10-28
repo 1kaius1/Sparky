@@ -8,6 +8,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Microsoft Entra ID sign-in, first part - groundwork only: nothing in the server
+  uses it yet, so no behavior changes. A new package `internal/auth/entra` does
+  the OpenID Connect authorization code sign-in with PKCE as a confidential client
+  for one tenant: discovery, the address to send a person to, the code exchange,
+  and ID-token verification (signature, RS256 only, with signing-key rotation;
+  issuer; audience; expiry; the nonce; the tenant claim; one audience exactly),
+  returning the person's object ID. It also provides the encrypted, ten-minute
+  state a cookie will carry between leaving for Entra and coming back, and a
+  client credentials token for Microsoft Graph. Secrets (the client secret,
+  tokens, the PKCE verifier) print as "[redacted]" under every formatting verb
+  and in JSON and structured logs. A strict fake Entra tenant for tests
+  (`internal/auth/entra/fakeentra`), written from Microsoft's documentation,
+  refuses what Entra would refuse and reproduces key rotation, clock skew, forged
+  and other-tenant tokens, redirects and outages. Adds one Go module,
+  `github.com/coreos/go-oidc/v3` (with `go-jose/v4` and `golang.org/x/oauth2`,
+  which it requires), for ID-token verification only; approved for that purpose
+  on 2026-10-27. Verified against a mock only: not yet compared with a real
+  tenant. See `docs/ENTRA_DESIGN.md`.
 - Email: alerts can now be sent by email, through an SMTP relay only (a mail
   server that accepts mail from Sparky, with a login or by trusting its address;
   Sparky never delivers directly to recipients' mail servers). An Admin sets the

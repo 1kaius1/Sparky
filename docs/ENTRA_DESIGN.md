@@ -1,8 +1,10 @@
 # Entra ID support - design
 
-Status: design only, 2026-10-27. Nothing here is built. This document is replaced
-by `ARCHITECTURE.md` and `SCHEMA.md` content as each part lands, and is then
-deleted.
+Status, 2026-10-27: section 3 (sign-in) and the fake tenant's sign-in half
+(section 8) are built, as `internal/auth/entra` and its `fakeentra` subpackage,
+verified against a mock only. Everything else here is design. This document is
+replaced by `ARCHITECTURE.md` and `SCHEMA.md` content as each part lands, and is
+then deleted.
 
 The requirement and the decisions already made are in `PLANNING.md` (the v1.0.0
 item "Microsoft Entra ID sign-in and group membership" and the three 2026-10-26
