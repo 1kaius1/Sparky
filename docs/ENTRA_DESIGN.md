@@ -9,8 +9,8 @@ item "Microsoft Entra ID sign-in and group membership" and the three 2026-10-26
 Decisions Log entries on it). In short: Entra ID sign-in and group membership are
 required for 1.0.0; an Admin chooses **one** directory provider, Active Directory
 or Entra ID (or neither), never both; changing the choice needs an explicit
-confirmation. This document designs how, and lists the decisions it needs from the
-maintainer (last section).
+confirmation. This document designs how, and records the decisions the maintainer
+made on it (last section).
 
 ---
 
@@ -373,9 +373,12 @@ or break-glass accounts.
 
 ---
 
-## 11. Decisions needed from the maintainer
+## 11. Decisions
 
-| | Question | Recommendation |
+All eight were accepted as recommended on 2026-10-27 and are recorded in the
+`PLANNING.md` Decisions Log. The table keeps the question and the reasoning.
+
+| | Question | Decision (as recommended) |
 |---|---|---|
 | D1 | Add `go-oidc/v3` (and its dependencies) for ID-token verification, or hand-write verification with the standard library? | Add it. Hand-written token validation is where mistakes cost most; everything else stays standard library. Needs explicit approval under the project's dependency rule |
 | D2 | The login gate: membership of a group (as with AD), or Entra's own "assignment required" on the enterprise application with an app role? | A group: the same mechanism as application groups and the same recheck. "Assignment required" can still be switched on in Entra as an extra layer |
