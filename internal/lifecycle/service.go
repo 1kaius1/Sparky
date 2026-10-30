@@ -14,6 +14,7 @@ import (
 	"github.com/1kaius1/Sparky/internal/alerts"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/engines"
+	"github.com/1kaius1/Sparky/internal/launchopts"
 	"github.com/1kaius1/Sparky/internal/rbac"
 )
 
@@ -170,6 +171,23 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 		spec.Image = *profile.Image
 	}
 
+	// The profile's environment and container options were validated when it
+	// was saved, but a row can have been changed underneath (a restore, a
+	// hand edit), so they are decoded again here - before a running_instances
+	// row exists, like the other refusals - rather than sent to a node unchecked.
+	profileEnv, err := launchopts.ParseEnv(profile.Env)
+	if err != nil {
+		return nil, fmt.Errorf("%w: profile %q: %v", ErrInvalidLoad, profile.Name, err)
+	}
+	containerOpts, err := launchopts.ParseContainerOptions(profile.ContainerOptions)
+	if err != nil {
+		return nil, fmt.Errorf("%w: profile %q: %v", ErrInvalidLoad, profile.Name, err)
+	}
+	var container *agentproto.ContainerOptions
+	if !launchopts.IsZero(containerOpts) {
+		container = &containerOpts
+	}
+
 	var startedBy *string
 	if !actor.IsSuperAdmin {
 		startedBy = &actor.UserID
@@ -199,8 +217,8 @@ func (s *Service) LoadInstance(ctx context.Context, actor rbac.Actor, params Loa
 		Args:                     spec.Args,
 		Port:                     profile.Port,
 		RequiresFullGPUResidency: profile.RequiresFullGPUResidency,
-		ShmSize:                  spec.ShmSizeBytes,
-		IPCMode:                  spec.IPCMode,
+		Env:                      profileEnv,
+		Container:                container,
 		ContainerName:            containerName(profile.Name, launchTime(inst)),
 		ProfileID:                profile.ID,
 	})

@@ -99,3 +99,40 @@ func TestLlamaCPPAdapter_BuildLaunchSpec_InvalidParams(t *testing.T) {
 		})
 	}
 }
+
+func TestLlamaCPPAdapter_ExtraArgs(t *testing.T) {
+	a := llamaCPPAdapter{}
+	params := json.RawMessage(`{"ctx_size":8192,"extra_args":["--jinja","--flash-attn","on","--cache-type-k=q8_0"]}`)
+	if err := a.ValidateParams(params); err != nil {
+		t.Fatalf("ValidateParams() error: %v", err)
+	}
+	spec, err := a.BuildLaunchSpec(params, "my-profile")
+	if err != nil {
+		t.Fatalf("BuildLaunchSpec() error: %v", err)
+	}
+	want := []string{"--ctx-size", "8192", "--alias", "my-profile", "--jinja", "--flash-attn", "on", "--cache-type-k=q8_0"}
+	if !reflect.DeepEqual(spec.Args, want) {
+		t.Errorf("Args = %v, want %v (extra_args last, verbatim)", spec.Args, want)
+	}
+}
+
+func TestLlamaCPPAdapter_ExtraArgs_Rejected(t *testing.T) {
+	tests := map[string]string{
+		"empty entry": `{"extra_args":[""]}`,
+		"model":       `{"extra_args":["--model","/x"]}`,
+		"short model": `{"extra_args":["-m","/x"]}`,
+		"hf repo":     `{"extra_args":["-hf","org/repo"]}`,
+		"port":        `{"extra_args":["--port=9000"]}`,
+		"host":        `{"extra_args":["--host","0.0.0.0"]}`,
+		"alias":       `{"extra_args":["--alias","x"]}`,
+		"short alias": `{"extra_args":["-a","x"]}`,
+	}
+	a := llamaCPPAdapter{}
+	for name, params := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := a.ValidateParams(json.RawMessage(params)); !errors.Is(err, ErrInvalidParams) {
+				t.Errorf("ValidateParams(%s) error = %v, want ErrInvalidParams", params, err)
+			}
+		})
+	}
+}

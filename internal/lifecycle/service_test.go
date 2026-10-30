@@ -348,13 +348,15 @@ func TestService_LoadInstance_UnpinnedEngineVersion_EmptyStringOnEnvelope(t *tes
 	}
 }
 
-func TestService_LoadInstance_ShmSizeAndIPCMode_ReachEnvelope(t *testing.T) {
+func TestService_LoadInstance_EnvAndContainerOptions_ReachEnvelope(t *testing.T) {
 	instances := &fakeInstanceStore{nextID: "instance-1"}
-	const shmSize = 16 * 1024 * 1024 * 1024
-	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{ShmSizeBytes: shmSize, IPCMode: "host"}}}
+	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{}}}
 	dispatch := &fakeDispatcher{connected: true}
 	audit := &fakeAuditRecorder{}
-	svc := newTestService(testProfile(), instances, adapters, dispatch, audit)
+	profile := testProfile()
+	profile.Env = json.RawMessage(`{"VLLM_MARLIN_USE_ATOMIC_ADD":"1"}`)
+	profile.ContainerOptions = json.RawMessage(`{"shm_size_gb":16,"ipc_mode":"host","privileged":true,"ulimits":[{"name":"memlock","soft":-1,"hard":-1}]}`)
+	svc := newTestService(profile, instances, adapters, dispatch, audit)
 	actor := rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}
 
 	if _, err := svc.LoadInstance(context.Background(), actor, LoadParams{ProfileID: "profile-1"}); err != nil {
@@ -365,15 +367,20 @@ func TestService_LoadInstance_ShmSizeAndIPCMode_ReachEnvelope(t *testing.T) {
 	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
 		t.Fatalf("decode load_instance payload: %v", err)
 	}
-	if payload.ShmSize != shmSize {
-		t.Errorf("ShmSize = %d, want %d", payload.ShmSize, shmSize)
+	if payload.Env["VLLM_MARLIN_USE_ATOMIC_ADD"] != "1" {
+		t.Errorf("Env = %v, want VLLM_MARLIN_USE_ATOMIC_ADD=1", payload.Env)
 	}
-	if payload.IPCMode != "host" {
-		t.Errorf("IPCMode = %q, want %q", payload.IPCMode, "host")
+	c := payload.Container
+	if c == nil || c.ShmSizeGB == nil || *c.ShmSizeGB != 16 || c.IPCMode != "host" || !c.Privileged || len(c.Ulimits) != 1 {
+		t.Errorf("Container = %+v, want shm 16, ipc host, privileged, one ulimit", c)
+	}
+	// The pre-container-options wire fields are for an older server only.
+	if payload.ShmSize != 0 || payload.IPCMode != "" {
+		t.Errorf("legacy ShmSize/IPCMode = %d/%q, want unset", payload.ShmSize, payload.IPCMode)
 	}
 }
 
-func TestService_LoadInstance_NoShmSizeOrIPCMode_EmptyOnEnvelope(t *testing.T) {
+func TestService_LoadInstance_NoEnvOrContainerOptions_NothingOnEnvelope(t *testing.T) {
 	instances := &fakeInstanceStore{nextID: "instance-1"}
 	adapters := &fakeAdapterRegistry{adapter: fakeAdapter{spec: engines.LaunchSpec{}}}
 	dispatch := &fakeDispatcher{connected: true}
@@ -389,11 +396,31 @@ func TestService_LoadInstance_NoShmSizeOrIPCMode_EmptyOnEnvelope(t *testing.T) {
 	if err := dispatch.sent[0].DecodePayload(&payload); err != nil {
 		t.Fatalf("decode load_instance payload: %v", err)
 	}
-	if payload.ShmSize != 0 {
-		t.Errorf("ShmSize = %d, want 0", payload.ShmSize)
+	if len(payload.Env) != 0 || payload.Container != nil {
+		t.Errorf("Env = %v, Container = %+v, want neither", payload.Env, payload.Container)
 	}
-	if payload.IPCMode != "" {
-		t.Errorf("IPCMode = %q, want empty", payload.IPCMode)
+}
+
+func TestService_LoadInstance_CorruptEnvOrContainerOptions_RefusedBeforeInstanceRow(t *testing.T) {
+	for name, mutate := range map[string]func(*db.Profile){
+		"env":               func(p *db.Profile) { p.Env = json.RawMessage(`{"A=B":"1"}`) },
+		"container options": func(p *db.Profile) { p.ContainerOptions = json.RawMessage(`{"shm":4}`) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			instances := &fakeInstanceStore{nextID: "instance-1"}
+			dispatch := &fakeDispatcher{connected: true}
+			profile := testProfile()
+			mutate(profile)
+			svc := newTestService(profile, instances, &fakeAdapterRegistry{adapter: fakeAdapter{}}, dispatch, &fakeAuditRecorder{})
+
+			_, err := svc.LoadInstance(context.Background(), rbac.Actor{Tier: db.TierDeveloper, UserID: "dev-1"}, LoadParams{ProfileID: "profile-1"})
+			if !errors.Is(err, ErrInvalidLoad) {
+				t.Errorf("LoadInstance() error = %v, want ErrInvalidLoad", err)
+			}
+			if len(dispatch.sent) != 0 {
+				t.Error("a load_instance was dispatched for a profile with unusable options")
+			}
+		})
 	}
 }
 

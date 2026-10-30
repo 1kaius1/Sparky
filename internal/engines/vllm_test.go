@@ -18,7 +18,7 @@ func TestVLLMAdapter_ValidateParams_Valid(t *testing.T) {
 		"real production launch shape":           `{"max_model_len":32768,"served_model_name":"Qwen3.8-27B-FP8","kv_cache_dtype":"fp8","max_num_batched_tokens":32768,"max_num_seqs":16,"enable_chunked_prefill":true,"enable_auto_tool_choice":true,"tool_call_parser":"qwen3_coder"}`,
 		"tool_call_parser with auto tool choice": `{"enable_auto_tool_choice":true,"tool_call_parser":"qwen3_coder"}`,
 		"enable_chunked_prefill false":           `{"enable_chunked_prefill":false}`,
-		"shm_size_gb":                            `{"shm_size_gb":16}`,
+		"extra_args":                             `{"extra_args":["--enable-prefix-caching"]}`,
 	}
 	a := vllmAdapter{}
 	for name, params := range tests {
@@ -46,8 +46,6 @@ func TestVLLMAdapter_ValidateParams_Invalid(t *testing.T) {
 		"max_num_seqs zero":                                   `{"max_num_seqs":0}`,
 		"tool_call_parser without enable_auto_tool_choice":    `{"tool_call_parser":"qwen3_coder"}`,
 		"tool_call_parser with enable_auto_tool_choice false": `{"enable_auto_tool_choice":false,"tool_call_parser":"qwen3_coder"}`,
-		"shm_size_gb zero":                                    `{"shm_size_gb":0}`,
-		"shm_size_gb negative":                                `{"shm_size_gb":-1}`,
 	}
 	a := vllmAdapter{}
 	for name, params := range tests {
@@ -118,37 +116,54 @@ func TestVLLMAdapter_BuildLaunchSpec(t *testing.T) {
 	}
 }
 
-func TestVLLMAdapter_BuildLaunchSpec_ShmSizeGB_SetsShmSizeAndIPCModeHost(t *testing.T) {
-	a := vllmAdapter{}
-	spec, err := a.BuildLaunchSpec(json.RawMessage(`{"shm_size_gb":16}`), "")
-	if err != nil {
-		t.Fatalf("BuildLaunchSpec() error: %v", err)
-	}
-	const wantBytes = 16 * 1024 * 1024 * 1024
-	if spec.ShmSizeBytes != wantBytes {
-		t.Errorf("ShmSizeBytes = %d, want %d", spec.ShmSizeBytes, wantBytes)
-	}
-	if spec.IPCMode != "host" {
-		t.Errorf("IPCMode = %q, want %q", spec.IPCMode, "host")
-	}
-	// shm_size_gb/IPC mode are container-runtime settings, not vllm serve
-	// flags - never appended to Args.
-	if len(spec.Args) != 0 {
-		t.Errorf("Args = %v, want none", spec.Args)
+// shm_size_gb moved to container options (internal/launchopts); a profile that
+// still carries it in engine_params must be rejected rather than ignored, so a
+// stale value cannot sit in the JSON doing nothing. Migration 000049 moves
+// existing rows.
+func TestVLLMAdapter_ShmSizeGB_NoLongerAnEngineParam(t *testing.T) {
+	err := vllmAdapter{}.ValidateParams(json.RawMessage(`{"shm_size_gb":16}`))
+	if err == nil || !strings.Contains(err.Error(), "shm_size_gb") {
+		t.Errorf("ValidateParams() error = %v, want it to reject shm_size_gb by name", err)
 	}
 }
 
-func TestVLLMAdapter_BuildLaunchSpec_NoShmSizeGB_LeavesShmSizeAndIPCModeUnset(t *testing.T) {
+func TestVLLMAdapter_ExtraArgs(t *testing.T) {
 	a := vllmAdapter{}
-	spec, err := a.BuildLaunchSpec(json.RawMessage(`{}`), "")
+	params := json.RawMessage(`{"max_model_len":4096,"extra_args":["--enable-prefix-caching","--speculative-config={\"method\":\"mtp\"}","--attention-backend","flashinfer"]}`)
+	if err := a.ValidateParams(params); err != nil {
+		t.Fatalf("ValidateParams() error: %v", err)
+	}
+	spec, err := a.BuildLaunchSpec(params, "my-profile")
 	if err != nil {
 		t.Fatalf("BuildLaunchSpec() error: %v", err)
 	}
-	if spec.ShmSizeBytes != 0 {
-		t.Errorf("ShmSizeBytes = %d, want 0", spec.ShmSizeBytes)
+	want := []string{
+		"--max-model-len", "4096",
+		"--served-model-name=my-profile",
+		"--enable-prefix-caching", `--speculative-config={"method":"mtp"}`, "--attention-backend", "flashinfer",
 	}
-	if spec.IPCMode != "" {
-		t.Errorf("IPCMode = %q, want empty", spec.IPCMode)
+	if !reflect.DeepEqual(spec.Args, want) {
+		t.Errorf("Args = %v, want %v (extra_args last, verbatim)", spec.Args, want)
+	}
+}
+
+func TestVLLMAdapter_ExtraArgs_Rejected(t *testing.T) {
+	tests := map[string]string{
+		"empty entry":        `{"extra_args":[""]}`,
+		"model":              `{"extra_args":["--model","/x"]}`,
+		"model with equals":  `{"extra_args":["--model=/x"]}`,
+		"port":               `{"extra_args":["--port","9000"]}`,
+		"host":               `{"extra_args":["--host=1.2.3.4"]}`,
+		"served-model-name":  `{"extra_args":["--served-model-name=other"]}`,
+		"not a string array": `{"extra_args":[1]}`,
+	}
+	a := vllmAdapter{}
+	for name, params := range tests {
+		t.Run(name, func(t *testing.T) {
+			if err := a.ValidateParams(json.RawMessage(params)); !errors.Is(err, ErrInvalidParams) {
+				t.Errorf("ValidateParams(%s) error = %v, want ErrInvalidParams", params, err)
+			}
+		})
 	}
 }
 

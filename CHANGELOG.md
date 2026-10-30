@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Model profiles: every engine accepts `extra_args` in its engine params, a list
+  of command-line arguments added after the ones Sparky builds, exactly as written,
+  so an engine flag without its own key is no longer out of reach (for example
+  `{"extra_args": ["--enable-prefix-caching", "--attention-backend", "flashinfer"]}`).
+  The model, port, host and served model name are set by Sparky and are refused there.
+- Model profiles can store environment variables and container options (the
+  equivalents of `docker run` flags) in new `env` and `container_options` columns
+  (migration 000049), validated when a profile is saved and sent to the node when it
+  is launched. The host-level container options (extra mounts, devices, privileged
+  mode, capabilities, security options, ulimits, the host PID namespace) can be set
+  only by an Admin; a PowerDev editing a profile that has them leaves them as they
+  were. They are refused for a bare-metal node, which has no container. Environment
+  variable values are stored in plain text for now (the audit log records only the
+  names, never the values), so do not put a credential in one yet; redaction is
+  planned once testing is done. The profile form to edit them follows separately.
+  Agents must be upgraded before the server.
 - Email: alerts can now be sent by email, through an SMTP relay only (a mail
   server that accepts mail from Sparky, with a login or by trusting its address;
   Sparky never delivers directly to recipients' mail servers). An Admin sets the
@@ -329,6 +345,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- A vLLM profile's shared memory size is now a container option, not a vLLM
+  engine parameter: `shm_size_gb` is no longer accepted in the engine params
+  (it was always a `docker run` setting, not a `vllm serve` flag). Migration
+  000049 moves each existing value into the profile's container options, paired
+  with the host IPC namespace it always implied, so existing profiles launch as
+  before. Rolling the migration back puts the value back where the old adapter
+  reads it; every other container option and all environment variables are lost.
 - The sidebar now shows who is signed in: a "Signed in as" line with the
   person's display name (the same one the Users & permissions page lists),
   above the My account link, so windows signed in as different people can be

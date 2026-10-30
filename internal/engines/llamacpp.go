@@ -34,6 +34,26 @@ type llamaCPPParams struct {
 	NGPULayers *int `json:"n_gpu_layers,omitempty"`
 	CtxSize    *int `json:"ctx_size,omitempty"`
 	Threads    *int `json:"threads,omitempty"`
+	// ExtraArgs are raw llama-server arguments appended after the ones above -
+	// the escape hatch for any flag without a typed key.
+	ExtraArgs []string `json:"extra_args,omitempty"`
+}
+
+// llamaCPPOwnedFlags are the flags Sparky sets itself (the agent adds the
+// model path, --port and --host; the adapter adds --alias), in both their long
+// and short forms, so extra_args may not repeat them.
+var llamaCPPOwnedFlags = map[string]string{
+	"--model":     "the model path comes from the profile's model",
+	"-m":          "the model path comes from the profile's model",
+	"--model-url": "the model comes from the profile's model",
+	"-mu":         "the model comes from the profile's model",
+	"--hf-repo":   "the model comes from the profile's model",
+	"-hf":         "the model comes from the profile's model",
+	"-hfr":        "the model comes from the profile's model",
+	"--port":      "the port comes from the profile",
+	"--host":      "the agent binds the engine itself",
+	"--alias":     "the profile's name is the served model id",
+	"-a":          "the profile's name is the served model id",
 }
 
 // ValidateParams checks the known llama.cpp keys, when present, for
@@ -53,7 +73,7 @@ func (llamaCPPAdapter) ValidateParams(params json.RawMessage) error {
 	if p.Threads != nil && *p.Threads < 1 {
 		return fmt.Errorf("%w: threads must be positive, got %d", ErrInvalidParams, *p.Threads)
 	}
-	return nil
+	return validateExtraArgs(p.ExtraArgs, llamaCPPOwnedFlags)
 }
 
 // BuildLaunchSpec translates the recognized llama.cpp keys into
@@ -84,5 +104,6 @@ func (llamaCPPAdapter) BuildLaunchSpec(params json.RawMessage, servedModelName s
 	if servedModelName != "" {
 		args = append(args, "--alias", servedModelName)
 	}
+	args = append(args, p.ExtraArgs...)
 	return LaunchSpec{Image: llamaCPPImage, Args: args}, nil
 }

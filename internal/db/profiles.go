@@ -41,11 +41,18 @@ const (
 // profiles. FabricGroupID is deliberately absent - see
 // migrations/000007_create_model_profiles.up.sql.
 type Profile struct {
-	ID                       string
-	Name                     string
-	ModelRef                 string
-	EngineType               ProfileEngineType
-	EngineParams             json.RawMessage
+	ID           string
+	Name         string
+	ModelRef     string
+	EngineType   ProfileEngineType
+	EngineParams json.RawMessage
+	// Env is the profile's environment variables, a JSON object of NAME ->
+	// text value; ContainerOptions is its container-runtime settings, the
+	// JSON form of agentproto.ContainerOptions. Both are opaque here and
+	// validated by internal/launchopts - see migration 000049. Never empty:
+	// the columns are NOT NULL and default to {}.
+	Env                      json.RawMessage
+	ContainerOptions         json.RawMessage
 	RequiresFullGPUResidency bool
 	RequiredMemoryGB         *float64
 	EngineVersion            *string
@@ -94,12 +101,12 @@ func NewProfileRepository(pool *pgxpool.Pool) *ProfileRepository {
 	return &ProfileRepository{pool: pool}
 }
 
-const profileColumns = `id, name, model_ref, engine_type, engine_params, requires_full_gpu_residency,
+const profileColumns = `id, name, model_ref, engine_type, engine_params, env, container_options, requires_full_gpu_residency,
 	required_memory_gb, engine_version, quantization, format, image, topology, target_node_id, port, created_by, created_at, updated_by, updated_at`
 
 func scanProfile(row pgx.Row) (*Profile, error) {
 	var p Profile
-	err := row.Scan(&p.ID, &p.Name, &p.ModelRef, &p.EngineType, &p.EngineParams, &p.RequiresFullGPUResidency,
+	err := row.Scan(&p.ID, &p.Name, &p.ModelRef, &p.EngineType, &p.EngineParams, &p.Env, &p.ContainerOptions, &p.RequiresFullGPUResidency,
 		&p.RequiredMemoryGB, &p.EngineVersion, &p.Quantization, &p.Format, &p.Image, &p.Topology, &p.TargetNodeID, &p.Port, &p.CreatedBy, &p.CreatedAt, &p.UpdatedBy, &p.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrProfileNotFound
@@ -116,12 +123,12 @@ func scanProfile(row pgx.Row) (*Profile, error) {
 // the database's model_profiles_single_node_only CHECK constraint.
 // createdBy is nil only for the break-glass SuperAdmin, which is not a
 // Users row - see SCHEMA.md Break-glass credential.
-func (r *ProfileRepository) Create(ctx context.Context, name, modelRef string, engineType ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*Profile, error) {
+func (r *ProfileRepository) Create(ctx context.Context, name, modelRef string, engineType ProfileEngineType, engineParams, env, containerOptions json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*Profile, error) {
 	row := r.pool.QueryRow(ctx,
-		`INSERT INTO model_profiles (name, model_ref, engine_type, engine_params, requires_full_gpu_residency, required_memory_gb, engine_version, quantization, format, image, target_node_id, port, created_by)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+		`INSERT INTO model_profiles (name, model_ref, engine_type, engine_params, env, container_options, requires_full_gpu_residency, required_memory_gb, engine_version, quantization, format, image, target_node_id, port, created_by)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 		 RETURNING `+profileColumns,
-		name, modelRef, engineType, engineParams, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, format, image, targetNodeID, port, createdBy)
+		name, modelRef, engineType, engineParams, env, containerOptions, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, format, image, targetNodeID, port, createdBy)
 
 	p, err := scanProfile(row)
 	if err != nil {
@@ -168,14 +175,14 @@ func (r *ProfileRepository) List(ctx context.Context) ([]*Profile, error) {
 // migrations/000007_create_model_profiles.up.sql's CHECK constraint.
 // updatedBy is nil only for the break-glass SuperAdmin. Returns
 // ErrProfileNotFound if no row matches id.
-func (r *ProfileRepository) Update(ctx context.Context, id, name, modelRef string, engineType ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*Profile, error) {
+func (r *ProfileRepository) Update(ctx context.Context, id, name, modelRef string, engineType ProfileEngineType, engineParams, env, containerOptions json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*Profile, error) {
 	row := r.pool.QueryRow(ctx,
 		`UPDATE model_profiles
-		 SET name = $2, model_ref = $3, engine_type = $4, engine_params = $5, requires_full_gpu_residency = $6,
-		     required_memory_gb = $7, engine_version = $8, quantization = $9, format = $10, image = $11, target_node_id = $12, port = $13, updated_by = $14, updated_at = now()
+		 SET name = $2, model_ref = $3, engine_type = $4, engine_params = $5, env = $6, container_options = $7, requires_full_gpu_residency = $8,
+		     required_memory_gb = $9, engine_version = $10, quantization = $11, format = $12, image = $13, target_node_id = $14, port = $15, updated_by = $16, updated_at = now()
 		 WHERE id = $1
 		 RETURNING `+profileColumns,
-		id, name, modelRef, engineType, engineParams, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, format, image, targetNodeID, port, updatedBy)
+		id, name, modelRef, engineType, engineParams, env, containerOptions, requiresFullGPUResidency, requiredMemoryGB, engineVersion, quantization, format, image, targetNodeID, port, updatedBy)
 
 	// Not wrapped: ErrProfileNotFound (id doesn't exist) is an expected,
 	// common outcome here, not an edge case - callers compare against it

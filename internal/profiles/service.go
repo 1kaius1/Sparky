@@ -7,10 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
+	"github.com/1kaius1/Sparky/internal/agentproto"
 	"github.com/1kaius1/Sparky/internal/db"
 	"github.com/1kaius1/Sparky/internal/engines"
+	"github.com/1kaius1/Sparky/internal/launchopts"
 	"github.com/1kaius1/Sparky/internal/rbac"
 )
 
@@ -18,8 +21,8 @@ import (
 // needs, narrow enough to fake in tests - same pattern as
 // internal/nodes' nodeStore.
 type profileStore interface {
-	Create(ctx context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error)
-	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
+	Create(ctx context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams, env, containerOptions json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error)
+	Update(ctx context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams, env, containerOptions json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error)
 	Delete(ctx context.Context, id string) error
 	List(ctx context.Context) ([]*db.Profile, error)
 	FindByID(ctx context.Context, id string) (*db.Profile, error)
@@ -83,38 +86,122 @@ func NewService(profiles profileStore, nodes nodeLookup, inventory inventoryLook
 // itself can't make (it enforces existence only, not status = 'present').
 // Shared by CreateProfile and UpdateProfile - the same checks apply
 // either way.
-func (s *Service) resolve(ctx context.Context, f Fields) (requiresFullGPUResidency bool, err error) {
+//
+// It also validates Env and ContainerOptions (internal/launchopts) and
+// returns them in the normalized form to store. existing is the profile being
+// updated, nil on create: an actor who may not set the host-level container
+// options (rbac.CanSetHostContainerOptions) cannot change them, and because
+// their form never carries those fields, an edit keeps what existing already
+// has instead of wiping it. Container options are refused for a node on the
+// bare-metal backend, which has no container for them to apply to - accepting
+// them there would be exactly the silent no-op engine_params rejects.
+func (s *Service) resolve(ctx context.Context, actor rbac.Actor, f Fields, existing *db.Profile) (resolved, error) {
 	if err := f.validate(); err != nil {
-		return false, err
+		return resolved{}, err
 	}
 
 	adapter, err := s.adapters.Adapter(f.EngineType)
 	if err != nil {
-		return false, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+		return resolved{}, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
 	}
 	if err := adapter.ValidateParams(f.EngineParams); err != nil {
-		return false, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+		return resolved{}, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
 	}
 
-	if _, err := s.nodes.FindByID(ctx, f.TargetNodeID); err != nil {
+	node, err := s.nodes.FindByID(ctx, f.TargetNodeID)
+	if err != nil {
 		if errors.Is(err, db.ErrNodeNotFound) {
-			return false, fmt.Errorf("%w: target_node_id does not refer to a registered node", ErrInvalidProfile)
+			return resolved{}, fmt.Errorf("%w: target_node_id does not refer to a registered node", ErrInvalidProfile)
 		}
-		return false, fmt.Errorf("look up target node: %w", err)
+		return resolved{}, fmt.Errorf("look up target node: %w", err)
+	}
+
+	env, err := launchopts.ParseEnv(f.Env)
+	if err != nil {
+		return resolved{}, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+	}
+	opts, err := launchopts.ParseContainerOptions(f.ContainerOptions)
+	if err != nil {
+		return resolved{}, fmt.Errorf("%w: %v", ErrInvalidProfile, err)
+	}
+	if !rbac.CanSetHostContainerOptions(actor) {
+		var kept agentproto.ContainerOptions
+		if existing != nil {
+			// A stored value that no longer parses is a data problem, not the
+			// caller's mistake; fall back to keeping nothing rather than
+			// blocking every edit of the profile.
+			if parsed, perr := launchopts.ParseContainerOptions(existing.ContainerOptions); perr == nil {
+				kept = parsed
+			}
+		}
+		if !launchopts.IsZero(launchopts.HostLevel(opts)) && !launchopts.HostLevelEqual(opts, kept) {
+			return resolved{}, fmt.Errorf("%w: only an Admin can set extra mounts, devices, capabilities, privileged mode, ulimits, security options or the host PID namespace", ErrInvalidProfile)
+		}
+		opts = launchopts.WithHostLevel(opts, kept)
+	}
+	if node.RuntimeBackend == db.RuntimeBackendBareMetal && !launchopts.IsZero(opts) {
+		return resolved{}, fmt.Errorf("%w: container options do not apply to a bare-metal node, which runs the engine as a plain process; clear them (environment variables still apply)", ErrInvalidProfile)
 	}
 
 	entry, err := s.inventory.Get(ctx, f.TargetNodeID, f.ModelRef, f.Quantization, f.Format)
 	if err != nil {
 		if errors.Is(err, db.ErrNodeModelInventoryNotFound) {
-			return false, fmt.Errorf("%w: that model is not present in the target node's inventory", ErrInvalidProfile)
+			return resolved{}, fmt.Errorf("%w: that model is not present in the target node's inventory", ErrInvalidProfile)
 		}
-		return false, fmt.Errorf("look up target inventory entry: %w", err)
+		return resolved{}, fmt.Errorf("look up target inventory entry: %w", err)
 	}
 	if entry.Status != db.InventoryStatusPresent {
-		return false, fmt.Errorf("%w: that model is not present in the target node's inventory", ErrInvalidProfile)
+		return resolved{}, fmt.Errorf("%w: that model is not present in the target node's inventory", ErrInvalidProfile)
 	}
 
-	return adapter.RequiresFullGPUResidency(), nil
+	envJSON, err := json.Marshal(env)
+	if err != nil {
+		return resolved{}, fmt.Errorf("encode env: %w", err)
+	}
+	optsJSON, err := launchopts.Marshal(opts)
+	if err != nil {
+		return resolved{}, err
+	}
+	return resolved{
+		requiresFullGPUResidency: adapter.RequiresFullGPUResidency(),
+		env:                      envJSON,
+		containerOptions:         optsJSON,
+		envNames:                 envNames(env),
+		options:                  opts,
+	}, nil
+}
+
+// resolved is what resolve hands back for the caller to persist and audit.
+type resolved struct {
+	requiresFullGPUResidency bool
+	// env and containerOptions are the normalized JSON to store.
+	env, containerOptions json.RawMessage
+	// envNames and options are for the audit record: variable names only,
+	// never their values, since a value may be a credential and audit entries
+	// are forwarded to outside systems.
+	envNames []string
+	options  agentproto.ContainerOptions
+}
+
+// auditDetail is the part of the audit record that describes what the profile
+// runs with, added to the name and engine type.
+func (r resolved) auditDetail(detail map[string]any) map[string]any {
+	if len(r.envNames) > 0 {
+		detail["env_vars"] = r.envNames
+	}
+	if !launchopts.IsZero(r.options) {
+		detail["container_options"] = r.options
+	}
+	return detail
+}
+
+func envNames(env map[string]string) []string {
+	names := make([]string, 0, len(env))
+	for name := range env {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // nameTakenError is the operator-facing form of db.ErrProfileNameTaken. The
@@ -136,7 +223,7 @@ func (s *Service) CreateProfile(ctx context.Context, actor rbac.Actor, params Cr
 	// Surrounding whitespace is a paste artifact, not part of the name; the
 	// rest of the name is checked as a model id by Fields.validate.
 	params.Name = strings.TrimSpace(params.Name)
-	requiresFullGPUResidency, err := s.resolve(ctx, params.Fields)
+	res, err := s.resolve(ctx, actor, params.Fields, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -146,8 +233,8 @@ func (s *Service) CreateProfile(ctx context.Context, actor rbac.Actor, params Cr
 		createdBy = &actor.UserID
 	}
 
-	p, err := s.profiles.Create(ctx, params.Name, params.ModelRef, params.EngineType, params.EngineParams,
-		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Format, params.Image, params.TargetNodeID, params.Port, createdBy)
+	p, err := s.profiles.Create(ctx, params.Name, params.ModelRef, params.EngineType, params.EngineParams, res.env, res.containerOptions,
+		res.requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Format, params.Image, params.TargetNodeID, params.Port, createdBy)
 	if err != nil {
 		if errors.Is(err, db.ErrProfileNameTaken) {
 			return nil, nameTakenError(params.Name)
@@ -155,10 +242,10 @@ func (s *Service) CreateProfile(ctx context.Context, actor rbac.Actor, params Cr
 		return nil, fmt.Errorf("create model profile: %w", err)
 	}
 
-	detail := map[string]any{
+	detail := res.auditDetail(map[string]any{
 		"name":        p.Name,
 		"engine_type": string(p.EngineType),
-	}
+	})
 	if err := s.audit.Record(ctx, createdBy, actor.IsSuperAdmin, "created_profile", "model_profile", p.ID, detail); err != nil {
 		return nil, fmt.Errorf("record audit: %w", err)
 	}
@@ -175,7 +262,15 @@ func (s *Service) UpdateProfile(ctx context.Context, actor rbac.Actor, params Up
 	}
 
 	params.Name = strings.TrimSpace(params.Name)
-	requiresFullGPUResidency, err := s.resolve(ctx, params.Fields)
+
+	existing, err := s.profiles.FindByID(ctx, params.ID)
+	if err != nil {
+		if errors.Is(err, db.ErrProfileNotFound) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("look up model profile: %w", err)
+	}
+	res, err := s.resolve(ctx, actor, params.Fields, existing)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +280,8 @@ func (s *Service) UpdateProfile(ctx context.Context, actor rbac.Actor, params Up
 		updatedBy = &actor.UserID
 	}
 
-	p, err := s.profiles.Update(ctx, params.ID, params.Name, params.ModelRef, params.EngineType, params.EngineParams,
-		requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Format, params.Image, params.TargetNodeID, params.Port, updatedBy)
+	p, err := s.profiles.Update(ctx, params.ID, params.Name, params.ModelRef, params.EngineType, params.EngineParams, res.env, res.containerOptions,
+		res.requiresFullGPUResidency, params.RequiredMemoryGB, params.EngineVersion, params.Quantization, params.Format, params.Image, params.TargetNodeID, params.Port, updatedBy)
 	if err != nil {
 		if errors.Is(err, db.ErrProfileNotFound) {
 			return nil, err
@@ -197,10 +292,10 @@ func (s *Service) UpdateProfile(ctx context.Context, actor rbac.Actor, params Up
 		return nil, fmt.Errorf("update model profile: %w", err)
 	}
 
-	detail := map[string]any{
+	detail := res.auditDetail(map[string]any{
 		"name":        p.Name,
 		"engine_type": string(p.EngineType),
-	}
+	})
 	if err := s.audit.Record(ctx, updatedBy, actor.IsSuperAdmin, "updated_profile", "model_profile", p.ID, detail); err != nil {
 		return nil, fmt.Errorf("record audit: %w", err)
 	}

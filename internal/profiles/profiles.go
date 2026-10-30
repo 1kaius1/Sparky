@@ -35,6 +35,15 @@ type Fields struct {
 	EngineParams     json.RawMessage
 	RequiredMemoryGB *float64
 
+	// Env is the engine process's environment variables (a JSON object of
+	// NAME -> text) and ContainerOptions its container-runtime settings (the
+	// JSON form of agentproto.ContainerOptions) - SCHEMA.md Model profiles.
+	// Both are validated by internal/launchopts in Service.resolve; empty
+	// means none. ContainerOptions' host-level fields are an Admin's to set,
+	// see rbac.CanSetHostContainerOptions.
+	Env              json.RawMessage
+	ContainerOptions json.RawMessage
+
 	// EngineVersion optionally pins this profile's launch to a specific
 	// installed engine binary version (see SCHEMA.md Node engine
 	// inventory) instead of whatever the target node's `latest` symlink
