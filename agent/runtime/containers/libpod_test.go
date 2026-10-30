@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/1kaius1/Sparky/agent/runtime"
+	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
 // fakeLibpod records native create requests and answers from a script.
@@ -154,6 +156,7 @@ func TestStart_NonCDI_StillUsesTheCompatAPI(t *testing.T) {
 }
 
 func TestBuildLibpodRequest_Translation(t *testing.T) {
+	two := 2
 	spec := runtime.Spec{
 		Image:      "example/engine:latest",
 		Args:       []string{"serve", "--port", "8000"},
@@ -161,8 +164,7 @@ func TestBuildLibpodRequest_Translation(t *testing.T) {
 		Mounts:     []string{"/srv/models:/srv/models:ro", "/data:/data", "/x:/y:ro,z"},
 		Port:       8000,
 		CDIDevices: []string{"nvidia.com/gpu=all"},
-		ShmSize:    2 << 30,
-		IPCMode:    "private",
+		Container:  agentproto.ContainerOptions{ShmSizeGB: &two, IPCMode: "private"},
 	}
 	req, err := buildLibpodRequest(spec, "name-1", map[string]string{"k": "v"})
 	if err != nil {
@@ -195,7 +197,8 @@ func TestBuildLibpodRequest_Translation(t *testing.T) {
 // Podman refuses a shm size together with the host IPC namespace, and the
 // agent sends both for a vLLM profile with shm_size_gb.
 func TestBuildLibpodRequest_HostIPCDropsTheShmSize(t *testing.T) {
-	req, err := buildLibpodRequest(runtime.Spec{Image: "x", ShmSize: 2 << 30, IPCMode: "host"}, "n", nil)
+	two := 2
+	req, err := buildLibpodRequest(runtime.Spec{Image: "x", Container: agentproto.ContainerOptions{ShmSizeGB: &two, IPCMode: "host"}}, "n", nil)
 	if err != nil {
 		t.Fatalf("buildLibpodRequest() error: %v", err)
 	}
@@ -207,6 +210,93 @@ func TestBuildLibpodRequest_HostIPCDropsTheShmSize(t *testing.T) {
 	}
 }
 
+func TestBuildLibpodRequest_ContainerOptions(t *testing.T) {
+	mem, cpus := 96.0, 1.5
+	spec := runtime.Spec{
+		Image: "x",
+		Port:  8000,
+		Container: agentproto.ContainerOptions{
+			NetworkMode: "bridge",
+			PIDMode:     "host",
+			Entrypoint:  []string{"vllm", "serve"},
+			MemoryGB:    &mem,
+			CPUs:        &cpus,
+			Init:        true,
+			Privileged:  true,
+			AddHosts:    []string{"db:10.0.0.5"},
+			Tmpfs:       []string{"/scratch"},
+			Mounts:      []agentproto.ContainerMount{{Source: "/a", Target: "/b", ReadOnly: true}, {Source: "/c", Target: "/d"}},
+			Devices:     []string{"/dev/infiniband/uverbs0"},
+			CapAdd:      []string{"IPC_LOCK"},
+			CapDrop:     []string{"NET_RAW"},
+			SecurityOpt: []string{"seccomp=unconfined", "label=disable", "no-new-privileges", "apparmor=unconfined"},
+			Ulimits:     []agentproto.ContainerUlimit{{Name: "memlock", Soft: -1, Hard: -1}, {Name: "nofile", Soft: 1024, Hard: 4096}},
+		},
+	}
+	req, err := buildLibpodRequest(spec, "n", nil)
+	if err != nil {
+		t.Fatalf("buildLibpodRequest() error: %v", err)
+	}
+
+	if req.NetNS == nil || req.NetNS.NSMode != "bridge" || req.PIDNS == nil || req.PIDNS.NSMode != "host" {
+		t.Errorf("netns/pidns = %+v/%+v", req.NetNS, req.PIDNS)
+	}
+	if !reflect.DeepEqual(req.Entrypoint, []string{"vllm", "serve"}) || !req.Privileged || !req.Init {
+		t.Errorf("entrypoint/privileged/init = %v/%v/%v", req.Entrypoint, req.Privileged, req.Init)
+	}
+	if req.Resources == nil || req.Resources.Memory.Limit != 96*(1<<30) || req.Resources.CPU.Quota != 150_000 || req.Resources.CPU.Period != 100_000 {
+		t.Errorf("Resources = %+v", req.Resources)
+	}
+	if !reflect.DeepEqual(req.HostAdd, []string{"db:10.0.0.5"}) {
+		t.Errorf("HostAdd = %v", req.HostAdd)
+	}
+	wantMounts := []libpodMount{
+		{Type: "tmpfs", Destination: "/scratch"},
+		{Type: "bind", Source: "/a", Destination: "/b", Options: []string{"ro"}},
+		{Type: "bind", Source: "/c", Destination: "/d"},
+	}
+	if !reflect.DeepEqual(req.Mounts, wantMounts) {
+		t.Errorf("Mounts = %+v, want %+v", req.Mounts, wantMounts)
+	}
+	if len(req.Devices) != 1 || req.Devices[0].Path != "/dev/infiniband/uverbs0" {
+		t.Errorf("Devices = %+v", req.Devices)
+	}
+	if !reflect.DeepEqual(req.CapAdd, []string{"IPC_LOCK"}) || !reflect.DeepEqual(req.CapDrop, []string{"NET_RAW"}) {
+		t.Errorf("CapAdd/CapDrop = %v/%v", req.CapAdd, req.CapDrop)
+	}
+	wantRlimits := []libpodRlimit{
+		{Type: "memlock", Soft: math.MaxUint64, Hard: math.MaxUint64},
+		{Type: "nofile", Soft: 1024, Hard: 4096},
+	}
+	if !reflect.DeepEqual(req.Rlimits, wantRlimits) {
+		t.Errorf("Rlimits = %+v, want %+v", req.Rlimits, wantRlimits)
+	}
+	if req.SeccompPath != "unconfined" || !reflect.DeepEqual(req.SelinuxOpts, []string{"disable"}) || req.ApparmorProf != "unconfined" || !req.NoNewPrivs {
+		t.Errorf("security = seccomp %q selinux %v apparmor %q nonewprivs %v", req.SeccompPath, req.SelinuxOpts, req.ApparmorProf, req.NoNewPrivs)
+	}
+	// A bridge network still publishes the engine's port.
+	if len(req.PortMappings) != 1 {
+		t.Errorf("PortMappings = %+v, want the port published", req.PortMappings)
+	}
+}
+
+func TestBuildLibpodRequest_HostNetworkPublishesNoPort(t *testing.T) {
+	req, err := buildLibpodRequest(runtime.Spec{Image: "x", Port: 8000, Container: agentproto.ContainerOptions{NetworkMode: "host"}}, "n", nil)
+	if err != nil {
+		t.Fatalf("buildLibpodRequest() error: %v", err)
+	}
+	if len(req.PortMappings) != 0 || req.NetNS == nil || req.NetNS.NSMode != "host" {
+		t.Errorf("PortMappings/NetNS = %+v/%+v, want no mappings under host networking", req.PortMappings, req.NetNS)
+	}
+}
+
+func TestBuildLibpodRequest_UnsupportedSecurityOptIsRefusedNotDropped(t *testing.T) {
+	spec := runtime.Spec{Image: "x", Container: agentproto.ContainerOptions{SecurityOpt: []string{"systempaths=unconfined"}}}
+	if _, err := buildLibpodRequest(spec, "n", nil); err == nil || !strings.Contains(err.Error(), "systempaths") {
+		t.Errorf("buildLibpodRequest() error = %v, want it to refuse the option by name", err)
+	}
+}
+
 func TestBuildLibpodRequest_RejectsMalformedInput(t *testing.T) {
 	for name, spec := range map[string]runtime.Spec{
 		"env without equals":    {Image: "x", Env: []string{"JUSTAKEY"}},
@@ -215,7 +305,7 @@ func TestBuildLibpodRequest_RejectsMalformedInput(t *testing.T) {
 		"mount with empty path": {Image: "x", Mounts: []string{":/dst"}},
 		"mount with four parts": {Image: "x", Mounts: []string{"/a:/b:ro:z"}},
 		"port out of range":     {Image: "x", Port: 70000},
-		"unsupported ipc mode":  {Image: "x", IPCMode: "container:abc"},
+		"unsupported ipc mode":  {Image: "x", Container: agentproto.ContainerOptions{IPCMode: "container:abc"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := buildLibpodRequest(spec, "n", nil); err == nil {

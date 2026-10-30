@@ -1188,7 +1188,9 @@ func TestConn_Dispatch_LoadInstance_DockerBackend_SetsNvidiaGPUMechanism(t *test
 	}
 }
 
-func TestConn_Dispatch_LoadInstance_ThreadsShmSizeAndIPCModeIntoSpec(t *testing.T) {
+// An older central app sends the shared-memory size and IPC mode as flat
+// fields; a current agent must still honour them (agents are upgraded first).
+func TestConn_Dispatch_LoadInstance_LegacyShmSizeAndIPCModeBecomeContainerOptions(t *testing.T) {
 	const shmSize = 16 * 1024 * 1024 * 1024
 	_, enginePort := newFakeEngineServer(t)
 	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
@@ -1249,11 +1251,140 @@ func TestConn_Dispatch_LoadInstance_ThreadsShmSizeAndIPCModeIntoSpec(t *testing.
 		t.Fatalf("Start called %d times, want 1", len(fakeBackend.startCalls))
 	}
 	spec := fakeBackend.startCalls[0]
-	if spec.ShmSize != shmSize {
-		t.Errorf("ShmSize = %d, want %d", spec.ShmSize, shmSize)
+	if spec.Container.ShmSizeGB == nil || *spec.Container.ShmSizeGB != 16 {
+		t.Errorf("Container.ShmSizeGB = %v, want 16", spec.Container.ShmSizeGB)
 	}
-	if spec.IPCMode != "host" {
-		t.Errorf("IPCMode = %q, want %q", spec.IPCMode, "host")
+	if spec.Container.IPCMode != "host" {
+		t.Errorf("Container.IPCMode = %q, want %q", spec.Container.IPCMode, "host")
+	}
+}
+
+// The profile's environment goes after the GPU request's, so a profile can
+// override a variable the agent sets; its container options reach the spec.
+func TestConn_Dispatch_LoadInstance_ThreadsEnvAndContainerOptionsIntoSpec(t *testing.T) {
+	_, enginePort := newFakeEngineServer(t)
+	loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", agentproto.LoadInstance{
+		InstanceID:               "instance-1",
+		ModelRef:                 "test-org/test-model",
+		EngineType:               "vllm",
+		Image:                    "vllm/vllm-openai:latest",
+		Port:                     enginePort,
+		RequiresFullGPUResidency: true,
+		Env:                      map[string]string{"VLLM_MARLIN_USE_ATOMIC_ADD": "1", "NVIDIA_VISIBLE_DEVICES": "0"},
+		Container:                &agentproto.ContainerOptions{NetworkMode: "host", Privileged: true},
+	})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	app := newTestCentralApp(true, "")
+	app.sendAfterAccept = &loadEnv
+	app.receivedMsgs = make(chan agentproto.Envelope, 10)
+	srv := httptest.NewServer(app)
+	defer srv.Close()
+
+	fakeBackend := &fakeRuntimeBackend{startID: "container-1", isRunningResult: true}
+	cfg := Config{
+		CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+		ModelStoragePath: "/models", RuntimeBackend: "docker",
+	}
+	conn := New(cfg, fakeBackend, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+	conn.minBackoff = 10 * time.Millisecond
+	conn.maxBackoff = 50 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan struct{})
+	go func() {
+		conn.Run(ctx)
+		close(done)
+	}()
+
+	select {
+	case env := <-app.receivedMsgs:
+		if env.Type != agentproto.TypeInstanceResult {
+			t.Fatalf("received message type = %q, want %q", env.Type, agentproto.TypeInstanceResult)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for instance_result")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(1 * time.Second):
+		t.Fatal("Run() did not return after context cancellation")
+	}
+
+	if len(fakeBackend.startCalls) != 1 {
+		t.Fatalf("Start called %d times, want 1", len(fakeBackend.startCalls))
+	}
+	spec := fakeBackend.startCalls[0]
+	// Docker's own GPU variable first, then the profile's, sorted; the later
+	// NVIDIA_VISIBLE_DEVICES wins.
+	wantEnv := []string{"NVIDIA_VISIBLE_DEVICES=all", "NVIDIA_VISIBLE_DEVICES=0", "VLLM_MARLIN_USE_ATOMIC_ADD=1"}
+	if !reflect.DeepEqual(spec.Env, wantEnv) {
+		t.Errorf("Env = %v, want %v", spec.Env, wantEnv)
+	}
+	if spec.Container.NetworkMode != "host" || !spec.Container.Privileged {
+		t.Errorf("Container = %+v, want host networking and privileged", spec.Container)
+	}
+}
+
+// What a node must never do is start an engine from options that fail the
+// same validation the central app applies.
+func TestConn_Dispatch_LoadInstance_InvalidOptionsFailTheLoad(t *testing.T) {
+	for name, load := range map[string]agentproto.LoadInstance{
+		"env name with equals": {Env: map[string]string{"A=B": "1"}},
+		"mount path with colon": {Container: &agentproto.ContainerOptions{
+			Mounts: []agentproto.ContainerMount{{Source: "/a:/etc", Target: "/x"}},
+		}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, enginePort := newFakeEngineServer(t)
+			load.InstanceID, load.ModelRef, load.EngineType = "instance-1", "test-org/test-model", "vllm"
+			load.Image, load.Port, load.RequiresFullGPUResidency = "vllm/vllm-openai:latest", enginePort, true
+			loadEnv, err := agentproto.NewEnvelope(agentproto.TypeLoadInstance, "", load)
+			if err != nil {
+				t.Fatalf("NewEnvelope() error: %v", err)
+			}
+
+			app := newTestCentralApp(true, "")
+			app.sendAfterAccept = &loadEnv
+			app.receivedMsgs = make(chan agentproto.Envelope, 10)
+			srv := httptest.NewServer(app)
+			defer srv.Close()
+
+			fakeBackend := &fakeRuntimeBackend{startID: "container-1", isRunningResult: true}
+			cfg := Config{
+				CentralURL: wsURL(srv), BearerToken: "spk_test-token", NodeName: "spark-1",
+				ModelStoragePath: "/models", RuntimeBackend: "docker",
+			}
+			conn := New(cfg, fakeBackend, &fakeTransferExecutor{}, &fakeEngineTransferExecutor{}, &fakeTelemetryCollector{}, testLogger())
+			conn.minBackoff = 10 * time.Millisecond
+			conn.maxBackoff = 50 * time.Millisecond
+
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			go conn.Run(ctx)
+
+			select {
+			case env := <-app.receivedMsgs:
+				var result agentproto.InstanceResult
+				if err := env.DecodePayload(&result); err != nil {
+					t.Fatalf("decode instance_result: %v", err)
+				}
+				if result.Status != agentproto.InstanceStatusFailed {
+					t.Errorf("Status = %q, want failed", result.Status)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("timed out waiting for instance_result")
+			}
+			if len(fakeBackend.startCalls) != 0 {
+				t.Error("Start was called for options that fail validation")
+			}
+		})
 	}
 }
 
@@ -1321,7 +1452,7 @@ func TestConn_Dispatch_LoadInstance_ForwardsContainerNameIntoSpec(t *testing.T) 
 func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
 	// bare-metal ignores the image entirely - it has no container ENTRYPOINT
 	// at all, so this passes a non-default image to confirm that.
-	got := buildEngineLaunchArgs("bare-metal", "vllm", "nvcr.io/nvidia/vllm:26.06-py3", "/models/test-org/test-model", 8000, []string{"--tensor-parallel-size", "1"})
+	got := buildEngineLaunchArgs("bare-metal", "vllm", "nvcr.io/nvidia/vllm:26.06-py3", "/models/test-org/test-model", 8000, nil, []string{"--tensor-parallel-size", "1"})
 	want := []string{"serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0", "--tensor-parallel-size", "1"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildEngineLaunchArgs() = %v, want %v", got, want)
@@ -1329,7 +1460,7 @@ func TestBuildEngineLaunchArgs_BareMetalVLLM_PrependsServe(t *testing.T) {
 }
 
 func TestBuildEngineLaunchArgs_BareMetalLlamaCPP_NoServePrepended(t *testing.T) {
-	got := buildEngineLaunchArgs("bare-metal", "llamacpp", "ghcr.io/ggml-org/llama.cpp:server", "/models/test-org/test-model.gguf", 8080, nil)
+	got := buildEngineLaunchArgs("bare-metal", "llamacpp", "ghcr.io/ggml-org/llama.cpp:server", "/models/test-org/test-model.gguf", 8080, nil, nil)
 	want := []string{"--model", "/models/test-org/test-model.gguf", "--port", "8080", "--host", "0.0.0.0"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("buildEngineLaunchArgs() = %v, want %v", got, want)
@@ -1395,7 +1526,7 @@ func TestBuildEngineLaunchArgs_ContainersVLLM_DefaultImage_NoServePrepended(t *t
 	// "serve" (confirmed via a real `podman inspect` - PLANNING.md Decisions
 	// Log) - prepending it again here would double it.
 	for _, backend := range []string{"docker", "podman", ""} {
-		got := buildEngineLaunchArgs(backend, "vllm", vllmDefaultImage, "/models/test-org/test-model", 8000, nil)
+		got := buildEngineLaunchArgs(backend, "vllm", vllmDefaultImage, "/models/test-org/test-model", 8000, nil, nil)
 		want := []string{"--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("buildEngineLaunchArgs(%q, ...) = %v, want %v", backend, got, want)
@@ -1413,11 +1544,80 @@ func TestBuildEngineLaunchArgs_ContainersVLLM_OverrideImage_PrependsVLLMServe(t 
 	// DGX Spark hardware (PLANNING.md Decisions Log). Needs the full "vllm
 	// serve", two tokens, prepended instead.
 	for _, backend := range []string{"docker", "podman", ""} {
-		got := buildEngineLaunchArgs(backend, "vllm", "nvcr.io/nvidia/vllm:26.06-py3", "/models/test-org/test-model", 8000, nil)
+		got := buildEngineLaunchArgs(backend, "vllm", "nvcr.io/nvidia/vllm:26.06-py3", "/models/test-org/test-model", 8000, nil, nil)
 		want := []string{"vllm", "serve", "--model", "/models/test-org/test-model", "--port", "8000", "--host", "0.0.0.0"}
 		if !reflect.DeepEqual(got, want) {
 			t.Errorf("buildEngineLaunchArgs(%q, ...) = %v, want %v", backend, got, want)
 		}
+	}
+}
+
+// A profile that overrides the container's entrypoint decides what runs: the
+// arguments follow it exactly as given, with nothing prepended even for the
+// image that would otherwise get "vllm serve".
+func TestBuildEngineLaunchArgs_ContainersVLLM_EntrypointOverride_PrependsNothing(t *testing.T) {
+	for _, image := range []string{vllmDefaultImage, "nvcr.io/nvidia/vllm:26.06-py3"} {
+		got := buildEngineLaunchArgs("docker", "vllm", image, "/models/m", 8000, []string{"vllm", "serve"}, []string{"--max-model-len", "4096"})
+		want := []string{"--model", "/models/m", "--port", "8000", "--host", "0.0.0.0", "--max-model-len", "4096"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("image %q: buildEngineLaunchArgs() = %v, want %v", image, got, want)
+		}
+	}
+}
+
+// A single empty entry clears the image's entrypoint, so the command line
+// starts at the arguments and needs the full "vllm serve" even on the default
+// image, whose own entrypoint would otherwise have supplied it.
+func TestBuildEngineLaunchArgs_ContainersVLLM_ClearedEntrypoint_PrependsVLLMServe(t *testing.T) {
+	for _, image := range []string{vllmDefaultImage, "nvcr.io/nvidia/vllm:26.06-py3"} {
+		got := buildEngineLaunchArgs("docker", "vllm", image, "/models/m", 8000, []string{""}, nil)
+		want := []string{"vllm", "serve", "--model", "/models/m", "--port", "8000", "--host", "0.0.0.0"}
+		if !reflect.DeepEqual(got, want) {
+			t.Errorf("image %q: buildEngineLaunchArgs() = %v, want %v", image, got, want)
+		}
+	}
+}
+
+// A bare-metal node has no container entrypoint, so one in the profile (which
+// the central app refuses for such a node anyway) cannot suppress the
+// subcommand its raw vllm binary needs.
+func TestBuildEngineLaunchArgs_BareMetalVLLM_IgnoresEntrypoint(t *testing.T) {
+	got := buildEngineLaunchArgs("bare-metal", "vllm", "", "/models/m", 8000, []string{"vllm", "serve"}, nil)
+	if len(got) == 0 || got[0] != "serve" {
+		t.Errorf("buildEngineLaunchArgs() = %v, want serve prepended", got)
+	}
+}
+
+func TestContainerOptionsFor(t *testing.T) {
+	four := 4
+	tests := map[string]struct {
+		load         agentproto.LoadInstance
+		wantShmGB    int // 0 means unset
+		wantIPCMode  string
+		wantHasOther bool
+	}{
+		"nothing": {agentproto.LoadInstance{}, 0, "", false},
+		"older server's flat fields": {
+			agentproto.LoadInstance{ShmSize: 16 << 30, IPCMode: "host"}, 16, "host", false,
+		},
+		"a block wins over the flat fields": {
+			agentproto.LoadInstance{ShmSize: 16 << 30, IPCMode: "host", Container: &agentproto.ContainerOptions{ShmSizeGB: &four, IPCMode: "private", Privileged: true}}, 4, "private", true,
+		},
+		"a block with no shm takes the flat one": {
+			agentproto.LoadInstance{ShmSize: 8 << 30, Container: &agentproto.ContainerOptions{Privileged: true}}, 8, "", true,
+		},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			got := containerOptionsFor(tt.load)
+			gotGB := 0
+			if got.ShmSizeGB != nil {
+				gotGB = *got.ShmSizeGB
+			}
+			if gotGB != tt.wantShmGB || got.IPCMode != tt.wantIPCMode || got.Privileged != tt.wantHasOther {
+				t.Errorf("containerOptionsFor() = shm %d ipc %q privileged %v; want %d %q %v", gotGB, got.IPCMode, got.Privileged, tt.wantShmGB, tt.wantIPCMode, tt.wantHasOther)
+			}
+		})
 	}
 }
 

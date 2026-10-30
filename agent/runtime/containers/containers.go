@@ -176,12 +176,6 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 	if len(spec.Mounts) > 0 {
 		hostConfig.Binds = spec.Mounts
 	}
-	if spec.ShmSize > 0 {
-		hostConfig.ShmSize = spec.ShmSize
-	}
-	if spec.IPCMode != "" {
-		hostConfig.IpcMode = container.IpcMode(spec.IPCMode)
-	}
 
 	labels := map[string]string{labelInstanceID: spec.InstanceID}
 	if spec.Probe {
@@ -198,7 +192,8 @@ func (b *Backend) Start(ctx context.Context, spec runtime.Spec) (string, error) 
 		Cmd:    spec.Args,
 		Labels: labels,
 	}
-	if spec.Port != 0 {
+	applyContainerOptions(spec.Container, &hostConfig, config)
+	if spec.Port != 0 && !hostNetwork(spec.Container) {
 		port, err := network.ParsePort(fmt.Sprintf("%d/tcp", spec.Port))
 		if err != nil {
 			return "", fmt.Errorf("parse port %d: %w", spec.Port, err)
