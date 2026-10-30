@@ -399,12 +399,22 @@ type LoadInstance struct {
 	Args                     []string `json:"args,omitempty"`
 	Port                     int      `json:"port"`
 	RequiresFullGPUResidency bool     `json:"requires_full_gpu_residency"`
-	// ShmSize and IPCMode carry engines.LaunchSpec's own container-runtime-
-	// level settings (see its doc comment) across the wire - containers
-	// backend only, zero/empty for bare-metal and for engine types that
-	// never set them.
+	// ShmSize and IPCMode are the container settings a server older than
+	// Container sent (a vLLM profile's shm_size_gb). A current server leaves
+	// them zero and sends the same settings in Container; they stay so a
+	// current agent still accepts an older server's message - agents are
+	// upgraded before the server. Container wins when it sets the same thing.
 	ShmSize int64  `json:"shm_size,omitempty"`
 	IPCMode string `json:"ipc_mode,omitempty"`
+	// Env is the profile's own environment variables, for the engine process
+	// on either backend (SCHEMA.md Model profiles' env). The agent puts them
+	// after its own (the GPU request's), so a profile can deliberately
+	// override one of those. Empty for an older server.
+	Env map[string]string `json:"env,omitempty"`
+	// Container is the profile's container-runtime options - containers
+	// backend only, ignored by bare-metal. Nil for an older server or a
+	// profile that sets none.
+	Container *ContainerOptions `json:"container,omitempty"`
 	// ContainerName is the name the containers backend gives the container
 	// (sparky-<profile name>-<UTC start time>, built by internal/lifecycle),
 	// so `docker ps` shows which profile a container belongs to and which of
@@ -423,6 +433,79 @@ type LoadInstance struct {
 	// know it rejects the whole message, so upgrade agents before the
 	// server.
 	ProfileID string `json:"profile_id,omitempty"`
+}
+
+// ContainerOptions are a profile's container-runtime settings - the
+// equivalents of `docker run` / `podman run` flags, applied through the
+// container API rather than a command line. The same struct is what the
+// central app stores in model_profiles.container_options (SCHEMA.md Model
+// profiles) and what travels in LoadInstance.Container, so there is one
+// definition of what can be set. Every field is optional; a zero value means
+// "leave the runtime's own default". Validation lives in internal/launchopts,
+// and which fields only an Admin may set is decided there too (HostLevel).
+//
+// Mounts, Devices, CapAdd, CapDrop, SecurityOpt, Ulimits, PIDMode and
+// Privileged reach into the host and are the Admin-only group; the rest stay
+// inside the container.
+type ContainerOptions struct {
+	// ShmSizeGB is the /dev/shm size in GiB. Podman refuses it together with
+	// IPCMode "host" (the container then uses the host's /dev/shm), so the
+	// containers backend drops it in that case.
+	ShmSizeGB *int `json:"shm_size_gb,omitempty"`
+	// IPCMode is the IPC namespace: "private", "shareable" or "host".
+	IPCMode string `json:"ipc_mode,omitempty"`
+	// NetworkMode is "bridge" or "host". With "host" the engine listens on the
+	// node's own port directly, so no port is published.
+	NetworkMode string `json:"network_mode,omitempty"`
+	// Entrypoint replaces the image's ENTRYPOINT. A single empty string clears
+	// it (docker run --entrypoint ""). When set, Sparky no longer prepends
+	// `vllm serve` itself: the entrypoint and the profile's arguments are used
+	// exactly as given.
+	Entrypoint []string `json:"entrypoint,omitempty"`
+	// MemoryGB is a hard memory limit in GiB, CPUs a CPU quota (1.5 is a
+	// core and a half).
+	MemoryGB *float64 `json:"memory_gb,omitempty"`
+	CPUs     *float64 `json:"cpus,omitempty"`
+	// Init runs a minimal init process as PID 1 (docker run --init).
+	Init bool `json:"init,omitempty"`
+	// AddHosts are extra /etc/hosts entries, "name:ip".
+	AddHosts []string `json:"add_hosts,omitempty"`
+	// Tmpfs are container paths mounted as a tmpfs.
+	Tmpfs []string `json:"tmpfs,omitempty"`
+
+	// Admin-only from here down: each reaches into the host.
+
+	// PIDMode is "host" to share the node's process namespace.
+	PIDMode string `json:"pid_mode,omitempty"`
+	// Privileged gives the container every capability and device.
+	Privileged bool `json:"privileged,omitempty"`
+	// Mounts are extra bind mounts. The model directory is always mounted
+	// read-only by the agent and does not belong here.
+	Mounts []ContainerMount `json:"mounts,omitempty"`
+	// Devices are host device paths under /dev, passed through unchanged.
+	Devices []string `json:"devices,omitempty"`
+	// CapAdd and CapDrop are Linux capability names ("SYS_PTRACE").
+	CapAdd  []string `json:"cap_add,omitempty"`
+	CapDrop []string `json:"cap_drop,omitempty"`
+	// SecurityOpt are `--security-opt` values ("seccomp=unconfined").
+	SecurityOpt []string `json:"security_opt,omitempty"`
+	// Ulimits are resource limits ("memlock", "nofile", ...).
+	Ulimits []ContainerUlimit `json:"ulimits,omitempty"`
+}
+
+// ContainerMount is one extra bind mount.
+type ContainerMount struct {
+	Source   string `json:"source"`
+	Target   string `json:"target"`
+	ReadOnly bool   `json:"read_only,omitempty"`
+}
+
+// ContainerUlimit is one resource limit. A Soft or Hard of -1 means unlimited,
+// as in `--ulimit memlock=-1:-1`.
+type ContainerUlimit struct {
+	Name string `json:"name"`
+	Soft int64  `json:"soft"`
+	Hard int64  `json:"hard"`
 }
 
 // UnloadInstance is TypeUnloadInstance's payload. There is no
