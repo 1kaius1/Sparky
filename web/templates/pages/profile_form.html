@@ -11,74 +11,186 @@
 
 <form method="post" action="{{if .Data.IsEdit}}/profiles/{{.Data.ProfileID}}/edit{{else}}/profiles/new{{end}}">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-  <p>
-    <label for="name">Name</label><br>
-    <span class="field-row">
-      <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" maxlength="64" required aria-describedby="name-help">
-      <span class="help-tip" tabindex="0" aria-label="About the profile name">
-        <span class="help-tip-icon" aria-hidden="true">?</span>
-        <span class="help-tip-body" id="name-help" role="tooltip">
-          <span class="help-tip-line">This name is the model id clients use: it is what API clients and editor
-          extensions list and must send as <code>model</code>, and it must be unique. Use letters,
-          digits and <code>. _ - :</code> only, at most 64 characters, starting with a letter or digit - no spaces or commas.
-          A <code>/</code> is allowed between parts (<code>team/qwen3:7b</code>), but some clients treat <code>/</code>
-          and <code>:</code> specially, so prefer plain names.</span>
-          <span class="help-tip-line">Make it self-describing, because several profiles can load the same model with
-          different engines or parameters and every one needs a name that tells it apart. A good shape is
-          <code>&lt;model&gt;-&lt;quantization&gt;-&lt;engine&gt;-&lt;what differs&gt;</code>, for example
-          <code>Qwen3-Coder-Next-NVFP4-GB10-vllm-tp2-ctx32k</code>.</span>
-          <span class="help-tip-line">Avoid names starting with <code>o</code> and a digit, or containing <code>gpt-5</code>,
-          <code>claude</code>, <code>codex</code>, <code>grok-4</code> or <code>deepseek-r</code>: some clients
-          change how they send requests when an id looks like those.</span>
+
+  <fieldset class="settings-fieldset">
+    <legend>General</legend>
+    <p>
+      <label for="name">Name</label><br>
+      <span class="field-row">
+        <input type="text" id="name" name="name" value="{{.Data.Form.Name}}" maxlength="64" required aria-describedby="name-help">
+        <span class="help-tip" tabindex="0" aria-label="About the profile name">
+          <span class="help-tip-icon" aria-hidden="true">?</span>
+          <span class="help-tip-body" id="name-help" role="tooltip">
+            <span class="help-tip-line">This name is the model id clients use: it is what API clients and editor
+            extensions list and must send as <code>model</code>, and it must be unique. Use letters,
+            digits and <code>. _ - :</code> only, at most 64 characters, starting with a letter or digit - no spaces or commas.
+            A <code>/</code> is allowed between parts (<code>team/qwen3:7b</code>), but some clients treat <code>/</code>
+            and <code>:</code> specially, so prefer plain names.</span>
+            <span class="help-tip-line">Make it self-describing, because several profiles can load the same model with
+            different engines or parameters and every one needs a name that tells it apart. A good shape is
+            <code>&lt;model&gt;-&lt;quantization&gt;-&lt;engine&gt;-&lt;what differs&gt;</code>, for example
+            <code>Qwen3-Coder-Next-NVFP4-GB10-vllm-tp2-ctx32k</code>.</span>
+            <span class="help-tip-line">Avoid names starting with <code>o</code> and a digit, or containing <code>gpt-5</code>,
+            <code>claude</code>, <code>codex</code>, <code>grok-4</code> or <code>deepseek-r</code>: some clients
+            change how they send requests when an id looks like those.</span>
+          </span>
         </span>
       </span>
-    </span>
-  </p>
-  <p>
-    <label for="engine_type">Engine type</label><br>
-    <select id="engine_type" name="engine_type">
-      {{range .Data.EngineTypes}}
-      <option value="{{.}}" {{if eq . $.Data.Form.EngineType}}selected{{end}}>{{.}}</option>
-      {{end}}
-    </select>
-  </p>
-  <p>
-    <label for="target_node_id">Target node</label><br>
-    <select id="target_node_id" name="target_node_id" required>
-      <option value="">(select a node)</option>
-      {{range .Data.Nodes}}
-      <option value="{{.ID}}" {{if eq .ID $.Data.Form.TargetNodeID}}selected{{end}}>{{.Name}}</option>
-      {{end}}
-    </select>
-  </p>
-  <p>
-    <input type="hidden" id="prefill-entry" name="prefill_entry" value="{{.Data.Form.Entry}}">
-    <div id="inventory-options" hx-get="/profiles/inventory-options"
-         hx-trigger="load, change from:#target_node_id"
-         hx-include="#target_node_id, #prefill-entry" hx-target="this" hx-swap="innerHTML"></div>
-    <br><small>Only models already present on the target node's own Inventory are offered - see the Inventory page to download or copy one there first.</small>
-  </p>
-  <p>
-    <label for="port">Port</label><br>
-    <input type="text" id="port" name="port" value="{{.Data.Form.Port}}" required>
-  </p>
-  <p>
-    <label for="required_memory_gb">Required memory (GB, optional)</label><br>
-    <input type="text" id="required_memory_gb" name="required_memory_gb" value="{{.Data.Form.RequiredMemoryGB}}">
-  </p>
-  <p>
-    <label for="engine_version">Pinned engine version (optional)</label><br>
-    <input type="text" id="engine_version" name="engine_version" value="{{.Data.Form.EngineVersion}}" placeholder="latest">
-  </p>
-  <p>
-    <label for="image">Container image override (optional)</label><br>
-    <input type="text" id="image" name="image" value="{{.Data.Form.Image}}" placeholder="vllm/vllm-openai:latest">
-    <br><small>Overrides the engine type's default container image. Containers (Docker/Podman) backend only - ignored for bare-metal launches. Leave blank to use the default image for this engine type.</small>
-  </p>
-  <p>
-    <label for="engine_params">Engine params (JSON, optional)</label><br>
-    <textarea id="engine_params" name="engine_params" rows="6" cols="60">{{.Data.Form.EngineParamsJSON}}</textarea>
-  </p>
+    </p>
+    <p>
+      <label for="target_node_id">Target node</label><br>
+      <select id="target_node_id" name="target_node_id" required>
+        <option value="">(select a node)</option>
+        {{range .Data.Nodes}}
+        <option value="{{.ID}}" {{if eq .ID $.Data.Form.TargetNodeID}}selected{{end}}>{{.Name}}</option>
+        {{end}}
+      </select>
+    </p>
+    <p>
+      <label for="engine_type">Engine type</label><br>
+      <select id="engine_type" name="engine_type">
+        {{range .Data.EngineTypes}}
+        <option value="{{.}}" {{if eq . $.Data.Form.EngineType}}selected{{end}}>{{.}}</option>
+        {{end}}
+      </select>
+    </p>
+    <p>
+      <input type="hidden" id="prefill-entry" name="prefill_entry" value="{{.Data.Form.Entry}}">
+      <div id="inventory-options" hx-get="/profiles/inventory-options"
+           hx-trigger="load, change from:#target_node_id"
+           hx-include="#target_node_id, #prefill-entry" hx-target="this" hx-swap="innerHTML"></div>
+      <br><small>Only models already present on the target node's own Inventory are offered - see the Inventory page to download or copy one there first.</small>
+    </p>
+    <p>
+      <label for="port">Port</label><br>
+      <input type="text" id="port" name="port" value="{{.Data.Form.Port}}" required>
+    </p>
+  </fieldset>
+
+  <fieldset class="settings-fieldset">
+    <legend>Engine</legend>
+    <p>
+      <label for="required_memory_gb">Required memory (GB, optional)</label><br>
+      <input type="text" id="required_memory_gb" name="required_memory_gb" value="{{.Data.Form.RequiredMemoryGB}}">
+    </p>
+    <p>
+      <label for="engine_version">Pinned engine version (optional)</label><br>
+      <input type="text" id="engine_version" name="engine_version" value="{{.Data.Form.EngineVersion}}" placeholder="latest">
+    </p>
+    <p>
+      <label for="engine_params">Engine params (JSON, optional)</label><br>
+      <textarea id="engine_params" name="engine_params" rows="6" cols="60">{{.Data.Form.EngineParamsJSON}}</textarea>
+      <br><small>Any engine flag without its own key goes in <code>extra_args</code>, a list of command-line arguments added after the others exactly as written, for example <code>{"extra_args": ["--enable-prefix-caching", "--attention-backend", "flashinfer"]}</code>. The model, port, host and served model name are set by Sparky and cannot be given there.</small>
+    </p>
+  </fieldset>
+
+  <fieldset class="settings-fieldset">
+    <legend>Environment variables</legend>
+    <p>
+      <label for="env">Environment variables (optional)</label><br>
+      <textarea id="env" name="env" rows="5" cols="60" placeholder="VLLM_MARLIN_USE_ATOMIC_ADD=1" spellcheck="false">{{.Data.Form.EnvText}}</textarea>
+      <br><small>One <code>NAME=value</code> per line, passed to the engine process on every kind of node. Values are taken literally (no quotes or <code>${}</code> expansion). They are stored as written and shown here in plain text, so avoid putting a credential in one for now. On a Docker or Podman node a name set here replaces one of the same name that Sparky sets for GPU access.</small>
+    </p>
+  </fieldset>
+
+  <fieldset class="settings-fieldset">
+    <legend>Container (Docker and Podman nodes only)</legend>
+    <p><small>These are the equivalents of <code>docker run</code> / <code>podman run</code> flags. Leave a field blank to keep the runtime's default. They are refused for a node that runs engines as a plain process (bare-metal).</small></p>
+    <p>
+      <label for="image">Container image override (optional)</label><br>
+      <input type="text" id="image" name="image" value="{{.Data.Form.Image}}" placeholder="vllm/vllm-openai:latest">
+      <br><small>Overrides the engine type's default container image. Leave blank to use the default image for this engine type.</small>
+    </p>
+    <p>
+      <label for="shm_size_gb">Shared memory, GiB (<code>--shm-size</code>)</label><br>
+      <input type="text" id="shm_size_gb" name="shm_size_gb" value="{{.Data.Form.ShmSizeGB}}" placeholder="runtime default (64 MB)">
+      <br><small>Multi-GPU tensor-parallel launches need far more than the default for the engines to talk to each other.</small>
+    </p>
+    <p>
+      <label for="ipc_mode">IPC namespace (<code>--ipc</code>)</label><br>
+      <select id="ipc_mode" name="ipc_mode">
+        <option value="" {{if eq .Data.Form.IPCMode ""}}selected{{end}}>(runtime default)</option>
+        <option value="private" {{if eq .Data.Form.IPCMode "private"}}selected{{end}}>private</option>
+        <option value="shareable" {{if eq .Data.Form.IPCMode "shareable"}}selected{{end}}>shareable</option>
+        <option value="host" {{if eq .Data.Form.IPCMode "host"}}selected{{end}}>host</option>
+      </select>
+      <br><small>With <code>host</code> the container uses the node's own shared memory, so a shared memory size above has no effect on Podman.</small>
+    </p>
+    <p>
+      <label for="network_mode">Network (<code>--network</code>)</label><br>
+      <select id="network_mode" name="network_mode">
+        <option value="" {{if eq .Data.Form.NetworkMode ""}}selected{{end}}>(runtime default)</option>
+        <option value="bridge" {{if eq .Data.Form.NetworkMode "bridge"}}selected{{end}}>bridge</option>
+        <option value="host" {{if eq .Data.Form.NetworkMode "host"}}selected{{end}}>host</option>
+      </select>
+      <br><small>With <code>host</code> the engine listens on the node's own port directly and Sparky publishes no port.</small>
+    </p>
+    <p>
+      <label for="entrypoint">Entrypoint (<code>--entrypoint</code>), one argument per line</label><br>
+      <textarea id="entrypoint" name="entrypoint" rows="3" cols="60" spellcheck="false">{{.Data.Form.EntrypointText}}</textarea>
+      <br><label><input type="checkbox" name="entrypoint_clear" value="yes" {{if .Data.Form.EntrypointClear}}checked{{end}}> Clear the image's entrypoint instead</label>
+      <br><small>A replacement entrypoint runs exactly as written followed by the engine's arguments, so Sparky stops adding <code>vllm serve</code> itself. Clearing it leaves Sparky adding <code>vllm serve</code> to the arguments.</small>
+    </p>
+    <p>
+      <label for="memory_gb">Memory limit, GiB (<code>--memory</code>)</label><br>
+      <input type="text" id="memory_gb" name="memory_gb" value="{{.Data.Form.MemoryGB}}">
+    </p>
+    <p>
+      <label for="cpus">CPU limit (<code>--cpus</code>)</label><br>
+      <input type="text" id="cpus" name="cpus" value="{{.Data.Form.CPUs}}" placeholder="e.g. 8 or 1.5">
+    </p>
+    <p><label><input type="checkbox" name="init" value="yes" {{if .Data.Form.Init}}checked{{end}}> Run an init process as PID 1 (<code>--init</code>)</label></p>
+    <p>
+      <label for="add_hosts">Extra hosts (<code>--add-host</code>), one <code>name:address</code> per line</label><br>
+      <textarea id="add_hosts" name="add_hosts" rows="2" cols="60" spellcheck="false">{{.Data.Form.AddHostsText}}</textarea>
+    </p>
+    <p>
+      <label for="tmpfs">Temporary file systems (<code>--tmpfs</code>), one container path per line</label><br>
+      <textarea id="tmpfs" name="tmpfs" rows="2" cols="60" spellcheck="false">{{.Data.Form.TmpfsText}}</textarea>
+    </p>
+
+    {{if .Data.CanSetHostOptions}}
+    <fieldset class="settings-fieldset">
+      <legend>Host access (Admin only)</legend>
+      <p><small>Each of these reaches into the node. Only an Admin can set them; a PowerDev can still edit the rest of the profile and they stay as they are.</small></p>
+      <p><label><input type="checkbox" name="privileged" value="yes" {{if .Data.Form.Privileged}}checked{{end}}> Privileged: every capability and device (<code>--privileged</code>)</label></p>
+      <p>
+        <label for="pid_mode">PID namespace (<code>--pid</code>)</label><br>
+        <select id="pid_mode" name="pid_mode">
+          <option value="" {{if eq .Data.Form.PIDMode ""}}selected{{end}}>(runtime default)</option>
+          <option value="host" {{if eq .Data.Form.PIDMode "host"}}selected{{end}}>host</option>
+        </select>
+      </p>
+      <p>
+        <label for="mounts">Extra mounts (<code>-v</code>), one <code>source:target</code> or <code>source:target:ro</code> per line</label><br>
+        <textarea id="mounts" name="mounts" rows="3" cols="60" spellcheck="false">{{.Data.Form.MountsText}}</textarea>
+        <br><small>The model directory is always mounted read-only and does not belong here.</small>
+      </p>
+      <p>
+        <label for="devices">Devices (<code>--device</code>), one path under <code>/dev</code> per line</label><br>
+        <textarea id="devices" name="devices" rows="2" cols="60" spellcheck="false">{{.Data.Form.DevicesText}}</textarea>
+      </p>
+      <p>
+        <label for="cap_add">Added capabilities (<code>--cap-add</code>)</label><br>
+        <input type="text" id="cap_add" name="cap_add" value="{{.Data.Form.CapAddText}}" placeholder="IPC_LOCK, SYS_PTRACE">
+      </p>
+      <p>
+        <label for="cap_drop">Dropped capabilities (<code>--cap-drop</code>)</label><br>
+        <input type="text" id="cap_drop" name="cap_drop" value="{{.Data.Form.CapDropText}}" placeholder="NET_RAW">
+      </p>
+      <p>
+        <label for="security_opt">Security options (<code>--security-opt</code>), one per line</label><br>
+        <textarea id="security_opt" name="security_opt" rows="2" cols="60" spellcheck="false" placeholder="seccomp=unconfined">{{.Data.Form.SecurityOptText}}</textarea>
+        <br><small>On a Podman GPU node: <code>seccomp=</code>, <code>label=</code>, <code>apparmor=</code> and <code>no-new-privileges</code> are supported.</small>
+      </p>
+      <p>
+        <label for="ulimits">Resource limits (<code>--ulimit</code>), one <code>name=soft:hard</code> per line, -1 for unlimited</label><br>
+        <textarea id="ulimits" name="ulimits" rows="2" cols="60" spellcheck="false" placeholder="memlock=-1:-1">{{.Data.Form.UlimitsText}}</textarea>
+      </p>
+    </fieldset>
+    {{end}}
+  </fieldset>
+
   <p><button type="submit">{{if .Data.IsEdit}}Save{{else}}Create{{end}}</button></p>
 </form>
 {{end}}

@@ -34,14 +34,13 @@ type profileEditor interface {
 }
 
 // profileEngineTypeOptions is every engine type the create/edit form
-// offers - including "aphrodite", which has no adapter registered until
-// v0.3.0 (db.ProfileEngineType's own doc comment) and so will always
-// fail server-side validation today. Not filtered out of the dropdown:
-// it is a real value of the enum, and letting the same validation path
-// every other invalid submission goes through reject it (rather than
-// hiding it from the UI) avoids a second, form-specific notion of which
-// engine types are "really" valid.
-var profileEngineTypeOptions = []string{string(db.ProfileEngineVLLM), string(db.ProfileEngineAphrodite), string(db.ProfileEngineLlamaCPP)}
+// offers: the ones with an adapter, vLLM and llama.cpp. "aphrodite" is a
+// real value of the database enum but has no adapter, and support for it is
+// deferred until after 1.0.0 (PLANNING.md Decisions Log, 2026-10-30), so it is
+// not offered rather than offered and then refused. The server-side check
+// (internal/engines.ErrUnknownEngineType) still rejects it if submitted by
+// hand.
+var profileEngineTypeOptions = []string{string(db.ProfileEngineVLLM), string(db.ProfileEngineLlamaCPP)}
 
 // profilesPageData is the Model profiles page's view model - CLAUDE.md
 // Frontend Conventions' Model profiles sidebar tier ("Read-only view /
@@ -247,6 +246,12 @@ type profileFormPageData struct {
 	EngineTypes []string
 	IsEdit      bool
 	ProfileID   string
+
+	// CanSetHostOptions shows the host-level container options (mounts,
+	// devices, privileged, ...) - rbac.CanSetHostContainerOptions. For anyone
+	// else those inputs are not rendered at all, and an edit keeps what an
+	// Admin set (profiles.Service.resolve).
+	CanSetHostOptions bool
 }
 
 type nodeOption struct {
@@ -269,6 +274,31 @@ type profileFormValues struct {
 	// model_ref/quantization (PLANNING.md's Models redesign PR 9). Empty
 	// means none chosen yet.
 	Entry string
+
+	// EnvText is the environment variables as NAME=value lines. The rest are
+	// the container options as the form shows them - text a person types, one
+	// entry per line, converted by profile_options_form.go. The group from
+	// PIDMode down is the host-level one (CanSetHostOptions).
+	EnvText         string
+	ShmSizeGB       string
+	IPCMode         string
+	NetworkMode     string
+	EntrypointText  string
+	EntrypointClear bool
+	MemoryGB        string
+	CPUs            string
+	Init            bool
+	AddHostsText    string
+	TmpfsText       string
+
+	PIDMode         string
+	Privileged      bool
+	MountsText      string
+	DevicesText     string
+	CapAddText      string
+	CapDropText     string
+	SecurityOptText string
+	UlimitsText     string
 }
 
 func (a *API) nodeOptionsForProfileForm(ctx context.Context) ([]nodeOption, error) {
@@ -300,7 +330,7 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 	if p.Image != nil {
 		image = *p.Image
 	}
-	return profileFormValues{
+	values := profileFormValues{
 		Name:             p.Name,
 		EngineType:       string(p.EngineType),
 		EngineParamsJSON: string(p.EngineParams),
@@ -311,6 +341,8 @@ func profileFormValuesFromProfile(p *db.Profile) profileFormValues {
 		Port:             strconv.Itoa(p.Port),
 		Entry:            encodeEntry(p.ModelRef, p.Quantization, p.Format),
 	}
+	applyOptionsToForm(&values, p.Env, p.ContainerOptions)
+	return values
 }
 
 // fieldsFromForm converts submitted form values into profiles.Fields,
@@ -355,11 +387,22 @@ func fieldsFromForm(form profileFormValues) (profiles.Fields, error) {
 		return profiles.Fields{}, errors.New("select a model from the target node's inventory")
 	}
 
+	env, err := envFromText(form.EnvText)
+	if err != nil {
+		return profiles.Fields{}, err
+	}
+	containerOptions, err := containerOptionsFromForm(form)
+	if err != nil {
+		return profiles.Fields{}, err
+	}
+
 	return profiles.Fields{
 		Name:             form.Name,
 		ModelRef:         modelRef,
 		EngineType:       db.ProfileEngineType(form.EngineType),
 		EngineParams:     json.RawMessage(engineParamsRaw),
+		Env:              env,
+		ContainerOptions: containerOptions,
 		RequiredMemoryGB: requiredMemoryGB,
 		EngineVersion:    engineVersion,
 		Quantization:     quantization,
@@ -384,7 +427,21 @@ func (a *API) renderProfileFormError(w http.ResponseWriter, r *http.Request, isE
 	w.WriteHeader(http.StatusBadRequest)
 	a.render(w, r, "profile_form", title, profileFormPageData{
 		Error: errMsg, Form: form, Nodes: nodeOpts, EngineTypes: profileEngineTypeOptions, IsEdit: isEdit, ProfileID: profileID,
+		CanSetHostOptions: a.canSetHostOptions(r.Context()),
 	})
+}
+
+// canSetHostOptions reports whether the signed-in viewer may set the
+// host-level container options, for the form's sake. An actor that cannot be
+// resolved is treated as unable to: the page then simply omits inputs, and the
+// service refuses the submission regardless.
+func (a *API) canSetHostOptions(ctx context.Context) bool {
+	identity, ok := IdentityFromContext(ctx)
+	if !ok {
+		return false
+	}
+	actor, err := a.actorFromIdentity(ctx, identity)
+	return err == nil && rbac.CanSetHostContainerOptions(actor)
 }
 
 func (a *API) handleNewProfileForm(w http.ResponseWriter, r *http.Request) {
@@ -416,6 +473,7 @@ func (a *API) handleNewProfileForm(w http.ResponseWriter, r *http.Request) {
 
 	a.render(w, r, "profile_form", "New model profile", profileFormPageData{
 		Nodes: nodeOpts, EngineTypes: profileEngineTypeOptions,
+		CanSetHostOptions: rbac.CanSetHostContainerOptions(actor),
 	})
 }
 
@@ -461,6 +519,7 @@ func (a *API) handleEditProfileForm(w http.ResponseWriter, r *http.Request) {
 	a.render(w, r, "profile_form", "Edit model profile", profileFormPageData{
 		Form: profileFormValuesFromProfile(p), Nodes: nodeOpts, EngineTypes: profileEngineTypeOptions,
 		IsEdit: true, ProfileID: id,
+		CanSetHostOptions: rbac.CanSetHostContainerOptions(actor),
 	})
 }
 
@@ -478,17 +537,7 @@ func (a *API) handleCreateProfile(w http.ResponseWriter, r *http.Request) {
 		a.renderProfileFormError(w, r, false, "", "invalid form submission", profileFormValues{})
 		return
 	}
-	form := profileFormValues{
-		Name:             r.PostFormValue("name"),
-		EngineType:       r.PostFormValue("engine_type"),
-		EngineParamsJSON: r.PostFormValue("engine_params"),
-		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
-		EngineVersion:    r.PostFormValue("engine_version"),
-		Image:            r.PostFormValue("image"),
-		TargetNodeID:     r.PostFormValue("target_node_id"),
-		Entry:            r.PostFormValue("entry"),
-		Port:             r.PostFormValue("port"),
-	}
+	form := readProfileForm(r)
 
 	fields, err := fieldsFromForm(form)
 	if err != nil {
@@ -536,17 +585,7 @@ func (a *API) handleUpdateProfile(w http.ResponseWriter, r *http.Request) {
 		a.renderProfileFormError(w, r, true, id, "invalid form submission", profileFormValues{})
 		return
 	}
-	form := profileFormValues{
-		Name:             r.PostFormValue("name"),
-		EngineType:       r.PostFormValue("engine_type"),
-		EngineParamsJSON: r.PostFormValue("engine_params"),
-		RequiredMemoryGB: r.PostFormValue("required_memory_gb"),
-		EngineVersion:    r.PostFormValue("engine_version"),
-		Image:            r.PostFormValue("image"),
-		TargetNodeID:     r.PostFormValue("target_node_id"),
-		Entry:            r.PostFormValue("entry"),
-		Port:             r.PostFormValue("port"),
-	}
+	form := readProfileForm(r)
 
 	fields, err := fieldsFromForm(form)
 	if err != nil {
