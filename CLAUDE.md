@@ -806,12 +806,19 @@ non-Spark hardware first (a laptop with an RTX 4090 and a Dell Precision
 workstation with an RTX 3080Ti). The Docker runtime backend's native GPU
 passthrough is now confirmed against real DGX Spark hardware (2026-08-20) - a
 real container launched with Sparky's exact GPU request contract, a real model
-served, and GPU utilization measured rising during inference. Its one remaining
-item is Podman/CDI validation, moved off Spark entirely as of 2026-08-19 (the
-fleet's Spark workstations ship with Docker and stay on it deliberately, matching
-NVIDIA's own Spark workflow assumptions) and now waiting on the Dell Precision
-RTX 3080Ti coming online - see `PLANNING.md`'s 2026-08-19 and 2026-08-20 Decisions
-Log entries.
+served, and GPU utilization measured rising during inference. Podman/CDI GPU
+passthrough's backend-level mechanism is also now verified, moved off Spark
+entirely as of 2026-08-19 (the fleet's Spark workstations ship with Docker and
+stay on it deliberately, matching NVIDIA's own Spark workflow assumptions) and
+confirmed 2026-10-13 against a real rootless and a real rootful Podman 4.9.3
+daemon on the RTX 4090 laptop - see `PLANNING.md`'s 2026-08-19, 2026-08-20, and
+2026-10-13 Decisions Log entries. Its one remaining item is the full-stack run
+(the packaged agent as `serviceloop`, a real model, GPU utilization rising)
+across the distributions the fleet is meant to run - Debian, Ubuntu, the RHEL
+family (Rocky/Alma/RHEL/Oracle Linux), and SUSE Linux Enterprise Server - which
+waits on the Dell Precision RTX 3080Ti coming online; Fedora and Amazon Linux
+are expected to work too but are explicitly low priority to test, not part of
+this required pass - see `PLANNING.md`'s 2026-11-17 Decisions Log entries.
 
 v0.2.0's bare-metal runtime backend and its `sparky-agent setup` subcommand are
 also done, including real-hardware validation on that same RTX 4090 laptop - not
@@ -821,6 +828,7 @@ and fixed are on record in `PLANNING.md`'s Decisions Log (2026-08-14/2026-08-15)
 Engine-binary provisioning from GitHub Releases and per-profile engine version
 pinning are also both done (`agent/enginetransfer`, `internal/engineprovision`,
 `model_profiles.engine_version`) - see `PLANNING.md`'s 2026-08-15 Decisions Log
-entries. v0.2.0's only remaining item is the same Podman/CDI validation v0.1.0 is
-waiting on above, on the Dell Precision RTX 3080Ti - see `PLANNING.md` for the
-full milestone breakdown, decisions log, and what's next.
+entries. v0.2.0's only remaining item is the same Podman/CDI full-stack,
+cross-distro validation v0.1.0 is waiting on above, on the Dell Precision RTX
+3080Ti - see `PLANNING.md` for the full milestone breakdown, decisions log, and
+what's next.
