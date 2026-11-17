@@ -19,8 +19,11 @@ now unblocked: DGX Spark hardware is in hand, confirmed running on Docker (the
 fleet's deliberate choice there, matching NVIDIA's own Spark workflow assumptions
 - not Podman), with real telemetry and `.deb`-packaged agent install already
 verified end to end against it. CDI passthrough specifically is a Podman-only
-concern and out of scope for Spark entirely; that validation now waits on a
-second machine (a Dell Precision RTX 3080Ti) coming online instead.
+concern and out of scope for Spark entirely; its backend-level mechanism is now
+verified too, against both a rootless and a rootful Podman 4.9.3 daemon on the
+dev laptop. What's left is a full-stack run across the distributions the fleet
+is meant to run (Debian, Ubuntu, the RHEL family, SUSE), which waits on a
+second machine (a Dell Precision RTX 3080Ti) coming online.
 
 **v0.2.0's bare-metal runtime backend and its `sparky-agent setup` subcommand are
 also done**, validated end-to-end on real GPU hardware: a real inference engine
@@ -28,8 +31,8 @@ has been loaded, served a request, and cleanly unloaded through it, not just
 exercised in simulation - `sparky-agent setup`'s provisioning has also now been
 confirmed on a real DGX Spark via its packaged `.deb` install. Engine-binary
 provisioning from GitHub Releases and per-profile engine version pinning are also
-done. v0.2.0's only remaining item is the same Docker-backend GPU passthrough
-validation v0.1.0 is waiting on.
+done. v0.2.0's only remaining item is the same Podman/CDI full-stack validation
+v0.1.0 is waiting on, once that second machine is online.
 
 See `PLANNING.md` for the full milestone breakdown, decisions log, and what's
 next.
