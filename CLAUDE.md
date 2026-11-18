@@ -168,8 +168,11 @@ sparky/
 - cmd/
   - sparky-server/        # Central app entry point
   - sparky-agent/         # Spark/node agent entry point
+  - sparky-entra-probe/   # Checks the Entra sign-in code against a real tenant; its report is safe to share - docs/ENTRA_PROBE.md
 - internal/
-  - auth/                 # LDAP now, identity-provider interface for Entra later
+  - auth/                 # LDAP, identity-provider interface
+    - entra/              # Entra ID sign-in (OIDC code flow + PKCE, one tenant); not wired in yet - docs/ENTRA_DESIGN.md
+      - fakeentra/        # Strict fake Entra tenant for tests, written from Microsoft's documentation
   - rbac/                 # Tiers, elevation rules, permission overrides, SuperAdmin bypass
   - audit/                # Cross-cutting audit log writer + stdout JSON stream + optional syslog/GELF push
   - nodes/                # Node + fabric group registry

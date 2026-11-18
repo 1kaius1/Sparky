@@ -8,6 +8,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `sparky-entra-probe`, a small program that checks the Entra sign-in code against a
+  real tenant and writes a report that is safe to share by construction. Whoever has
+  a tenant builds it from this repository's source and runs it with an app
+  registration they create (`docs/ENTRA_PROBE.md`): it reads the tenant's discovery
+  document and signing keys, requests an app-only token for Microsoft Graph, and
+  signs one test account in through the browser with the same code the server will
+  use. The report holds results, counts, yes or no answers and the names and types
+  of claims and document members, so the fake tenant can be corrected where it
+  differs from the real one. It never holds a token, the secret, the tenant ID, an
+  application or object ID, a name, an address or a URL: it is built only from typed
+  facts, shows non-standard names as `other-N`, and is refused entirely, writing
+  nothing, if anything it handled that is sensitive or anything shaped like an
+  identifier, token, address or URL would appear in it. A test plants known values
+  in the fake tenant and fails if any reaches the report or the console. It makes
+  only requests that succeed, which add one app-only token request and one sign-in
+  to the tenant's logs. Version 1 covers the discovery document, signing keys, app
+  token and interactive sign-in; the Microsoft Graph calls come with the Graph
+  client. Verified against a mock only.
+- Microsoft Entra ID sign-in, first part - groundwork only: nothing in the server
+  uses it yet, so no behavior changes. A new package `internal/auth/entra` does
+  the OpenID Connect authorization code sign-in with PKCE as a confidential client
+  for one tenant: discovery, the address to send a person to, the code exchange,
+  and ID-token verification (signature, RS256 only, with signing-key rotation;
+  issuer; audience; expiry; the nonce; the tenant claim; one audience exactly),
+  returning the person's object ID. It also provides the encrypted, ten-minute
+  state a cookie will carry between leaving for Entra and coming back, and a
+  client credentials token for Microsoft Graph. Secrets (the client secret,
+  tokens, the PKCE verifier) print as "[redacted]" under every formatting verb
+  and in JSON and structured logs. A strict fake Entra tenant for tests
+  (`internal/auth/entra/fakeentra`), written from Microsoft's documentation,
+  refuses what Entra would refuse and reproduces key rotation, clock skew, forged
+  and other-tenant tokens, redirects and outages. Adds one Go module,
+  `github.com/coreos/go-oidc/v3` (with `go-jose/v4` and `golang.org/x/oauth2`,
+  which it requires), for ID-token verification only; approved for that purpose
+  on 2026-10-27. Verified against a mock only: not yet compared with a real
+  tenant. See `docs/ENTRA_DESIGN.md`.
 - Model profiles: every engine accepts `extra_args` in its engine params, a list
   of command-line arguments added after the ones Sparky builds, exactly as written,
   so an engine flag without its own key is no longer out of reach (for example

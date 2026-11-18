@@ -139,6 +139,18 @@ fails open instead, so an outage doesn't force every active session off mid-task
 - see `PLANNING.md` Decisions Log for the full design and rejected alternatives
 (a stateful session store with a kill switch, push-based revocation from AD).
 
+Microsoft Entra ID sign-in is being built alongside this, as a required 1.0.0 item
+(`docs/ENTRA_DESIGN.md` is the design, `PLANNING.md` the decisions). `internal/auth/
+entra` is the sign-in half: OpenID Connect authorization code flow with PKCE as a
+confidential client for one tenant, with ID-token verification done by
+`go-oidc/v3` and the checks it does not do (nonce, tenant claim, a single audience)
+done here. It is not wired into the server yet and is not an `IdentityProvider`:
+a redirect-based sign-in cannot take a username and password, so the product wiring
+(a later PR) reshapes the seam. It is tested against `internal/auth/entra/fakeentra`,
+a strict fake tenant written from Microsoft's documentation, and checked against a
+real tenant only through `cmd/sparky-entra-probe`; until a probe report has been
+analysed it is "verified against a mock only".
+
 #### RBAC & Permission Overrides
 Resolves a session's tier (see `SCHEMA.md` Users), evaluates elevation rules, checks
 Permission overrides for the download/delete grant, and short-circuits every check

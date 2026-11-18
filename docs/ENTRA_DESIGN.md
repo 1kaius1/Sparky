@@ -1,16 +1,19 @@
 # Entra ID support - design
 
-Status: design only, 2026-10-27. Nothing here is built. This document is replaced
-by `ARCHITECTURE.md` and `SCHEMA.md` content as each part lands, and is then
-deleted.
+Status, 2026-10-27: section 3 (sign-in), the fake tenant's sign-in half and version 1
+of the probe (section 8) are built, as `internal/auth/entra`, its `fakeentra`
+subpackage and `cmd/sparky-entra-probe`, verified against a mock only. Everything
+else here is design. This document is
+replaced by `ARCHITECTURE.md` and `SCHEMA.md` content as each part lands, and is
+then deleted.
 
 The requirement and the decisions already made are in `PLANNING.md` (the v1.0.0
 item "Microsoft Entra ID sign-in and group membership" and the three 2026-10-26
 Decisions Log entries on it). In short: Entra ID sign-in and group membership are
 required for 1.0.0; an Admin chooses **one** directory provider, Active Directory
 or Entra ID (or neither), never both; changing the choice needs an explicit
-confirmation. This document designs how, and lists the decisions it needs from the
-maintainer (last section).
+confirmation. This document designs how, and records the decisions the maintainer
+made on it (last section).
 
 ---
 
@@ -309,9 +312,10 @@ authority and Graph are, and the credentials) and run:
 
 `cmd/sparky-entra-probe`, its own program with no database, no server and no session
 secret, built from source by whoever runs it (no binary is shipped for them to
-trust). It reads the same `ENTRA_*` variables plus a test
-person's object ID and a test group's ID, and runs, in order, each reporting pass or
-fail with a reason:
+trust). It reads the same `ENTRA_*` variables (and, from the version that adds
+step 4, a test person's object ID and a test group's ID), and runs, in order, each
+reporting pass or fail with a reason. Version 1 (built in PR 2) runs steps 1, 2, 3 and
+5, and shows step 4 as skipped:
 
 1. discovery document fetched and its issuer matches the tenant;
 2. signing keys fetched, algorithms and key count recorded;
@@ -321,9 +325,13 @@ fail with a reason:
 5. an interactive sign-in: the probe listens on a loopback address, prints a URL for
    the maintainer's browser, completes the code exchange and validates the ID token
    with the same code the server uses, recording which claims were present. The
-   loopback redirect address has to be registered on the app registration; the exact
-   form Entra accepts for that is checked against Microsoft's documentation when
-   the probe is written, and the probe's help says what to register.
+   redirect address has to be registered on the app registration. From Microsoft's
+   redirect URI page: plain http is allowed for localhost addresses and their port is
+   ignored when matching; Microsoft recommends 127.0.0.1, but the portal rejects
+   `http://127.0.0.1` (it needs a manifest edit) and `[::1]` is not supported. So the
+   probe listens on 127.0.0.1, redirects to `http://localhost:<port>/sparky-probe/callback`,
+   and the person registers `http://localhost/sparky-probe/callback` under the Web
+   platform; the probe's help says so.
 
 **What the report contains, and what it never contains.** The report is plain text
 the maintainer reads before sharing. It has step names, pass or fail, HTTP status,
@@ -332,15 +340,28 @@ JSON **key structure** of each response (so the fake can be corrected to the rea
 shape), and the Graph permissions seen. It never contains a token, the secret, the
 tenant ID, any object ID, name, user name or address. Identifiers that must be
 related to each other (this person is in that group) are replaced by stable
-pseudonyms (`user-1`, `group-2`, `tenant-A`) made from a random per-run salt that is
-never written down, so they cannot be reversed or matched between runs. If the
-maintainer wants the real values for their own use, an opt-in local-only file, never
-part of the report, can hold them; the default writes nothing sensitive anywhere.
+pseudonyms (`user-1`, `group-2`, `tenant-A`), numbered in order of first sight and kept
+only in memory, so they cannot be reversed or matched between runs. (An earlier draft
+said a random per-run salt; numbering in order needs no secret at all.) The default
+writes nothing sensitive anywhere. An opt-in local-only file holding the real values
+for the maintainer's own use was considered and is not built: nothing needs it yet.
 
 **This property is tested, not assumed.** A test runs the probe against the fake
 tenant (whose tenant ID, object IDs, names, addresses, tokens and secret are known
 canary strings) and fails if any canary appears anywhere in the report, in logs, or in
 an error message. Any new field added to the report goes through the same test.
+
+The report is built in layers so that one mistake does not reach the output. A step can
+add only typed facts (a result, a count, a yes or no, a short keyword, a set of
+keywords), never free text or an error message; a failure is described by a fixed
+vocabulary (`entra.ErrorKind`), never by what the network said. Claim and document
+member names are shown only if they are standard ones, and anything else is shown as
+`other-N`, because a custom name can embed an application ID. And when the report is
+rendered it is refused outright, writing nothing, if it contains any value the probe
+registered as sensitive (the tenant ID, the secret, every token and identifier it
+handled) or anything shaped like a GUID, a token, an email address or a URL. The one
+place that does carry identifiers is the sign-in address the person opens in their
+browser, printed on the console with a warning and kept out of the report.
 
 The maintainer reviews the report before sharing, and decides what to share.
 
@@ -373,9 +394,12 @@ or break-glass accounts.
 
 ---
 
-## 11. Decisions needed from the maintainer
+## 11. Decisions
 
-| | Question | Recommendation |
+All eight were accepted as recommended on 2026-10-27 and are recorded in the
+`PLANNING.md` Decisions Log. The table keeps the question and the reasoning.
+
+| | Question | Decision (as recommended) |
 |---|---|---|
 | D1 | Add `go-oidc/v3` (and its dependencies) for ID-token verification, or hand-write verification with the standard library? | Add it. Hand-written token validation is where mistakes cost most; everything else stays standard library. Needs explicit approval under the project's dependency rule |
 | D2 | The login gate: membership of a group (as with AD), or Entra's own "assignment required" on the enterprise application with an app role? | A group: the same mechanism as application groups and the same recheck. "Assignment required" can still be switched on in Entra as an extra layer |
