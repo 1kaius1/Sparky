@@ -40,7 +40,7 @@ func (f *fakeProfileStore) List(_ context.Context) ([]*db.Profile, error) {
 	return f.listResult, nil
 }
 
-func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engineType db.ProfileEngineType, engineParams, env, containerOptions json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, createdBy *string) (*db.Profile, error) {
 	if f.createErr != nil {
 		return nil, f.createErr
 	}
@@ -49,7 +49,7 @@ func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engi
 		id = "profile-1"
 	}
 	p := &db.Profile{
-		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
+		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams, Env: env, ContainerOptions: containerOptions,
 		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization, Format: format, Image: image,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, CreatedBy: createdBy,
 	}
@@ -57,12 +57,12 @@ func (f *fakeProfileStore) Create(_ context.Context, name, modelRef string, engi
 	return p, nil
 }
 
-func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
+func (f *fakeProfileStore) Update(_ context.Context, id, name, modelRef string, engineType db.ProfileEngineType, engineParams, env, containerOptions json.RawMessage, requiresFullGPUResidency bool, requiredMemoryGB *float64, engineVersion *string, quantization string, format db.ModelFormat, image *string, targetNodeID string, port int, updatedBy *string) (*db.Profile, error) {
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
 	p := &db.Profile{
-		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams,
+		ID: id, Name: name, ModelRef: modelRef, EngineType: engineType, EngineParams: engineParams, Env: env, ContainerOptions: containerOptions,
 		RequiresFullGPUResidency: requiresFullGPUResidency, RequiredMemoryGB: requiredMemoryGB, EngineVersion: engineVersion, Quantization: quantization, Format: format, Image: image,
 		Topology: db.ProfileTopologySingleNode, TargetNodeID: &targetNodeID, Port: port, UpdatedBy: updatedBy,
 	}
@@ -204,6 +204,212 @@ func TestService_CreateProfile_PermittedByPowerDev(t *testing.T) {
 	got := audit.calls[0]
 	if got.action != "created_profile" || got.objectType != "model_profile" || got.objectID != "profile-1" {
 		t.Errorf("audit call = %+v, want action=created_profile objectType=model_profile objectID=profile-1", got)
+	}
+}
+
+func TestService_CreateProfile_EnvAndContainerOptions_StoredNormalizedAndAuditedWithoutValues(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
+	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
+
+	fields := validFields()
+	fields.Env = json.RawMessage(`{ "HF_TOKEN" : "hf_secret_value", "A":"1" }`)
+	fields.ContainerOptions = json.RawMessage(`{"shm_size_gb":16,"ipc_mode":"host","network_mode":"host"}`)
+
+	p, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: fields})
+	if err != nil {
+		t.Fatalf("CreateProfile() error: %v", err)
+	}
+	if string(p.Env) != `{"A":"1","HF_TOKEN":"hf_secret_value"}` {
+		t.Errorf("Env = %s, want the normalized object", p.Env)
+	}
+	if !strings.Contains(string(p.ContainerOptions), `"shm_size_gb":16`) {
+		t.Errorf("ContainerOptions = %s, want shm_size_gb 16", p.ContainerOptions)
+	}
+
+	detail := audit.calls[0].detail
+	names, _ := detail["env_vars"].([]string)
+	if len(names) != 2 || names[0] != "A" || names[1] != "HF_TOKEN" {
+		t.Errorf("audit env_vars = %v, want the sorted names", detail["env_vars"])
+	}
+	// A value can be a credential and audit entries are forwarded off the
+	// server; only the names may be recorded.
+	if b, _ := json.Marshal(detail); strings.Contains(string(b), "hf_secret_value") {
+		t.Errorf("audit detail contains an environment variable's value: %s", b)
+	}
+}
+
+func TestService_CreateProfile_NoEnvOrContainerOptions_StoresEmptyObjects(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	p, err := svc.CreateProfile(context.Background(), rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}, CreateParams{Fields: validFields()})
+	if err != nil {
+		t.Fatalf("CreateProfile() error: %v", err)
+	}
+	if string(p.Env) != `{}` || string(p.ContainerOptions) != `{}` {
+		t.Errorf("Env = %s, ContainerOptions = %s, want {} for both (the columns are NOT NULL)", p.Env, p.ContainerOptions)
+	}
+	if _, ok := audit.calls[0].detail["env_vars"]; ok {
+		t.Errorf("audit detail has env_vars for a profile with none")
+	}
+}
+
+func TestService_CreateProfile_InvalidEnvOrContainerOptions(t *testing.T) {
+	tests := map[string]func(*Fields){
+		"env name with equals":   func(f *Fields) { f.Env = json.RawMessage(`{"A=B":"1"}`) },
+		"env value not text":     func(f *Fields) { f.Env = json.RawMessage(`{"A":1}`) },
+		"unknown container key":  func(f *Fields) { f.ContainerOptions = json.RawMessage(`{"shm":4}`) },
+		"bad network mode":       func(f *Fields) { f.ContainerOptions = json.RawMessage(`{"network_mode":"none"}`) },
+		"relative mount (Admin)": func(f *Fields) { f.ContainerOptions = json.RawMessage(`{"mounts":[{"source":"x","target":"/y"}]}`) },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			store, nodes, inventory, adapters, audit := testDeps()
+			svc := NewService(store, nodes, inventory, adapters, audit)
+			fields := validFields()
+			mutate(&fields)
+
+			_, err := svc.CreateProfile(context.Background(), rbac.Actor{IsSuperAdmin: true}, CreateParams{Fields: fields})
+			if !errors.Is(err, ErrInvalidProfile) {
+				t.Errorf("CreateProfile() error = %v, want ErrInvalidProfile", err)
+			}
+			if len(store.created) != 0 {
+				t.Error("profileStore.Create was called for invalid options")
+			}
+		})
+	}
+}
+
+func TestService_CreateProfile_HostLevelContainerOptions_AdminOnly(t *testing.T) {
+	hostLevel := json.RawMessage(`{"privileged":true,"mounts":[{"source":"/data","target":"/data"}]}`)
+
+	tests := map[string]struct {
+		actor   rbac.Actor
+		allowed bool
+	}{
+		"power_dev":  {rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}, false},
+		"admin":      {rbac.Actor{Tier: db.TierAdmin, UserID: "a-1"}, true},
+		"superadmin": {rbac.Actor{IsSuperAdmin: true}, true},
+	}
+	for name, tt := range tests {
+		t.Run(name, func(t *testing.T) {
+			store, nodes, inventory, adapters, audit := testDeps()
+			svc := NewService(store, nodes, inventory, adapters, audit)
+			fields := validFields()
+			fields.ContainerOptions = hostLevel
+
+			_, err := svc.CreateProfile(context.Background(), tt.actor, CreateParams{Fields: fields})
+			if tt.allowed && err != nil {
+				t.Fatalf("CreateProfile() error: %v", err)
+			}
+			if !tt.allowed {
+				if !errors.Is(err, ErrInvalidProfile) || !strings.Contains(err.Error(), "only an Admin") {
+					t.Errorf("CreateProfile() error = %v, want an ErrInvalidProfile saying only an Admin can", err)
+				}
+				if len(store.created) != 0 {
+					t.Error("profileStore.Create was called despite a host-level option from a PowerDev")
+				}
+			}
+		})
+	}
+}
+
+func TestService_CreateProfile_PowerDevMayStillSetContainerLevelOptions(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	svc := NewService(store, nodes, inventory, adapters, audit)
+	fields := validFields()
+	fields.ContainerOptions = json.RawMessage(`{"shm_size_gb":8,"ipc_mode":"host","network_mode":"host","entrypoint":["vllm","serve"],"memory_gb":96,"cpus":8,"init":true,"add_hosts":["a:10.0.0.1"],"tmpfs":["/tmp/x"]}`)
+
+	if _, err := svc.CreateProfile(context.Background(), rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}, CreateParams{Fields: fields}); err != nil {
+		t.Fatalf("CreateProfile() error: %v", err)
+	}
+}
+
+func TestService_UpdateProfile_PowerDevEditKeepsAdminHostLevelOptions(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	store.findResult = &db.Profile{
+		ID:               "profile-1",
+		ContainerOptions: json.RawMessage(`{"shm_size_gb":4,"privileged":true,"cap_add":["IPC_LOCK"]}`),
+	}
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	// The PowerDev's form carries no host-level fields at all; they change
+	// only the shared memory size.
+	fields := validFields()
+	fields.ContainerOptions = json.RawMessage(`{"shm_size_gb":32}`)
+
+	p, err := svc.UpdateProfile(context.Background(), rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}, UpdateParams{ID: "profile-1", Fields: fields})
+	if err != nil {
+		t.Fatalf("UpdateProfile() error: %v", err)
+	}
+	got := string(p.ContainerOptions)
+	if !strings.Contains(got, `"shm_size_gb":32`) {
+		t.Errorf("ContainerOptions = %s, want the new shm size", got)
+	}
+	if !strings.Contains(got, `"privileged":true`) || !strings.Contains(got, `"cap_add":["IPC_LOCK"]`) {
+		t.Errorf("ContainerOptions = %s, want the Admin's privileged and cap_add kept", got)
+	}
+}
+
+func TestService_UpdateProfile_PowerDevCannotChangeHostLevelOptions(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	store.findResult = &db.Profile{ID: "profile-1", ContainerOptions: json.RawMessage(`{"privileged":true}`)}
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	fields := validFields()
+	fields.ContainerOptions = json.RawMessage(`{"privileged":true,"devices":["/dev/nvidia0"]}`)
+
+	_, err := svc.UpdateProfile(context.Background(), rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}, UpdateParams{ID: "profile-1", Fields: fields})
+	if !errors.Is(err, ErrInvalidProfile) {
+		t.Errorf("UpdateProfile() error = %v, want ErrInvalidProfile", err)
+	}
+	if len(store.updated) != 0 {
+		t.Error("profileStore.Update was called despite a changed host-level option from a PowerDev")
+	}
+}
+
+func TestService_UpdateProfile_AdminCanClearHostLevelOptions(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	store.findResult = &db.Profile{ID: "profile-1", ContainerOptions: json.RawMessage(`{"privileged":true}`)}
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	p, err := svc.UpdateProfile(context.Background(), rbac.Actor{Tier: db.TierAdmin, UserID: "a-1"}, UpdateParams{ID: "profile-1", Fields: validFields()})
+	if err != nil {
+		t.Fatalf("UpdateProfile() error: %v", err)
+	}
+	if string(p.ContainerOptions) != `{}` {
+		t.Errorf("ContainerOptions = %s, want {} once an Admin cleared them", p.ContainerOptions)
+	}
+}
+
+func TestService_UpdateProfile_UnknownProfile(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	store.findErr = db.ErrProfileNotFound
+	svc := NewService(store, nodes, inventory, adapters, audit)
+
+	_, err := svc.UpdateProfile(context.Background(), rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}, UpdateParams{ID: "nope", Fields: validFields()})
+	if !errors.Is(err, db.ErrProfileNotFound) {
+		t.Errorf("UpdateProfile() error = %v, want db.ErrProfileNotFound", err)
+	}
+}
+
+func TestService_CreateProfile_BareMetalNode_RefusesContainerOptionsButAllowsEnv(t *testing.T) {
+	store, nodes, inventory, adapters, audit := testDeps()
+	nodes.node.RuntimeBackend = db.RuntimeBackendBareMetal
+	svc := NewService(store, nodes, inventory, adapters, audit)
+	actor := rbac.Actor{Tier: db.TierPowerDev, UserID: "pd-1"}
+
+	withOptions := validFields()
+	withOptions.ContainerOptions = json.RawMessage(`{"shm_size_gb":8}`)
+	if _, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: withOptions}); !errors.Is(err, ErrInvalidProfile) || !strings.Contains(err.Error(), "bare-metal") {
+		t.Errorf("CreateProfile() with container options on bare-metal: error = %v, want an ErrInvalidProfile naming bare-metal", err)
+	}
+
+	withEnv := validFields()
+	withEnv.Env = json.RawMessage(`{"CUDA_VISIBLE_DEVICES":"0"}`)
+	if _, err := svc.CreateProfile(context.Background(), actor, CreateParams{Fields: withEnv}); err != nil {
+		t.Errorf("CreateProfile() with only env on bare-metal: error = %v, want nil", err)
 	}
 }
 

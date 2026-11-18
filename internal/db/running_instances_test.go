@@ -21,7 +21,7 @@ func createTestProfile(t *testing.T, profiles *ProfileRepository, nodeID string)
 	inventory := NewNodeModelInventoryRepository(profiles.pool)
 	createTestInventoryEntry(t, transfers, inventory, nodeID, "Qwen/Qwen2.5-0.5B-Instruct")
 	p, err := profiles.Create(context.Background(), fmt.Sprintf("profile-%s", t.Name()), "Qwen/Qwen2.5-0.5B-Instruct",
-		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, "", ModelFormatSafetensors, nil, nodeID, 8000, nil)
+		ProfileEngineVLLM, json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), true, nil, nil, "", ModelFormatSafetensors, nil, nodeID, 8000, nil)
 	if err != nil {
 		t.Fatalf("create test profile: %v", err)
 	}
@@ -45,7 +45,7 @@ func createTestProfileNamed(t *testing.T, profiles *ProfileRepository, name, nod
 	inventory := NewNodeModelInventoryRepository(profiles.pool)
 	createTestInventoryEntry(t, transfers, inventory, nodeID, "Qwen/Qwen2.5-0.5B-Instruct")
 	p, err := profiles.Create(context.Background(), fmt.Sprintf("profile-%s-%s", name, t.Name()), "Qwen/Qwen2.5-0.5B-Instruct",
-		ProfileEngineVLLM, json.RawMessage(`{}`), true, nil, nil, "", ModelFormatSafetensors, nil, nodeID, 8000, nil)
+		ProfileEngineVLLM, json.RawMessage(`{}`), json.RawMessage(`{}`), json.RawMessage(`{}`), true, nil, nil, "", ModelFormatSafetensors, nil, nodeID, 8000, nil)
 	if err != nil {
 		t.Fatalf("create test profile %s: %v", name, err)
 	}

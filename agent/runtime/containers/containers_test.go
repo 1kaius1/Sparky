@@ -20,6 +20,7 @@ import (
 	"github.com/moby/moby/client"
 
 	"github.com/1kaius1/Sparky/agent/runtime"
+	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
 // fakeDockerClient implements dockerClient for tests without a real
@@ -318,10 +319,10 @@ func TestStart_SetsShmSizeAndIPCMode(t *testing.T) {
 	b := &Backend{cli: fake}
 
 	const shmSize = 16 * 1024 * 1024 * 1024
+	shmGB := 16
 	_, err := b.Start(context.Background(), runtime.Spec{
-		Image:   "example/engine:latest",
-		ShmSize: shmSize,
-		IPCMode: "host",
+		Image:     "example/engine:latest",
+		Container: agentproto.ContainerOptions{ShmSizeGB: &shmGB, IPCMode: "host"},
 	})
 	if err != nil {
 		t.Fatalf("Start() error: %v", err)
@@ -331,6 +332,109 @@ func TestStart_SetsShmSizeAndIPCMode(t *testing.T) {
 	}
 	if captured.HostConfig.IpcMode != container.IPCModeHost {
 		t.Errorf("IpcMode = %q, want %q", captured.HostConfig.IpcMode, container.IPCModeHost)
+	}
+}
+
+func TestStart_AppliesEveryContainerOption(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	mem, cpus := 96.0, 1.5
+	_, err := b.Start(context.Background(), runtime.Spec{
+		Image:  "example/engine:latest",
+		Mounts: []string{"/models:/models:ro"},
+		Container: agentproto.ContainerOptions{
+			NetworkMode: "host",
+			PIDMode:     "host",
+			Entrypoint:  []string{"vllm", "serve"},
+			MemoryGB:    &mem,
+			CPUs:        &cpus,
+			Init:        true,
+			AddHosts:    []string{"db:10.0.0.5"},
+			Tmpfs:       []string{"/scratch"},
+			Privileged:  true,
+			Mounts: []agentproto.ContainerMount{
+				{Source: "/data/cache", Target: "/root/.cache"},
+				{Source: "/data/ro", Target: "/ro", ReadOnly: true},
+			},
+			Devices:     []string{"/dev/infiniband/uverbs0"},
+			CapAdd:      []string{"IPC_LOCK"},
+			CapDrop:     []string{"NET_RAW"},
+			SecurityOpt: []string{"seccomp=unconfined"},
+			Ulimits:     []agentproto.ContainerUlimit{{Name: "memlock", Soft: -1, Hard: -1}},
+		},
+		Port: 8000,
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+
+	hc, cfg := captured.HostConfig, captured.Config
+	if hc.NetworkMode != "host" || hc.PidMode != "host" || !hc.Privileged {
+		t.Errorf("network/pid/privileged = %q/%q/%v", hc.NetworkMode, hc.PidMode, hc.Privileged)
+	}
+	if !reflect.DeepEqual(cfg.Entrypoint, []string{"vllm", "serve"}) {
+		t.Errorf("Entrypoint = %v", cfg.Entrypoint)
+	}
+	if hc.Memory != 96*(1<<30) || hc.NanoCPUs != 1_500_000_000 {
+		t.Errorf("Memory/NanoCPUs = %d/%d", hc.Memory, hc.NanoCPUs)
+	}
+	if hc.Init == nil || !*hc.Init {
+		t.Errorf("Init = %v, want true", hc.Init)
+	}
+	if !reflect.DeepEqual(hc.ExtraHosts, []string{"db:10.0.0.5"}) {
+		t.Errorf("ExtraHosts = %v", hc.ExtraHosts)
+	}
+	if _, ok := hc.Tmpfs["/scratch"]; !ok || len(hc.Tmpfs) != 1 {
+		t.Errorf("Tmpfs = %v", hc.Tmpfs)
+	}
+	// The model mount the agent always adds stays first; the profile's follow.
+	wantBinds := []string{"/models:/models:ro", "/data/cache:/root/.cache", "/data/ro:/ro:ro"}
+	if !reflect.DeepEqual(hc.Binds, wantBinds) {
+		t.Errorf("Binds = %v, want %v", hc.Binds, wantBinds)
+	}
+	if len(hc.Devices) != 1 || hc.Devices[0].PathOnHost != "/dev/infiniband/uverbs0" || hc.Devices[0].PathInContainer != "/dev/infiniband/uverbs0" || hc.Devices[0].CgroupPermissions != "rwm" {
+		t.Errorf("Devices = %+v", hc.Devices)
+	}
+	if !reflect.DeepEqual(hc.CapAdd, []string{"IPC_LOCK"}) || !reflect.DeepEqual(hc.CapDrop, []string{"NET_RAW"}) || !reflect.DeepEqual(hc.SecurityOpt, []string{"seccomp=unconfined"}) {
+		t.Errorf("CapAdd/CapDrop/SecurityOpt = %v/%v/%v", hc.CapAdd, hc.CapDrop, hc.SecurityOpt)
+	}
+	if len(hc.Ulimits) != 1 || hc.Ulimits[0].Name != "memlock" || hc.Ulimits[0].Soft != -1 || hc.Ulimits[0].Hard != -1 {
+		t.Errorf("Ulimits = %+v", hc.Ulimits)
+	}
+	// Host networking: the engine listens on the node's port itself, so
+	// nothing is published.
+	if len(hc.PortBindings) != 0 || len(cfg.ExposedPorts) != 0 {
+		t.Errorf("PortBindings/ExposedPorts = %v/%v, want none under host networking", hc.PortBindings, cfg.ExposedPorts)
+	}
+}
+
+func TestStart_BridgeNetworkStillPublishesThePort(t *testing.T) {
+	var captured client.ContainerCreateOptions
+	fake := &fakeDockerClient{
+		createFunc: func(_ context.Context, options client.ContainerCreateOptions) (client.ContainerCreateResult, error) {
+			captured = options
+			return client.ContainerCreateResult{ID: "container-1"}, nil
+		},
+	}
+	b := &Backend{cli: fake}
+
+	_, err := b.Start(context.Background(), runtime.Spec{
+		Image:     "example/engine:latest",
+		Port:      8000,
+		Container: agentproto.ContainerOptions{NetworkMode: "bridge"},
+	})
+	if err != nil {
+		t.Fatalf("Start() error: %v", err)
+	}
+	if len(captured.HostConfig.PortBindings) != 1 {
+		t.Errorf("PortBindings = %v, want the engine's port published", captured.HostConfig.PortBindings)
 	}
 }
 

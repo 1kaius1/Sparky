@@ -286,6 +286,15 @@ the choice still names a present entry before persisting, ahead of the
 database's own `model_profiles_target_inventory_fkey` (`SCHEMA.md` Model
 profiles).
 
+A profile also carries the environment its engine runs in, separate from the
+engine's own flags: environment variables (`env`) and container-runtime options
+(`container_options`, the equivalents of `docker run` flags). `internal/launchopts`
+validates both and decides which container options reach into the host - those are
+Admin-only (`rbac.CanSetHostContainerOptions`), and a PowerDev edit leaves them as an
+Admin set them. They travel to the agent in `load_instance` and are applied by the
+containers backend, through Podman's native API on a Podman node (`docs/AGENT.md`
+Per-profile environment and container options).
+
 #### Model Lifecycle Orchestrator
 Owns "load" and "unload." Computes launch eligibility per node - Green (in cluster,
 model present), Blue (in cluster, no model, but room to copy from another node -
@@ -784,8 +793,14 @@ explicitly confirmed by the releasing operator before a version is tagged.
       daemon - is now closed too, confirmed 2026-08-30 via Sparky's real
       HTTP-driven launch path end to end: see that date's Decisions Log
       entry
-- [ ] CDI GPU passthrough verified on Podman, target distro(s) - including the known
-      read-only-filesystem hook behavior
+- [ ] CDI GPU passthrough full-stack run verified on Podman - the packaged agent
+      as `serviceloop`, across Debian, Ubuntu, the RHEL family (Rocky/Alma/RHEL;
+      Oracle Linux needs no separate pass), and SUSE Linux Enterprise Server -
+      including the known read-only-filesystem hook behavior. The backend-level
+      mechanism itself is already verified (rootless and rootful Podman 4.9.3,
+      RTX 4090 laptop, 2026-10-13) - see `PLANNING.md`'s 2026-11-17 Decisions Log
+      entries, which also cover Fedora and Amazon Linux (expected to work, not
+      part of this required pass)
 - [ ] Multi-node NCCL/MPI launch verified on physically linked Sparks (2+ nodes)
 - [ ] Peer-to-peer rsync replication verified over the real cluster link (the
       mechanism itself - real sshd, forced command, grant lifecycle, host-key
@@ -926,8 +941,11 @@ but does not fail the action being audited.
 - No historical metrics until v0.3.0 - only live telemetry in earlier milestones
 - CDI GPU passthrough on Podman is verified on one host only (Podman 4.9.3, rootless
   and rootful sockets, RTX 4090 laptop, 2026-10-13, at the backend level); the
-  packaged agent as `serviceloop`, other Podman versions and Rocky/SELinux
-  hosts are not yet verified
+  packaged agent as `serviceloop`, other Podman versions, and the full stack
+  across Debian, Ubuntu, the RHEL family (SELinux), and SUSE Linux Enterprise
+  Server are not yet verified - see `PLANNING.md`'s 2026-11-17 Decisions Log
+  entries, which also cover Fedora and Amazon Linux (expected to work, not
+  part of this required pass)
 
 ---
 
