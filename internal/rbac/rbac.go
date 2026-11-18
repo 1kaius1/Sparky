@@ -237,6 +237,22 @@ func CanManageProfiles(actor Actor) bool {
 	return actor.Tier == db.TierPowerDev
 }
 
+// CanSetHostContainerOptions reports whether actor may set the host-level
+// part of a Model profile's container options - extra bind mounts, device
+// passthrough, added capabilities, privileged mode, ulimits, security options
+// and the host PID namespace (launchopts.HostLevel). Each of those reaches
+// into the node, and a profile launches on a node as the agent's account, so
+// they are Admin and SuperAdmin only, with no permission-override path - the
+// same infrastructure-level floor as CanManageNodes, not the profile-editing
+// floor of CanManageProfiles. A PowerDev can still edit a profile an Admin
+// gave such options; they stay as they were (profiles.Service).
+func CanSetHostContainerOptions(actor Actor) bool {
+	if actor.IsSuperAdmin {
+		return true
+	}
+	return actor.Tier == db.TierAdmin
+}
+
 // CanViewInstanceLogs reports whether actor may read a container's output -
 // an archived log, and later the live tail. The floor is Developer, the same
 // people who can launch an instance, because they are the ones who need to

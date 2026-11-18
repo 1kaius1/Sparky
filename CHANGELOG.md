@@ -8,6 +8,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Model profiles: every engine accepts `extra_args` in its engine params, a list
+  of command-line arguments added after the ones Sparky builds, exactly as written,
+  so an engine flag without its own key is no longer out of reach (for example
+  `{"extra_args": ["--enable-prefix-caching", "--attention-backend", "flashinfer"]}`).
+  The model, port, host and served model name are set by Sparky and are refused there.
+- Model profiles: environment variables and container options. The profile form
+  is now in sections (General, Engine, Environment variables, Container). The
+  environment is one `NAME=value` per line, passed to the engine on every kind of
+  node. The Container section sets the equivalents of `docker run` / `podman run`
+  flags on a Docker or Podman node: shared memory size, IPC and network namespace
+  (host networking publishes no port), entrypoint (replace it, or clear the
+  image's), memory and CPU limits, init, extra hosts and tmpfs mounts. Admins also
+  get Host access: privileged mode, the host PID namespace, extra bind mounts,
+  devices, added and dropped capabilities, security options and ulimits. Those
+  reach into the node, so only an Admin can set them; a PowerDev can still edit
+  the rest of a profile that has them and they stay as they were. They are refused
+  for a bare-metal node, which has no container (the environment still applies).
+  The settings reach the container through the Docker Engine API and, for a
+  Podman node, through Podman's native API, and were checked against a real Podman
+  4.9.3. Environment variable values are stored and shown in plain text for now
+  (the audit log records only the names, never the values), so do not put a
+  credential in one yet; redaction is planned once testing is done. They are kept
+  in the new `env` and `container_options` columns (migration 000049). Agents must
+  be upgraded before the server.
 - Email: alerts can now be sent by email, through an SMTP relay only (a mail
   server that accepts mail from Sparky, with a login or by trusting its address;
   Sparky never delivers directly to recipients' mail servers). An Admin sets the
@@ -329,6 +353,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already acknowledged, so an upgrade is never retroactively blocked.
 
 ### Changed
+- A vLLM profile's shared memory size is now a container option, not a vLLM
+  engine parameter: `shm_size_gb` is no longer accepted in the engine params
+  (it was always a `docker run` setting, not a `vllm serve` flag). Migration
+  000049 moves each existing value into the profile's container options, paired
+  with the host IPC namespace it always implied, so existing profiles launch as
+  before. Rolling the migration back puts the value back where the old adapter
+  reads it; every other container option and all environment variables are lost.
+- The engine type list on the profile form offers only vLLM and llama.cpp.
+  Aphrodite had no engine adapter and could not be launched, and support for it
+  is deferred until after 1.0.0.
 - The sidebar now shows who is signed in: a "Signed in as" line with the
   person's display name (the same one the Users & permissions page lists),
   above the My account link, so windows signed in as different people can be

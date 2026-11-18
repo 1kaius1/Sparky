@@ -22,6 +22,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/1kaius1/Sparky/internal/db"
 )
@@ -54,21 +55,6 @@ type LaunchSpec struct {
 	// --tensor-parallel-size. Does not include --model or --port/--host;
 	// see LaunchSpec's doc comment.
 	Args []string
-
-	// ShmSizeBytes, if nonzero, is the /dev/shm size to give the
-	// container - containers backend only, ignored by bare-metal (which
-	// already shares the host's own /dev/shm). Zero means "use the
-	// container runtime's own default" - today's unchanged behavior. Set
-	// by vLLM profiles' shm_size_gb (see vllmParams); llama.cpp never
-	// sets it.
-	ShmSizeBytes int64
-
-	// IPCMode, if non-empty, is the container's IPC namespace mode (e.g.
-	// "host") - containers backend only, ignored by bare-metal (which
-	// already shares the host's own IPC namespace). Empty means "use the
-	// container runtime's own default". Always set alongside
-	// ShmSizeBytes by vLLM profiles - see vllmAdapter.BuildLaunchSpec.
-	IPCMode string
 }
 
 // Adapter validates a profile's engine-specific launch parameters,
@@ -131,6 +117,26 @@ func (r *Registry) Adapter(engineType db.ProfileEngineType) (Adapter, error) {
 		return nil, fmt.Errorf("%w: %q", ErrUnknownEngineType, engineType)
 	}
 	return a, nil
+}
+
+// validateExtraArgs checks a profile's extra_args - raw command-line
+// arguments appended after the ones Sparky builds, the escape hatch for any
+// engine flag the typed keys do not cover. Each entry is one argv element (no
+// shell is involved, so quoting never applies: "--foo=a b" is one argument).
+// owned maps the flags Sparky itself sets for this engine to a short reason;
+// passing one again would give the engine two conflicting values, and the
+// usual outcome is that the later one silently wins.
+func validateExtraArgs(args []string, owned map[string]string) error {
+	for i, a := range args {
+		if a == "" || strings.ContainsRune(a, 0) {
+			return fmt.Errorf("%w: extra_args[%d] must be non-empty text", ErrInvalidParams, i)
+		}
+		flag, _, _ := strings.Cut(a, "=")
+		if why, ok := owned[flag]; ok {
+			return fmt.Errorf("%w: extra_args[%d] %q is set by Sparky (%s) and cannot be given here", ErrInvalidParams, i, flag, why)
+		}
+	}
+	return nil
 }
 
 // unmarshalParamsObject decodes params into dst - shared by both

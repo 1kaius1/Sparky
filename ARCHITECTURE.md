@@ -274,6 +274,15 @@ the choice still names a present entry before persisting, ahead of the
 database's own `model_profiles_target_inventory_fkey` (`SCHEMA.md` Model
 profiles).
 
+A profile also carries the environment its engine runs in, separate from the
+engine's own flags: environment variables (`env`) and container-runtime options
+(`container_options`, the equivalents of `docker run` flags). `internal/launchopts`
+validates both and decides which container options reach into the host - those are
+Admin-only (`rbac.CanSetHostContainerOptions`), and a PowerDev edit leaves them as an
+Admin set them. They travel to the agent in `load_instance` and are applied by the
+containers backend, through Podman's native API on a Podman node (`docs/AGENT.md`
+Per-profile environment and container options).
+
 #### Model Lifecycle Orchestrator
 Owns "load" and "unload." Computes launch eligibility per node - Green (in cluster,
 model present), Blue (in cluster, no model, but room to copy from another node -

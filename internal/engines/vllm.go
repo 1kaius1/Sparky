@@ -48,8 +48,11 @@ func (vllmAdapter) RequiresFullGPUResidency() bool { return true }
 // startup log regardless of whether the real script used them. It
 // reflects well-documented vLLM/NCCL guidance instead - a multi-GPU
 // tensor-parallel launch needs more than Docker's 64MB default /dev/shm
-// for inter-process NCCL communication. Any other key in engine_params is
-// rejected as an error - see Adapter.ValidateParams.
+// for inter-process NCCL communication. That setting was an engine_params
+// key (shm_size_gb) until container options became their own profile column
+// (internal/launchopts, migration 000049), which moved it there. Any other
+// key in engine_params is rejected as an error - see
+// Adapter.ValidateParams.
 type vllmParams struct {
 	TensorParallelSize   *int     `json:"tensor_parallel_size,omitempty"`
 	GPUMemoryUtilization *float64 `json:"gpu_memory_utilization,omitempty"`
@@ -66,7 +69,19 @@ type vllmParams struct {
 	EnableChunkedPrefill *bool   `json:"enable_chunked_prefill,omitempty"`
 	EnableAutoToolChoice *bool   `json:"enable_auto_tool_choice,omitempty"`
 	ToolCallParser       *string `json:"tool_call_parser,omitempty"`
-	ShmSizeGB            *int    `json:"shm_size_gb,omitempty"`
+	// ExtraArgs are raw vllm serve arguments appended after the ones above -
+	// the escape hatch for any flag without a typed key.
+	ExtraArgs []string `json:"extra_args,omitempty"`
+}
+
+// vllmOwnedFlags are the flags Sparky sets itself (the agent adds --model,
+// --port and --host; the adapter adds the served name), so extra_args may not
+// repeat them.
+var vllmOwnedFlags = map[string]string{
+	"--model":             "the model path comes from the profile's model",
+	"--port":              "the port comes from the profile",
+	"--host":              "the agent binds the engine itself",
+	"--served-model-name": "the profile's name is the served model id",
 }
 
 // ValidateParams checks the known vLLM keys, when present, for sane
@@ -98,10 +113,7 @@ func (vllmAdapter) ValidateParams(params json.RawMessage) error {
 	if p.ToolCallParser != nil && (p.EnableAutoToolChoice == nil || !*p.EnableAutoToolChoice) {
 		return fmt.Errorf("%w: tool_call_parser requires enable_auto_tool_choice to be true", ErrInvalidParams)
 	}
-	if p.ShmSizeGB != nil && *p.ShmSizeGB < 1 {
-		return fmt.Errorf("%w: shm_size_gb must be positive, got %d", ErrInvalidParams, *p.ShmSizeGB)
-	}
-	return nil
+	return validateExtraArgs(p.ExtraArgs, vllmOwnedFlags)
 }
 
 // BuildLaunchSpec translates the recognized vLLM keys into vllm serve
@@ -118,13 +130,7 @@ func (vllmAdapter) ValidateParams(params json.RawMessage) error {
 // enable_chunked_prefill/enable_auto_tool_choice set to false are
 // omitted the same as unset, since vLLM has no --no-enable-...
 // counterpart and omission already yields the same disabled behavior.
-// shm_size_gb is not a vllm serve flag at all - it becomes
-// LaunchSpec.ShmSizeBytes/IPCMode instead, container-runtime-level
-// settings the agent applies at container-create time (see
-// runtime.Spec.ShmSize/IPCMode), never appended to Args. Setting it
-// always implies IPC host mode - the two are never used independently in
-// the vLLM/NCCL guidance this is based on, so there is no separate
-// ipc_mode key to set on its own.
+// extra_args are appended last, verbatim.
 func (vllmAdapter) BuildLaunchSpec(params json.RawMessage, servedModelName string) (LaunchSpec, error) {
 	var p vllmParams
 	if err := unmarshalParamsObject(params, &p); err != nil {
@@ -169,10 +175,7 @@ func (vllmAdapter) BuildLaunchSpec(params json.RawMessage, servedModelName strin
 		args = append(args, "--tool-call-parser", *p.ToolCallParser)
 	}
 
-	spec := LaunchSpec{Image: vllmImage, Args: args}
-	if p.ShmSizeGB != nil {
-		spec.ShmSizeBytes = int64(*p.ShmSizeGB) * 1024 * 1024 * 1024
-		spec.IPCMode = "host"
-	}
-	return spec, nil
+	args = append(args, p.ExtraArgs...)
+
+	return LaunchSpec{Image: vllmImage, Args: args}, nil
 }

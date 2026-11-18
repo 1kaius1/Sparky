@@ -187,6 +187,7 @@ sparky/
   - modelsource/           # Download size estimation (Hugging Face)
   - metrics/              # Telemetry ingestion, retention/downsample, NFS/S3 export
   - engines/               # Pluggable adapters: vllm, aphrodite, llamacpp
+  - launchopts/            # Profile environment variables and container options (docker/podman run flags): validation, and which of them are Admin-only
   - agentproto/            # Shared WebSocket/JSON protocol types (used by both binaries)
   - agentconn/             # Agent-Communication Layer: the server-side WebSocket endpoint (GET /agent/connect), hello/auth handshake, connection registry
   - db/                    # Repository layer (pgx), query code

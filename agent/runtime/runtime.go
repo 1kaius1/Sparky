@@ -10,6 +10,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
 // Spec describes one engine instance to launch. It is a superset of what
@@ -86,20 +88,15 @@ type Spec struct {
 	// - only meaningful when GPUDeviceMechanism is GPUDeviceMechanismCDI.
 	CDIDevices []string
 
-	// ShmSize is the /dev/shm size, in bytes, to give the container -
-	// containers backend only, ignored by bare-metal (which already
-	// shares the host's own /dev/shm). Zero means "use the container
-	// runtime's own default". Threaded through from
-	// engines.LaunchSpec.ShmSizeBytes via agentproto.LoadInstance - see
-	// that field's own doc comment for why this exists (vLLM multi-GPU
-	// tensor-parallel NCCL communication).
-	ShmSize int64
-
-	// IPCMode is the container's IPC namespace mode (e.g. "host") -
-	// containers backend only, ignored by bare-metal. Empty means "use
-	// the container runtime's own default". Always set alongside ShmSize
-	// - see engines.LaunchSpec.IPCMode.
-	IPCMode string
+	// Container is the profile's container-runtime settings (shared memory,
+	// IPC and network namespaces, entrypoint, resource limits, mounts,
+	// devices, capabilities, ulimits, ...) - containers backend only, ignored
+	// by bare-metal. The zero value changes nothing: every field means "use
+	// the container runtime's own default" when unset. Threaded through from
+	// the profile via agentproto.LoadInstance.Container; the shared memory
+	// size and IPC mode are among them because a multi-GPU vLLM launch needs
+	// more than the 64MB /dev/shm default for NCCL communication.
+	Container agentproto.ContainerOptions
 }
 
 // GPUDeviceMechanism selects which Docker Engine API mechanism

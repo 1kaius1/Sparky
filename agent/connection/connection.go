@@ -33,6 +33,7 @@ import (
 	"github.com/1kaius1/Sparky/agent/telemetry"
 	"github.com/1kaius1/Sparky/agent/transfer"
 	"github.com/1kaius1/Sparky/internal/agentproto"
+	"github.com/1kaius1/Sparky/internal/launchopts"
 )
 
 // handshakeTimeout bounds both a single dial attempt and waiting for the
@@ -943,17 +944,51 @@ const vllmDefaultImage = "vllm/vllm-openai:latest"
 //     binary literally named "serve"). Confirmed against real DGX Spark
 //     hardware (PLANNING.md Decisions Log) - needs the full "vllm serve",
 //     two tokens, prepended instead.
-func buildEngineLaunchArgs(runtimeBackend, engineType, image, modelPath string, port int, extra []string) []string {
+//
+// entrypoint is the profile's container entrypoint override (containers
+// backend only; bare-metal has none). A real override means the operator chose
+// what runs, so nothing is prepended and the arguments follow it exactly as
+// given. A single empty entry clears the image's entrypoint, which leaves the
+// command line starting at the first argument, so the full "vllm serve" is
+// needed even on the default image whose own entrypoint no longer supplies it.
+func buildEngineLaunchArgs(runtimeBackend, engineType, image, modelPath string, port int, entrypoint, extra []string) []string {
 	args := []string{"--model", modelPath, "--port", strconv.Itoa(port), "--host", "0.0.0.0"}
-	if engineType == "vllm" {
+	cleared := len(entrypoint) == 1 && entrypoint[0] == ""
+	overridden := len(entrypoint) > 0 && !cleared
+	if engineType == "vllm" && !(overridden && runtimeBackend != "bare-metal") {
 		switch {
 		case runtimeBackend == "bare-metal":
 			args = append([]string{"serve"}, args...)
-		case image != vllmDefaultImage:
+		case image != vllmDefaultImage || cleared:
 			args = append([]string{"vllm", "serve"}, args...)
 		}
 	}
 	return append(args, extra...)
+}
+
+// containerOptionsFor is the container settings a load_instance asks for: its
+// Container block, with the shared-memory size and IPC mode an older central
+// app sent in the flat ShmSize/IPCMode fields filled in where Container does
+// not set them. Agents are upgraded before the server, so a current agent
+// regularly meets the older message; the older server's fields are whole GiB
+// by construction (vLLM's shm_size_gb times 2^30), which is why the division
+// is exact.
+func containerOptionsFor(load agentproto.LoadInstance) agentproto.ContainerOptions {
+	var opts agentproto.ContainerOptions
+	if load.Container != nil {
+		opts = *load.Container
+	}
+	if opts.ShmSizeGB == nil && load.ShmSize > 0 {
+		gb := int(load.ShmSize / (1 << 30))
+		if gb < 1 {
+			gb = 1
+		}
+		opts.ShmSizeGB = &gb
+	}
+	if opts.IPCMode == "" {
+		opts.IPCMode = load.IPCMode
+	}
+	return opts
 }
 
 // gpuPassthrough is the GPU request for this node's runtime backend - see
@@ -988,7 +1023,23 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		return
 	}
 
-	args := buildEngineLaunchArgs(c.cfg.RuntimeBackend, load.EngineType, load.Image, modelPath, load.Port, load.Args)
+	container := containerOptionsFor(load)
+	// The central app validated these when the profile was saved and again at
+	// launch; checking once more here costs nothing and keeps a node from
+	// starting an engine from options that could escape what they are meant
+	// to be (a mount path carrying a ':', an env name carrying a '=').
+	if err := launchopts.Validate(container); err != nil {
+		c.logger.Printf("agent connection: instance %s: %v", load.InstanceID, err)
+		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
+		return
+	}
+	if err := launchopts.ValidateEnv(load.Env); err != nil {
+		c.logger.Printf("agent connection: instance %s: %v", load.InstanceID, err)
+		c.sendInstanceResult(ctx, conn, load.InstanceID, agentproto.InstanceStatusFailed, 0, err.Error())
+		return
+	}
+
+	args := buildEngineLaunchArgs(c.cfg.RuntimeBackend, load.EngineType, load.Image, modelPath, load.Port, container.Entrypoint, load.Args)
 	gpuMechanism, cdiDevices, gpuEnv := gpuPassthrough(c.cfg.RuntimeBackend)
 	spec := runtime.Spec{
 		InstanceID:    load.InstanceID,
@@ -996,9 +1047,13 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		Image:         load.Image,
 		ContainerName: load.ContainerName,
 		BinaryPath:    c.resolveEngineBinaryPath(load.EngineType, load.EngineVersion),
-		Env:           gpuEnv,
-		Args:          args,
-		Port:          load.Port,
+		// The profile's own variables come after the GPU request's: for a
+		// repeated name the later entry wins in both a container and an exec,
+		// so a profile can deliberately override one (NVIDIA_VISIBLE_DEVICES,
+		// to give an engine a subset of the GPUs).
+		Env:  append(append([]string(nil), gpuEnv...), launchopts.EnvList(load.Env)...),
+		Args: args,
+		Port: load.Port,
 		// Read-only: the agent already owns writing to this directory
 		// (runTransfer above) - the containers backend's engine only ever
 		// needs to read the model files back out. Mounted at the identical
@@ -1009,8 +1064,7 @@ func (c *Conn) runLoad(ctx context.Context, conn *websocket.Conn, load agentprot
 		Mounts:             []string{c.cfg.ModelStoragePath + ":" + c.cfg.ModelStoragePath + ":ro"},
 		GPUDeviceMechanism: gpuMechanism,
 		CDIDevices:         cdiDevices,
-		ShmSize:            load.ShmSize,
-		IPCMode:            load.IPCMode,
+		Container:          container,
 		ProfileID:          load.ProfileID,
 	}
 

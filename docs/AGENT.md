@@ -246,6 +246,60 @@ deploy) does not.
 
 ---
 
+### Per-profile environment and container options
+
+A profile can carry environment variables (`env`) and container-runtime options
+(`container_options`, SCHEMA.md Model profiles); the central app sends them in
+`load_instance` as `env` and `container`. The agent validates both again with
+the same rules the central app applies (`internal/launchopts`) and fails the
+load, without starting anything, if they do not pass.
+
+**Environment.** On either backend the profile's variables are added after the
+ones the agent sets itself (`NVIDIA_VISIBLE_DEVICES=all` on Docker), so a repeated
+name wins and a profile can deliberately override one - to give an engine a subset
+of the GPUs, say. The bare-metal backend applies them to the exec'd process and
+ignores everything below.
+
+**Container options** are applied on the containers backend, the equivalents of the
+matching `docker run` flags: `--shm-size`, `--ipc`, `--network`, `--pid`,
+`--entrypoint`, `--memory`, `--cpus`, `--init`, `--add-host`, `--tmpfs`, `--privileged`,
+`-v` (extra mounts, after the model directory's own read-only mount), `--device`,
+`--cap-add`, `--cap-drop`, `--security-opt` and `--ulimit`. Notes that are not
+obvious from the flag names:
+
+- With `--network host` the agent publishes no port, since the engine listens on the
+  node's own port directly (Docker discards published ports in that mode and Podman
+  refuses them).
+- A replaced entrypoint is used exactly as given, followed by the engine's arguments;
+  the agent then does not prepend `vllm serve` itself. Clearing the entrypoint (a
+  single empty entry) leaves the agent prepending the full `vllm serve`, even on the
+  default image whose own entrypoint would otherwise have supplied it.
+- Podman refuses a shared-memory size together with the host IPC namespace, so the
+  native create path drops the size in that case (the container uses the host's
+  `/dev/shm` anyway).
+- A ulimit of `-1` means unlimited. A rootless daemon cannot raise a limit above its
+  own hard limit, so `memlock=-1:-1` takes effect on a rootful Docker or Podman and is
+  clamped on a rootless one.
+- Over Podman's native API, `--security-opt` supports `seccomp=`, `label=`, `apparmor=`
+  and `no-new-privileges`; any other value fails the launch rather than being dropped.
+
+**Why Podman needs the native API for these.** Verified against Podman 4.9.3: its
+Docker-compatible create call silently drops `Ulimits` (`podman run --ulimit` applies
+them; the same request through the compatible API does not) - the same kind of silent
+drop as the CDI one described in Verifying GPU passthrough. A Podman node always asks
+for its GPU by CDI name, which already sends the create call through the native API
+(`libpod.go`), so every launch on such a node gets every option; the native request
+spells them the way Podman's own create call does (for example the ulimit type is
+`memlock`, without the `RLIMIT_` prefix, which Podman adds itself). Only a Podman launch
+with no GPU request would take the compatible path, and the agent never makes one.
+`go test -tags realdaemon -run TestRealDaemon_ContainerOptions ./agent/runtime/containers`
+checks the whole set against a real daemon (see realdaemon_test.go for the setup).
+
+An older central app sends a vLLM profile's shared memory as the flat `shm_size` and
+`ipc_mode` fields; the agent still accepts them and treats them as container options.
+**Upgrade the agents first, then the server:** an older agent rejects `env` and
+`container` in `load_instance`.
+
 ### Container names and how containers are found
 
 On the Docker and Podman backends the central app names each container

@@ -292,6 +292,64 @@ func TestEnvelope_RoundTrip_LoadInstance_ShmSizeAndIPCMode(t *testing.T) {
 	}
 }
 
+func TestEnvelope_RoundTrip_LoadInstance_EnvAndContainerOptions(t *testing.T) {
+	shm, mem := 16, 96.5
+	want := LoadInstance{
+		InstanceID: "instance-1",
+		ModelRef:   "meta-llama/Llama-3-8B",
+		Image:      "vllm/vllm-openai:latest",
+		Port:       8000,
+		Env:        map[string]string{"VLLM_MARLIN_USE_ATOMIC_ADD": "1"},
+		Container: &ContainerOptions{
+			ShmSizeGB:   &shm,
+			IPCMode:     "host",
+			NetworkMode: "host",
+			Entrypoint:  []string{"vllm", "serve"},
+			MemoryGB:    &mem,
+			Init:        true,
+			AddHosts:    []string{"db:10.0.0.5"},
+			Tmpfs:       []string{"/scratch"},
+			PIDMode:     "host",
+			Privileged:  true,
+			Mounts:      []ContainerMount{{Source: "/data", Target: "/data", ReadOnly: true}},
+			Devices:     []string{"/dev/infiniband/uverbs0"},
+			CapAdd:      []string{"IPC_LOCK"},
+			CapDrop:     []string{"NET_RAW"},
+			SecurityOpt: []string{"seccomp=unconfined"},
+			Ulimits:     []ContainerUlimit{{Name: "memlock", Soft: -1, Hard: -1}},
+		},
+	}
+
+	env, err := NewEnvelope(TypeLoadInstance, "req-5", want)
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+
+	var got LoadInstance
+	if err := env.DecodePayload(&got); err != nil {
+		t.Fatalf("DecodePayload() error: %v", err)
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("LoadInstance = %+v, want %+v", got, want)
+	}
+}
+
+// A profile with no environment and no container options must put neither on
+// the wire, so the message an older agent sees for such a profile is unchanged
+// - an older agent rejects any field it does not know.
+func TestEnvelope_LoadInstance_NoEnvOrContainerOptions_OmitsBothFields(t *testing.T) {
+	env, err := NewEnvelope(TypeLoadInstance, "req-6", LoadInstance{InstanceID: "instance-1", Image: "x", Port: 8000})
+	if err != nil {
+		t.Fatalf("NewEnvelope() error: %v", err)
+	}
+	payload := string(env.Payload)
+	for _, field := range []string{`"env"`, `"container"`} {
+		if strings.Contains(payload, field) {
+			t.Errorf("payload %s contains %s, want it omitted", payload, field)
+		}
+	}
+}
+
 func TestEnvelope_RoundTrip_LoadInstance_PinnedEngineVersion(t *testing.T) {
 	want := LoadInstance{
 		InstanceID:    "instance-1",

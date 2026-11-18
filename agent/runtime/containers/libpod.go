@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -17,6 +18,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 
 	"github.com/1kaius1/Sparky/agent/runtime"
+	"github.com/1kaius1/Sparky/internal/agentproto"
 )
 
 // Podman's native ("libpod") API is used for exactly one call: creating a
@@ -56,6 +58,43 @@ type libpodCreateRequest struct {
 	PortMappings []libpodPortMapping `json:"portmappings,omitempty"`
 	ShmSize      int64               `json:"shm_size,omitempty"`
 	IPCNS        *libpodNamespace    `json:"ipcns,omitempty"`
+
+	// The rest carry agentproto.ContainerOptions, the equivalents of the
+	// matching `podman run` flags - see applyLibpodOptions.
+	NetNS        *libpodNamespace `json:"netns,omitempty"`
+	PIDNS        *libpodNamespace `json:"pidns,omitempty"`
+	Entrypoint   []string         `json:"entrypoint,omitempty"`
+	Privileged   bool             `json:"privileged,omitempty"`
+	Init         bool             `json:"init,omitempty"`
+	HostAdd      []string         `json:"hostadd,omitempty"`
+	CapAdd       []string         `json:"cap_add,omitempty"`
+	CapDrop      []string         `json:"cap_drop,omitempty"`
+	Rlimits      []libpodRlimit   `json:"r_limits,omitempty"`
+	Resources    *libpodResources `json:"resource_limits,omitempty"`
+	SeccompPath  string           `json:"seccomp_profile_path,omitempty"`
+	SelinuxOpts  []string         `json:"selinux_opts,omitempty"`
+	ApparmorProf string           `json:"apparmor_profile,omitempty"`
+	NoNewPrivs   bool             `json:"no_new_privileges,omitempty"`
+}
+
+type libpodRlimit struct {
+	Type string `json:"type"`
+	Soft uint64 `json:"soft"`
+	Hard uint64 `json:"hard"`
+}
+
+type libpodResources struct {
+	Memory *libpodMemoryLimit `json:"memory,omitempty"`
+	CPU    *libpodCPULimit    `json:"cpu,omitempty"`
+}
+
+type libpodMemoryLimit struct {
+	Limit int64 `json:"limit"`
+}
+
+type libpodCPULimit struct {
+	Quota  int64  `json:"quota"`
+	Period uint64 `json:"period"`
 }
 
 type libpodDevice struct {
@@ -115,7 +154,8 @@ func buildLibpodRequest(spec runtime.Spec, name string, labels map[string]string
 		req.Mounts = append(req.Mounts, m)
 	}
 
-	if spec.Port != 0 {
+	// With the node's own network namespace there is nothing to publish.
+	if spec.Port != 0 && !hostNetwork(spec.Container) {
 		if spec.Port < 1 || spec.Port > 65535 {
 			return libpodCreateRequest{}, fmt.Errorf("port %d is out of range", spec.Port)
 		}
@@ -126,24 +166,119 @@ func buildLibpodRequest(spec runtime.Spec, name string, labels map[string]string
 		}}
 	}
 
-	switch spec.IPCMode {
+	if err := applyLibpodOptions(spec.Container, &req); err != nil {
+		return libpodCreateRequest{}, err
+	}
+
+	return req, nil
+}
+
+// applyLibpodOptions is applyContainerOptions for Podman's native create
+// request: the same agentproto.ContainerOptions, spelled the way the
+// SpecGenerator wants them. Anything it cannot express is an error rather than
+// being dropped, because a silently ignored security option or ulimit is
+// worse than a launch that says why it did not start.
+func applyLibpodOptions(o agentproto.ContainerOptions, req *libpodCreateRequest) error {
+	switch o.IPCMode {
 	case "":
 	case "host", "private", "shareable":
-		req.IPCNS = &libpodNamespace{NSMode: spec.IPCMode}
+		req.IPCNS = &libpodNamespace{NSMode: o.IPCMode}
 	default:
-		return libpodCreateRequest{}, fmt.Errorf("IPC mode %q is not supported for a podman GPU launch", spec.IPCMode)
+		return fmt.Errorf("IPC mode %q is not supported for a podman GPU launch", o.IPCMode)
 	}
 
 	// Podman refuses a shm size together with the host IPC namespace
 	// ("cannot set shmsize when running in the host IPC Namespace") - the
 	// container uses the host's /dev/shm then, so the size has no meaning.
-	// Sparky sends both for a vLLM profile with shm_size_gb, so dropping the
-	// size here is what makes that launch work on Podman at all.
-	if spec.ShmSize > 0 && spec.IPCMode != "host" {
-		req.ShmSize = spec.ShmSize
+	// Sparky sends both for a vLLM profile with a shared memory size, so
+	// dropping the size here is what makes that launch work on Podman at all.
+	if n := shmBytes(o); n > 0 && o.IPCMode != "host" {
+		req.ShmSize = n
 	}
 
-	return req, nil
+	if o.NetworkMode != "" {
+		req.NetNS = &libpodNamespace{NSMode: o.NetworkMode}
+	}
+	if o.PIDMode != "" {
+		req.PIDNS = &libpodNamespace{NSMode: o.PIDMode}
+	}
+	req.Entrypoint = o.Entrypoint
+	req.Privileged = o.Privileged
+	req.Init = o.Init
+	req.HostAdd = o.AddHosts
+	req.CapAdd = o.CapAdd
+	req.CapDrop = o.CapDrop
+
+	if o.MemoryGB != nil || o.CPUs != nil {
+		req.Resources = &libpodResources{}
+		if o.MemoryGB != nil {
+			req.Resources.Memory = &libpodMemoryLimit{Limit: int64(*o.MemoryGB * float64(bytesPerGiB))}
+		}
+		if o.CPUs != nil {
+			// CFS quota over a 100ms period, which is what --cpus means.
+			const period = 100_000
+			req.Resources.CPU = &libpodCPULimit{Quota: int64(*o.CPUs * period), Period: period}
+		}
+	}
+
+	for _, p := range o.Tmpfs {
+		req.Mounts = append(req.Mounts, libpodMount{Type: "tmpfs", Destination: p})
+	}
+	for _, m := range o.Mounts {
+		lm := libpodMount{Type: "bind", Source: m.Source, Destination: m.Target}
+		if m.ReadOnly {
+			lm.Options = []string{"ro"}
+		}
+		req.Mounts = append(req.Mounts, lm)
+	}
+	for _, d := range o.Devices {
+		req.Devices = append(req.Devices, libpodDevice{Path: d})
+	}
+
+	for _, u := range o.Ulimits {
+		req.Rlimits = append(req.Rlimits, libpodRlimit{
+			// The bare name ("memlock"): Podman adds the RLIMIT_ prefix itself
+			// and rejects one that already has it (confirmed against 4.9.3).
+			Type: u.Name,
+			Soft: rlimitValue(u.Soft),
+			Hard: rlimitValue(u.Hard),
+		})
+	}
+
+	for _, s := range o.SecurityOpt {
+		if err := applyLibpodSecurityOpt(s, req); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rlimitValue turns a ulimit's -1 ("unlimited") into the all-ones value the
+// kernel uses for it.
+func rlimitValue(v int64) uint64 {
+	if v < 0 {
+		return math.MaxUint64
+	}
+	return uint64(v)
+}
+
+// applyLibpodSecurityOpt maps the --security-opt forms that matter on a GPU
+// host to the SpecGenerator's own fields. Others are refused.
+func applyLibpodSecurityOpt(opt string, req *libpodCreateRequest) error {
+	key, value, _ := strings.Cut(opt, "=")
+	switch key {
+	case "seccomp":
+		req.SeccompPath = value
+	case "label":
+		req.SelinuxOpts = append(req.SelinuxOpts, value)
+	case "apparmor":
+		req.ApparmorProf = value
+	case "no-new-privileges":
+		req.NoNewPrivs = value == "" || value == "true"
+	default:
+		return fmt.Errorf("security option %q is not supported for a podman GPU launch (supported: seccomp=, label=, apparmor=, no-new-privileges)", opt)
+	}
+	return nil
 }
 
 // parseBind turns the "host:container[:options]" form Spec.Mounts uses into a
